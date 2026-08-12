@@ -28,8 +28,40 @@ export function buildChannel(): BuildChannel {
 export function isTelemetryDisabled(): boolean {
   return (
     isTruthyEnv(process.env.OPENWIKI_TELEMETRY_DISABLED) ||
-    isTruthyEnv(process.env.DO_NOT_TRACK)
+    isTruthyEnv(process.env.DO_NOT_TRACK) ||
+    isTruthyEnv(process.env.OPENWIKI_OFFLINE) ||
+    isTruthyEnv(process.env.AIR_GAPPED)
   );
+}
+
+/**
+ * True when LangSmith tracing is active (requires LANGCHAIN_TRACING_V2=true and a key).
+ * Automatically returns false when offline/telemetry opt-out is active.
+ */
+export function isLangSmithTracingEnabled(): boolean {
+  if (
+    isTelemetryDisabled() ||
+    isTruthyEnv(process.env.LANGSMITH_TRACING_DISABLED)
+  ) {
+    return false;
+  }
+  return (
+    process.env.LANGCHAIN_TRACING_V2 === "true" &&
+    Boolean(process.env.LANGSMITH_API_KEY)
+  );
+}
+
+/**
+ * Clears LangSmith tracing environment variables when offline or opted out.
+ */
+export function applyLangSmithGates(): void {
+  if (
+    isTelemetryDisabled() ||
+    isTruthyEnv(process.env.LANGSMITH_TRACING_DISABLED)
+  ) {
+    delete process.env.LANGCHAIN_TRACING_V2;
+    delete process.env.LANGSMITH_API_KEY;
+  }
 }
 
 /**

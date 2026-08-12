@@ -63,7 +63,14 @@ import {
 import { isFileNotFoundError } from "../platform/fs-errors.js";
 import { restrictDirToCurrentUser } from "../platform/windows-acl.js";
 
-export const openWikiEnvDir = path.join(os.homedir(), ".openwiki");
+export function getOpenWikiEnvDir(): string {
+  if (process.env.OPENWIKI_HOME) {
+    return path.resolve(process.env.OPENWIKI_HOME);
+  }
+  return path.join(process.cwd(), ".openwiki");
+}
+
+export const openWikiEnvDir = getOpenWikiEnvDir();
 export const openWikiEnvPath = path.join(openWikiEnvDir, ".env");
 
 type EnvMap = Record<string, string>;

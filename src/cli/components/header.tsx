@@ -11,6 +11,8 @@ import {
 import { sanitizeHeaderValue } from "../diagnostics/sanitize.js";
 import { formatCwd } from "../format.js";
 
+import { isLangSmithTracingEnabled } from "../../telemetry/gates.js";
+
 /** The OpenWiki ASCII wordmark shown at the top of the full header. */
 export const OPENWIKI_LOGO_LINES = [
   "  ___                  __        ___ _    _ ",
@@ -80,9 +82,7 @@ export function Header({
     Math.max(8, terminalColumns - 17),
   );
   const shouldShowLogo = showLogo && terminalColumns > OPENWIKI_LOGO_WIDTH;
-  const tracingEnabled =
-    process.env.LANGCHAIN_TRACING_V2 === "true" &&
-    Boolean(process.env.LANGSMITH_API_KEY);
+  const tracingEnabled = isLangSmithTracingEnabled();
 
   if (compact) {
     return (

@@ -796,7 +796,7 @@ export function resolveConfiguredProvider(
     normalizeProvider(env[OPENWIKI_PROVIDER_ENV_KEY]) ??
     (env[OPENAI_API_KEY_ENV_KEY]
       ? "openai"
-      : env[OPENAI_COMPATIBLE_API_KEY_ENV_KEY]
+      : (env[OPENAI_COMPATIBLE_API_KEY_ENV_KEY] || env[OPENAI_COMPATIBLE_BASE_URL_ENV_KEY])
         ? "openai-compatible"
         : env[OPENROUTER_API_KEY_ENV_KEY]
           ? "openrouter"

@@ -13,28 +13,10 @@ export const PAGE = /* html */ `<!doctype html>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>OpenWiki visualizer</title>
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-<script
-  src="https://cdn.jsdelivr.net/npm/force-graph@1.49.5/dist/force-graph.min.js"
-  integrity="sha384-Q7cpDGRIjLb0dIzHOl/cCcP5MM6ixkekYU/M/Y4shUqh7h2IgtwAY7coox/PB0/S"
-  crossorigin="anonymous"
-></script>
-<script
-  src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
-  integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi"
-  crossorigin="anonymous"
-></script>
-<script
-  src="https://cdn.jsdelivr.net/npm/dompurify@3.4.12/dist/purify.min.js"
-  integrity="sha384-piCcpDdJ7qVeK4Tv8Z6Hpcr3ZBIgP16TxQTPVfsLFdZ5uDgwc3Y8Ho7oUnqf12qu"
-  crossorigin="anonymous"
-></script>
-<script
-  src="https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.min.js"
-  integrity="sha384-T/0lMUdJpd2S1ZHtRiofG3htU3xPCrFVeAQ1UUE2TJwlEJSV5NUwn30kP28n238E"
-  crossorigin="anonymous"
-></script>
+<script src="/vendor/force-graph.min.js"></script>
+<script src="/vendor/marked.min.js"></script>
+<script src="/vendor/dompurify.min.js"></script>
+<script src="/vendor/mermaid.min.js"></script>
 <style>
 :root {
   --lc-dark:#030710; --lc-card:#0B1120; --lc-surface:#F2FAFF;
