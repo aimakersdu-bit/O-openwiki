@@ -95,6 +95,19 @@ describe("createRequestHandler", () => {
       clientJs: "/* client */",
       clientLibJs: "/* client-lib */",
       stylesCss: "/* styles */",
+      fontsCss: "/* fonts */",
+      vendorAssets: [
+        {
+          path: "vendor/force-graph.min.js",
+          contentType: "text/javascript; charset=utf-8",
+          body: Buffer.from("/* force graph */"),
+        },
+        {
+          path: "vendor/fonts/inter-latin-400-normal.woff2",
+          contentType: "font/woff2",
+          body: Buffer.from("font"),
+        },
+      ],
       sseClients,
     });
   });
@@ -111,14 +124,13 @@ describe("createRequestHandler", () => {
       expect(out.headers["content-type"]).toBe("text/html; charset=utf-8");
       expect(out.body).toBe(PAGE);
 
-      // The CSP must lock scripts to self + the jsdelivr CDN with no inline
-      // scripts; only styles may be inline. This is the anti-XSS/supply-chain
-      // boundary and must not drift.
+      // The CSP must lock scripts to self with no inline scripts; only styles
+      // may be inline. This is the anti-XSS boundary and must not drift.
       const csp = out.headers["content-security-policy"];
       expect(csp).toBe(
         [
           "default-src 'none'",
-          "script-src 'self' https://cdn.jsdelivr.net",
+          "script-src 'self'",
           "style-src 'self' 'unsafe-inline'",
           "img-src 'self' data:",
           "font-src 'self'",
@@ -128,6 +140,7 @@ describe("createRequestHandler", () => {
         ].join("; "),
       );
       expect(csp).not.toContain("script-src 'self' 'unsafe-inline'");
+      expect(csp).not.toContain("cdn.jsdelivr.net");
     },
   );
 
@@ -162,6 +175,39 @@ describe("createRequestHandler", () => {
     expect(out.statusCode).toBe(200);
     expect(out.headers["content-type"]).toBe("text/css; charset=utf-8");
     expect(out.body).toBe("/* styles */");
+  });
+
+  test("/fonts.css serves the injected font stylesheet", () => {
+    const { req } = makeRequest("/fonts.css");
+    const out = makeResponse();
+
+    handler(req, out.res);
+
+    expect(out.statusCode).toBe(200);
+    expect(out.headers["content-type"]).toBe("text/css; charset=utf-8");
+    expect(out.body).toBe("/* fonts */");
+  });
+
+  test("/vendor/force-graph.min.js serves the local vendor script", () => {
+    const { req } = makeRequest("/vendor/force-graph.min.js");
+    const out = makeResponse();
+
+    handler(req, out.res);
+
+    expect(out.statusCode).toBe(200);
+    expect(out.headers["content-type"]).toBe("text/javascript; charset=utf-8");
+    expect(out.body).toBe("/* force graph */");
+  });
+
+  test("/vendor/fonts/inter-latin-400-normal.woff2 serves the local font", () => {
+    const { req } = makeRequest("/vendor/fonts/inter-latin-400-normal.woff2");
+    const out = makeResponse();
+
+    handler(req, out.res);
+
+    expect(out.statusCode).toBe(200);
+    expect(out.headers["content-type"]).toBe("font/woff2");
+    expect(out.body).toBe("font");
   });
 
   test("/api/graph serves the live graph as JSON", () => {
@@ -224,6 +270,7 @@ describe("createRequestHandler", () => {
     "/client.js/../../../secret",
     "/api/graph/../../etc/passwd",
     "/styles.css/../../../secret",
+    "/vendor/force-graph.min.js/../../../secret",
   ])("path-traversal attempt %s is a 404", (url) => {
     const { req } = makeRequest(url);
     const out = makeResponse();

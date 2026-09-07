@@ -9,6 +9,16 @@ export interface VisualizerAssets {
   clientLibJs: string;
   /** Stylesheet served verbatim and copied into static exports. */
   stylesCss: string;
+  /** Local Inter font-face stylesheet served before the visualizer styles. */
+  fontsCss: string;
+  /** Third-party browser libraries and fonts served from fixed local paths. */
+  vendorAssets: VisualizerVendorAsset[];
+}
+
+export interface VisualizerVendorAsset {
+  path: string;
+  contentType: string;
+  body: Uint8Array;
 }
 
 /** Inputs for writing a self-contained static visualizer directory. */
@@ -29,14 +39,40 @@ export interface StaticVisualizerExportResult {
   graph: WikiGraph;
 }
 
+export const VISUALIZER_VENDOR_ASSET_PATHS = [
+  "vendor/force-graph.min.js",
+  "vendor/marked.min.js",
+  "vendor/purify.min.js",
+  "vendor/mermaid.min.js",
+  "vendor/fonts/inter-latin-400-normal.woff2",
+  "vendor/fonts/inter-latin-500-normal.woff2",
+  "vendor/fonts/inter-latin-600-normal.woff2",
+  "vendor/fonts/inter-latin-700-normal.woff2",
+  "vendor/fonts/inter-latin-800-normal.woff2",
+] as const;
+
 /** Read the browser assets that ship beside this module in dist. */
 export async function loadVisualizerAssets(): Promise<VisualizerAssets> {
-  const [clientJs, clientLibJs, stylesCss] = await Promise.all([
+  const [clientJs, clientLibJs, stylesCss, fontsCss] = await Promise.all([
     readFile(new URL("./client.js", import.meta.url), "utf8"),
     readFile(new URL("./client-lib.js", import.meta.url), "utf8"),
     readFile(new URL("./styles.css", import.meta.url), "utf8"),
+    readFile(new URL("./fonts.css", import.meta.url), "utf8"),
   ]);
-  return { clientJs, clientLibJs, stylesCss };
+  const vendorAssets = await Promise.all(
+    VISUALIZER_VENDOR_ASSET_PATHS.map(async (assetPath) => ({
+      path: assetPath,
+      contentType: contentTypeForVisualizerAsset(assetPath),
+      body: await readFile(new URL(`./${assetPath}`, import.meta.url)),
+    })),
+  );
+  return {
+    clientJs,
+    clientLibJs,
+    stylesCss,
+    fontsCss,
+    vendorAssets,
+  };
 }
 
 /**
@@ -70,6 +106,16 @@ export async function exportStaticVisualizer(
       "utf8",
     ),
     writeFile(
+      path.join(options.outputDir, "fonts.css"),
+      assets.fontsCss,
+      "utf8",
+    ),
+    ...assets.vendorAssets.map(async (asset) => {
+      const destination = path.join(options.outputDir, asset.path);
+      await mkdir(path.dirname(destination), { recursive: true });
+      await writeFile(destination, asset.body);
+    }),
+    writeFile(
       path.join(options.outputDir, "graph.json"),
       `${JSON.stringify(graph, null, 2)}\n`,
       "utf8",
@@ -77,4 +123,10 @@ export async function exportStaticVisualizer(
   ]);
 
   return { outputDir: options.outputDir, graph };
+}
+
+function contentTypeForVisualizerAsset(assetPath: string): string {
+  if (assetPath.endsWith(".js")) return "text/javascript; charset=utf-8";
+  if (assetPath.endsWith(".woff2")) return "font/woff2";
+  return "application/octet-stream";
 }

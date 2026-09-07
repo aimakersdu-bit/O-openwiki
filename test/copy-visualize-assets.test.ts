@@ -71,9 +71,42 @@ test("fails when the copied asset lands empty", async () => {
   );
 });
 
-test("declares the visualizer stylesheet, copied from src into dist", () => {
-  expect(ASSETS).toHaveLength(1);
-  const [stylesheet] = ASSETS;
-  expect(stylesheet.source).toMatch(/src[\\/]visualize[\\/]styles\.css$/);
-  expect(stylesheet.destination).toMatch(/dist[\\/]visualize[\\/]styles\.css$/);
+test("declares every visualizer asset copied into dist", () => {
+  expect(ASSETS).toHaveLength(11);
+  const stylesheet = ASSETS.find((asset) =>
+    asset.destination.endsWith(`${path.sep}styles.css`),
+  );
+  const fonts = ASSETS.find((asset) =>
+    asset.destination.endsWith(`${path.sep}fonts.css`),
+  );
+  expect(stylesheet).toBeDefined();
+  expect(fonts).toBeDefined();
+  expect(stylesheet!.source).toMatch(/src[\\/]visualize[\\/]styles\.css$/);
+  expect(stylesheet!.destination).toMatch(
+    /dist[\\/]visualize[\\/]styles\.css$/,
+  );
+  expect(fonts!.source).toMatch(/src[\\/]visualize[\\/]fonts\.css$/);
+  expect(fonts!.destination).toMatch(/dist[\\/]visualize[\\/]fonts\.css$/);
+  expect(ASSETS.map((asset) => asset.destination)).toEqual(
+    expect.arrayContaining([
+      expect.stringMatching(
+        /dist[\\/]visualize[\\/]vendor[\\/]force-graph\.min\.js$/,
+      ),
+      expect.stringMatching(
+        /dist[\\/]visualize[\\/]vendor[\\/]marked\.min\.js$/,
+      ),
+      expect.stringMatching(
+        /dist[\\/]visualize[\\/]vendor[\\/]purify\.min\.js$/,
+      ),
+      expect.stringMatching(
+        /dist[\\/]visualize[\\/]vendor[\\/]mermaid\.min\.js$/,
+      ),
+      expect.stringMatching(
+        /dist[\\/]visualize[\\/]vendor[\\/]fonts[\\/]inter-latin-400-normal\.woff2$/,
+      ),
+      expect.stringMatching(
+        /dist[\\/]visualize[\\/]vendor[\\/]fonts[\\/]inter-latin-800-normal\.woff2$/,
+      ),
+    ]),
+  );
 });

@@ -46,6 +46,19 @@ test("exports a static visualizer with sibling graph and browser assets", async 
       clientJs: 'export const client = "static";\n',
       clientLibJs: 'export const library = "static";\n',
       stylesCss: "/* styles */\n",
+      fontsCss: "/* fonts */\n",
+      vendorAssets: [
+        {
+          path: "vendor/force-graph.min.js",
+          contentType: "text/javascript; charset=utf-8",
+          body: Buffer.from("/* force graph */\n"),
+        },
+        {
+          path: "vendor/fonts/inter-latin-400-normal.woff2",
+          contentType: "font/woff2",
+          body: Buffer.from("font"),
+        },
+      ],
     },
   });
 
@@ -57,9 +70,11 @@ test("exports a static visualizer with sibling graph and browser assets", async 
   expect(await readdir(outputDir)).toEqual([
     "client-lib.js",
     "client.js",
+    "fonts.css",
     "graph.json",
     "index.html",
     "styles.css",
+    "vendor",
   ]);
   expect(await readFile(path.join(outputDir, "client.js"), "utf8")).toBe(
     'export const client = "static";\n',
@@ -70,10 +85,27 @@ test("exports a static visualizer with sibling graph and browser assets", async 
   expect(await readFile(path.join(outputDir, "styles.css"), "utf8")).toBe(
     "/* styles */\n",
   );
+  expect(await readFile(path.join(outputDir, "fonts.css"), "utf8")).toBe(
+    "/* fonts */\n",
+  );
+  expect(
+    await readFile(
+      path.join(outputDir, "vendor", "force-graph.min.js"),
+      "utf8",
+    ),
+  ).toBe("/* force graph */\n");
+  expect(
+    await readFile(
+      path.join(outputDir, "vendor", "fonts", "inter-latin-400-normal.woff2"),
+      "utf8",
+    ),
+  ).toBe("font");
 
   const page = await readFile(path.join(outputDir, "index.html"), "utf8");
   expect(page).toContain('data-static-export="true"');
   expect(page).toContain('src="./client.js"');
+  expect(page).toContain('src="./vendor/force-graph.min.js"');
+  expect(page).toContain('href="./fonts.css"');
   expect(page).toContain('id="live-text">Static<');
   expect(page).toContain(`http-equiv="Content-Security-Policy"`);
 

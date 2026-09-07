@@ -105,7 +105,7 @@ interface GraphData {
   links: GraphLink[];
 }
 
-// --- Third-party globals (loaded from the CDN <script> tags) ----------------
+// --- Third-party globals (loaded from local <script> tags) -------------------
 
 /**
  * The subset of the force-graph fluent API this app uses. Every setter returns
@@ -247,7 +247,7 @@ interface ForceGraphInstance {
 }
 
 /**
- * The force-graph factory global (UMD build from the CDN <script> tag).
+ * The force-graph factory global (UMD build loaded from a local <script> tag).
  */
 declare const ForceGraph: () => ForceGraphInstance;
 

@@ -15,11 +15,10 @@ const HOST = "127.0.0.1"; // loopback only (never expose the wiki on the network
 const PORT_ATTEMPTS = 20; // ports to try before giving up when the preferred one is busy
 const WATCH_DEBOUNCE_MS = 150; // collapse a burst of file-change events into one rebuild
 
-// The client JS is an external module (/client.js), so scripts need only 'self' plus the
-// jsdelivr CDN origin for the three browser libraries (whose integrity is pinned by the SRI
-// hashes on the <script> tags in page.ts) - no 'unsafe-inline' for scripts. The stylesheet is
-// a same-origin asset (/styles.css), which 'self' covers; style-src still keeps 'unsafe-inline'
-// because client.ts writes inline style= attributes for legend swatches and sidebar dots.
+// The client JS is an external module (/client.js), so scripts need only 'self'.
+// The stylesheet is a same-origin asset (/styles.css), which 'self' covers;
+// style-src still keeps 'unsafe-inline' because client.ts writes inline style=
+// attributes for legend swatches and sidebar dots.
 
 /**
  * Inputs for a single visualizer server run. Every field is required: the CLI parser
@@ -72,7 +71,8 @@ export async function runVisualizeServer(
   // The compiled client modules and the stylesheet sit beside this file in dist/visualize/.
   // They are static, server-owned build artifacts (no user input, never evaluated), read once
   // at startup and served verbatim at fixed routes.
-  const { clientJs, clientLibJs, stylesCss } = await loadVisualizerAssets();
+  const { clientJs, clientLibJs, stylesCss, fontsCss, vendorAssets } =
+    await loadVisualizerAssets();
 
   const broadcastReload = (): void => {
     for (const res of sseClients) res.write("event: reload\ndata: 1\n\n");
@@ -97,6 +97,8 @@ export async function runVisualizeServer(
       clientJs,
       clientLibJs,
       stylesCss,
+      fontsCss,
+      vendorAssets,
       sseClients,
     }),
   );
@@ -147,6 +149,20 @@ export interface RequestHandlerDeps {
   stylesCss: string;
 
   /**
+   * Local font-face stylesheet, served verbatim at `/fonts.css`.
+   */
+  fontsCss: string;
+
+  /**
+   * Local third-party browser libraries and font files served from fixed routes.
+   */
+  vendorAssets: {
+    path: string;
+    contentType: string;
+    body: Uint8Array;
+  }[];
+
+  /**
    * Live set of open Server-Sent-Events responses; the handler registers new
    * `/events` subscribers here and drops them when the connection closes.
    */
@@ -162,7 +178,18 @@ export interface RequestHandlerDeps {
 export function createRequestHandler(
   deps: RequestHandlerDeps,
 ): (req: IncomingMessage, res: ServerResponse) => void {
-  const { getGraph, clientJs, clientLibJs, stylesCss, sseClients } = deps;
+  const {
+    getGraph,
+    clientJs,
+    clientLibJs,
+    stylesCss,
+    fontsCss,
+    vendorAssets,
+    sseClients,
+  } = deps;
+  const vendorAssetByUrl = new Map(
+    vendorAssets.map((asset) => [`/${asset.path}`, asset]),
+  );
 
   return (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? "/";
@@ -187,6 +214,17 @@ export function createRequestHandler(
     if (url === "/styles.css") {
       res.writeHead(200, { "content-type": "text/css; charset=utf-8" });
       res.end(stylesCss);
+      return;
+    }
+    if (url === "/fonts.css") {
+      res.writeHead(200, { "content-type": "text/css; charset=utf-8" });
+      res.end(fontsCss);
+      return;
+    }
+    const vendorAsset = vendorAssetByUrl.get(url);
+    if (vendorAsset) {
+      res.writeHead(200, { "content-type": vendorAsset.contentType });
+      res.end(vendorAsset.body);
       return;
     }
     if (url === "/api/graph") {

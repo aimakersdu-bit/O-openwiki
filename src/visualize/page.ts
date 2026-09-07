@@ -2,13 +2,13 @@
  * The branded single-page visualizer app (LangChain design system), rendered for
  * either the local server or a static export. Scalar wiki fields (title, type,
  * tags) are HTML-escaped client-side before innerHTML; Markdown bodies are
- * additionally protected by CSP and DOMPurify. Browser libraries load from
- * cdn.jsdelivr.net at pinned exact versions with SRI hashes.
+ * additionally protected by CSP and DOMPurify. Browser libraries and the Inter
+ * font are served as local visualizer assets, so the page has no network
+ * dependency once OpenWiki is installed or statically exported.
  */
-const CDN = "https://cdn.jsdelivr.net";
 export const CSP = [
   "default-src 'none'",
-  `script-src 'self' ${CDN}`,
+  "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self'",
@@ -22,6 +22,9 @@ function renderPage(staticExport: boolean): string {
   const liveClass = staticExport ? "live-pill stale" : "live-pill";
   const clientUrl = staticExport ? "./client.js" : "/client.js";
   const stylesUrl = staticExport ? "./styles.css" : "/styles.css";
+  const fontsUrl = staticExport ? "./fonts.css" : "/fonts.css";
+  const vendorUrl = (asset: string): string =>
+    staticExport ? `./vendor/${asset}` : `/vendor/${asset}`;
   const cspMeta = staticExport
     ? `<meta http-equiv="Content-Security-Policy" content="${CSP}" />`
     : "";
@@ -33,28 +36,11 @@ ${cspMeta}
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>OpenWiki visualizer</title>
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-<script
-  src="https://cdn.jsdelivr.net/npm/force-graph@1.49.5/dist/force-graph.min.js"
-  integrity="sha384-Q7cpDGRIjLb0dIzHOl/cCcP5MM6ixkekYU/M/Y4shUqh7h2IgtwAY7coox/PB0/S"
-  crossorigin="anonymous"
-></script>
-<script
-  src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
-  integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi"
-  crossorigin="anonymous"
-></script>
-<script
-  src="https://cdn.jsdelivr.net/npm/dompurify@3.4.12/dist/purify.min.js"
-  integrity="sha384-piCcpDdJ7qVeK4Tv8Z6Hpcr3ZBIgP16TxQTPVfsLFdZ5uDgwc3Y8Ho7oUnqf12qu"
-  crossorigin="anonymous"
-></script>
-<script
-  src="https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.min.js"
-  integrity="sha384-T/0lMUdJpd2S1ZHtRiofG3htU3xPCrFVeAQ1UUE2TJwlEJSV5NUwn30kP28n238E"
-  crossorigin="anonymous"
-></script>
+<link rel="stylesheet" href="${fontsUrl}" />
+<script src="${vendorUrl("force-graph.min.js")}"></script>
+<script src="${vendorUrl("marked.min.js")}"></script>
+<script src="${vendorUrl("purify.min.js")}"></script>
+<script src="${vendorUrl("mermaid.min.js")}"></script>
 <link rel="stylesheet" href="${stylesUrl}" />
 </head>
 <body>
