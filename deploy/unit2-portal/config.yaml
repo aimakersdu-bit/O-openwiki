@@ -1,0 +1,8 @@
+port: 8080
+db_path: "portal.db"
+orchestrator_url: "http://127.0.0.1:3000"
+session_ttl_hours: 24
+
+ldap:
+  url: "mock"
+  user_dn_format: "%s@company.com"

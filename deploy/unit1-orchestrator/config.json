@@ -1,0 +1,11 @@
+{
+  "listen_addr": ":3000",
+  "openwiki_cli": "openwiki",
+  "openwiki_dist_dir": "/Users/bigc/openwiki/dist",
+  "static_output_dir": "/Users/bigc/.openwiki/static",
+  "vendor_assets_dir": "/Users/bigc/openwiki/deploy/unit1-orchestrator/assets/vendor",
+  "repos_base_dir": "/Users/bigc/.openwiki/repos",
+  "db_path": "orchestrator.db",
+  "max_concurrent_qa": 5,
+  "qa_timeout_sec": 120
+}

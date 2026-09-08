@@ -1,0 +1,8 @@
+{
+  "listen_addr": ":8080",
+  "static_dir": "/Users/bigc/openwiki/deploy/unit2-portal/public",
+  "orchestrator_url": "http://127.0.0.1:3000",
+  "auth_mode": "mock",
+  "session_ttl_hours": 24,
+  "db_path": "portal.db"
+}

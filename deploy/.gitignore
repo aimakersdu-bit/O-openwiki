@@ -1,0 +1,10 @@
+# Binaries
+orchestrator
+portal
+unit1-orchestrator/orchestrator
+unit2-portal/portal
+
+# Databases and WAL files
+*.db
+*.db-shm
+*.db-wal

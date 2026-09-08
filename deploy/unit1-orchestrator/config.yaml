@@ -1,0 +1,7 @@
+listen_addr: ":3000"
+openwiki_cli: "openwiki"
+static_output_dir: "/tmp/openwiki-static"
+vendor_assets_dir: "assets/vendor"
+db_path: "orchestrator.db"
+max_concurrent_qa: 5
+qa_timeout_sec: 120
