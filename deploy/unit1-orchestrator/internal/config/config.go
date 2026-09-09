@@ -31,6 +31,9 @@ type Config struct {
 	QADaemonScript   string `json:"qa_daemon_script"`    // path to qa-daemon.js
 	QASocketDir      string `json:"qa_socket_dir"`       // directory for Unix Domain Sockets
 	QAIdleTimeoutSec int    `json:"qa_idle_timeout_sec"` // idle timeout before worker auto-exits
+
+	// Language settings
+	DefaultLanguage string `json:"default_language"` // default language tag for init/update/chat (e.g. "zh-CN")
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -52,6 +55,7 @@ func DefaultConfig() *Config {
 		QADaemonScript:   "scripts/qa-daemon.js",
 		QASocketDir:      os.TempDir(),
 		QAIdleTimeoutSec: 7200,
+		DefaultLanguage:  "zh-CN",
 	}
 }
 

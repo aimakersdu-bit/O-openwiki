@@ -17,21 +17,27 @@ type Builder struct {
 	OpenwikiDistDir string // path to openwiki dist/ directory (for visualize assets)
 	VendorAssetsDir string // path to pre-downloaded vendor/ assets
 	StaticOutputDir string // base output dir (e.g. /var/www/openwiki-static)
+	DefaultLanguage string // default language tag for init/update (e.g. "zh-CN")
 }
 
 // NewBuilder creates a new Builder instance.
-func NewBuilder(cli, vendorDir, distDir, outputDir string) *Builder {
+func NewBuilder(cli, vendorDir, distDir, outputDir string, defaultLang ...string) *Builder {
 	if cli == "" {
 		cli = "openwiki"
 	}
 	if outputDir == "" {
 		outputDir = "/var/www/openwiki-static"
 	}
+	lang := "zh-CN"
+	if len(defaultLang) > 0 && defaultLang[0] != "" {
+		lang = defaultLang[0]
+	}
 	return &Builder{
 		OpenwikiCLI:     cli,
 		VendorAssetsDir: vendorDir,
 		OpenwikiDistDir: distDir,
 		StaticOutputDir: outputDir,
+		DefaultLanguage: lang,
 	}
 }
 
@@ -44,7 +50,7 @@ type BuildResult struct {
 }
 
 // BuildRepo runs the full build pipeline for a single repository:
-//  1. openwiki code --update --print (incremental wiki generation)
+//  1. openwiki code --update --print --language zh-CN (incremental wiki generation)
 //  2. Export graph.json via buildGraph()
 //  3. Copy visualizer frontend assets (PAGE HTML + client.js + client-lib.js)
 //  4. Copy pre-downloaded vendor/ libraries for intranet offline use
@@ -61,13 +67,18 @@ func (b *Builder) logStep(repoID, msg string, logBuf *strings.Builder, onProgres
 }
 
 // BuildRepo runs the full build pipeline for a single repository:
-//  1. openwiki code --update --print (incremental wiki generation)
+//  1. openwiki code --update --print --language zh-CN (incremental wiki generation)
 //  2. Export graph.json via buildGraph()
 //  3. Copy visualizer frontend assets (PAGE HTML + client.js + client-lib.js)
 //  4. Copy pre-downloaded vendor/ libraries for intranet offline use
 func (b *Builder) BuildRepo(repoID, repoPath, wikiDir string, onProgress ...func(string)) *BuildResult {
 	var logBuf strings.Builder
 	result := &BuildResult{}
+
+	lang := b.DefaultLanguage
+	if lang == "" {
+		lang = "zh-CN"
+	}
 
 	// Resolve wiki directory
 	if wikiDir == "" {
@@ -80,8 +91,8 @@ func (b *Builder) BuildRepo(repoID, repoPath, wikiDir string, onProgress ...func
 	// Step 0: Check if .openwiki exists; if not, run openwiki init first
 	openwikiDir := filepath.Join(repoPath, ".openwiki")
 	if _, err := os.Stat(openwikiDir); os.IsNotExist(err) {
-		b.logStep(repoID, "=== Step 0: openwiki init ===", &logBuf, onProgress...)
-		cmdInit := exec.Command(b.OpenwikiCLI, "init")
+		b.logStep(repoID, fmt.Sprintf("=== Step 0: openwiki init --language %s ===", lang), &logBuf, onProgress...)
+		cmdInit := exec.Command(b.OpenwikiCLI, "init", "--language", lang)
 		cmdInit.Dir = repoPath
 		var stdoutInit, stderrInit bytes.Buffer
 		cmdInit.Stdout = &stdoutInit
@@ -94,9 +105,9 @@ func (b *Builder) BuildRepo(repoID, repoPath, wikiDir string, onProgress ...func
 		}
 	}
 
-	// Step 1: Run openwiki code --update --print
-	b.logStep(repoID, "=== Step 1: openwiki code --update --print ===", &logBuf, onProgress...)
-	cmd := exec.Command(b.OpenwikiCLI, "code", "--update", "--print")
+	// Step 1: Run openwiki code --update --print --language <lang>
+	b.logStep(repoID, fmt.Sprintf("=== Step 1: openwiki code --update --print --language %s ===", lang), &logBuf, onProgress...)
+	cmd := exec.Command(b.OpenwikiCLI, "code", "--update", "--print", "--language", lang)
 	cmd.Dir = repoPath
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

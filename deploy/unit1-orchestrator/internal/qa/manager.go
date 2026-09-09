@@ -257,6 +257,7 @@ type ChatPayload struct {
 	UserID    string `json:"user_id"`
 	SessionID string `json:"session_id,omitempty"`
 	ThreadID  string `json:"thread_id,omitempty"`
+	Language  string `json:"language,omitempty"`
 }
 
 // StreamChat forwards chat question to the repository's dedicated worker daemon.
@@ -300,6 +301,7 @@ func (m *Manager) StreamChat(ctx context.Context, repo *db.Repo, userID string, 
 		UserID:    userID,
 		SessionID: sessionID,
 		ThreadID:  threadID,
+		Language:  "zh-CN",
 	})
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/chat", bytes.NewReader(payloadBytes))

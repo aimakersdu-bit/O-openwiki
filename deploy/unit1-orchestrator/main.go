@@ -38,7 +38,7 @@ func main() {
 	log.Printf("Database initialized at %s", cfg.DBPath)
 
 	// Create builder, runner, pool, scheduler
-	builder := scheduler.NewBuilder(cfg.OpenwikiCLI, cfg.VendorAssetsDir, cfg.OpenwikiDistDir, cfg.StaticOutputDir)
+	builder := scheduler.NewBuilder(cfg.OpenwikiCLI, cfg.VendorAssetsDir, cfg.OpenwikiDistDir, cfg.StaticOutputDir, cfg.DefaultLanguage)
 	sched := scheduler.NewScheduler(builder)
 
 	qaRunner := qa.NewRunner(cfg.OpenwikiCLI, time.Duration(cfg.QATimeoutSec)*time.Second)

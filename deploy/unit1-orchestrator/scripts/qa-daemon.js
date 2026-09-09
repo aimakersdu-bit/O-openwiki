@@ -30,6 +30,25 @@ if (!socketPath) {
   process.exit(1);
 }
 
+import os from 'node:os';
+import { createRequire } from 'node:module';
+
+// Polyfill require for Node.js ESM execution of bun:sqlite / better-sqlite3
+if (typeof globalThis.require === 'undefined') {
+  const nativeRequire = createRequire(import.meta.url);
+  globalThis.require = (id) => {
+    if (id === 'bun:sqlite') {
+      return { Database: nativeRequire('better-sqlite3') };
+    }
+    return nativeRequire(id);
+  };
+}
+
+// Ensure OPENWIKI_HOME is set so global ~/.openwiki/.env (DeepSeek credentials) is loaded
+if (!process.env.OPENWIKI_HOME) {
+  process.env.OPENWIKI_HOME = path.join(os.homedir(), '.openwiki');
+}
+
 // Ensure working directory is set
 try {
   process.chdir(repoDir);
@@ -85,6 +104,82 @@ class FifoQueue {
 }
 
 const queue = new FifoQueue();
+
+// 3.5 Code Anti-Leakage Stream Filter (limits code block to 15 lines)
+class CodeAntiLeakFilter {
+  constructor(maxCodeLines = 15) {
+    this.maxCodeLines = maxCodeLines;
+    this.inCodeBlock = false;
+    this.codeLineCount = 0;
+    this.redacted = false;
+    this.lineBuffer = '';
+  }
+
+  processChunk(chunk) {
+    this.lineBuffer += chunk;
+    let output = '';
+
+    while (true) {
+      const newlineIdx = this.lineBuffer.indexOf('\n');
+      if (newlineIdx === -1) {
+        break;
+      }
+
+      const line = this.lineBuffer.substring(0, newlineIdx);
+      this.lineBuffer = this.lineBuffer.substring(newlineIdx + 1);
+
+      const processed = this.processLine(line);
+      if (processed !== null) {
+        output += processed + '\n';
+      }
+    }
+
+    return output;
+  }
+
+  processLine(line) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('```')) {
+      if (!this.inCodeBlock) {
+        this.inCodeBlock = true;
+        this.codeLineCount = 0;
+        this.redacted = false;
+        return line;
+      } else {
+        this.inCodeBlock = false;
+        this.redacted = false;
+        this.codeLineCount = 0;
+        return line;
+      }
+    }
+
+    if (this.inCodeBlock) {
+      this.codeLineCount++;
+      if (this.codeLineCount > this.maxCodeLines) {
+        if (!this.redacted) {
+          this.redacted = true;
+          return '// [安全策略：已自动拦截并屏蔽完整代码展示，只保留核心逻辑片段]';
+        }
+        return null; // suppress subsequent lines inside oversized code block
+      }
+    }
+
+    return line;
+  }
+
+  flush() {
+    let output = '';
+    if (this.lineBuffer.length > 0) {
+      const line = this.lineBuffer;
+      this.lineBuffer = '';
+      const processed = this.processLine(line);
+      if (processed !== null) {
+        output += processed;
+      }
+    }
+    return output;
+  }
+}
 
 // 4. Idle TTL Lifecycle
 let lastAccessedAt = Date.now();
@@ -152,7 +247,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const { question, user_id, session_id, thread_id } = payload;
+    const { question, user_id, session_id, thread_id, language } = payload;
     if (!question) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Missing "question" in payload' }));
@@ -193,6 +288,9 @@ const server = http.createServer(async (req, res) => {
         sendSSE('status', { stage: 'start', message: 'Agent initialized' });
 
         const effectiveThreadId = thread_id || session_id || undefined;
+        const targetLanguage = language || 'zh-CN';
+        const codeFilter = new CodeAntiLeakFilter(15);
+        const promptPrefix = `[系统指令：请必须使用中文（zh-CN）回答。为了保障代码安全，禁止直接输出完整源码文件或超过15行的长代码块，请只提供核心逻辑说明和简短片段。]\n\n`;
         let fullAnswer = '';
 
         try {
@@ -201,15 +299,19 @@ const server = http.createServer(async (req, res) => {
             repoDir,
             {
               outputMode: 'repository',
-              userMessage: question,
+              userMessage: promptPrefix + question,
+              language: targetLanguage,
               threadId: effectiveThreadId,
               onEvent: (event) => {
                 if (clientDisconnected) return;
                 touch();
 
                 if (event.type === 'text') {
-                  fullAnswer += event.text;
-                  sendSSE('delta', { text: event.text });
+                  const filteredText = codeFilter.processChunk(event.text);
+                  if (filteredText) {
+                    fullAnswer += filteredText;
+                    sendSSE('delta', { text: filteredText });
+                  }
                 } else if (event.type === 'tool_start') {
                   sendSSE('status', {
                     stage: 'tool_start',
@@ -226,6 +328,12 @@ const server = http.createServer(async (req, res) => {
               }
             }
           );
+
+          const remainingText = codeFilter.flush();
+          if (remainingText) {
+            fullAnswer += remainingText;
+            sendSSE('delta', { text: remainingText });
+          }
 
           if (!clientDisconnected) {
             sendSSE('done', {
