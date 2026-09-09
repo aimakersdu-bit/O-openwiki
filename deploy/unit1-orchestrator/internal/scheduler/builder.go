@@ -66,6 +66,95 @@ func (b *Builder) logStep(repoID, msg string, logBuf *strings.Builder, onProgres
 	}
 }
 
+// createOpenWikiCmd constructs an exec.Cmd with enriched PATH and OPENWIKI_HOME environment.
+func (b *Builder) createOpenWikiCmd(repoPath string, args ...string) *exec.Cmd {
+	cli := b.OpenwikiCLI
+	if cli == "" {
+		cli = "openwiki"
+	}
+
+	var cmd *exec.Cmd
+
+	// If cli is not absolute, attempt to locate openwiki binary or fall back to node dist/cli/cli.js
+	if !filepath.IsAbs(cli) {
+		searchPaths := []string{
+			"/usr/local/bin/openwiki",
+			"/opt/homebrew/bin/openwiki",
+			filepath.Join(os.Getenv("HOME"), ".openwiki", "bin", "openwiki"),
+		}
+		found := false
+		for _, p := range searchPaths {
+			if _, err := os.Stat(p); err == nil {
+				cli = p
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			// Fallback to node dist/cli/cli.js if distDir is known
+			cliJS := ""
+			if b.OpenwikiDistDir != "" {
+				cliJS = filepath.Join(b.OpenwikiDistDir, "cli", "cli.js")
+			}
+			if cliJS != "" {
+				if _, err := os.Stat(cliJS); err == nil {
+					cmd = exec.Command("node", append([]string{cliJS}, args...)...)
+				}
+			}
+		}
+	}
+
+	if cmd == nil {
+		cmd = exec.Command(cli, args...)
+	}
+
+	cmd.Dir = repoPath
+
+	// Environment setup
+	env := os.Environ()
+	hasPath := false
+	for i, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			env[i] = e + ":/usr/local/bin:/opt/homebrew/bin"
+			hasPath = true
+			break
+		}
+	}
+	if !hasPath {
+		env = append(env, "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin")
+	}
+	if b.OpenwikiDistDir != "" {
+		env = append(env, fmt.Sprintf("OPENWIKI_DIST_DIR=%s", b.OpenwikiDistDir))
+	}
+	if os.Getenv("OPENWIKI_HOME") == "" {
+		home, _ := os.UserHomeDir()
+		if home != "" {
+			env = append(env, fmt.Sprintf("OPENWIKI_HOME=%s", filepath.Join(home, ".openwiki")))
+		}
+	}
+
+	// Inject Node v22 ESM json import shim & require polyfill via NODE_OPTIONS if loader file exists
+	shimCandidates := []string{
+		filepath.Join(filepath.Dir(b.OpenwikiDistDir), "deploy", "unit1-orchestrator", "scripts", "json-import-shim.mjs"),
+		"/Users/bigc/openwiki/deploy/unit1-orchestrator/scripts/json-import-shim.mjs",
+	}
+	for _, shim := range shimCandidates {
+		if _, err := os.Stat(shim); err == nil {
+			nodeOpts := fmt.Sprintf("NODE_OPTIONS=--import=%s --experimental-loader=%s", shim, shim)
+			if existingOpts := os.Getenv("NODE_OPTIONS"); existingOpts != "" {
+				nodeOpts = fmt.Sprintf("NODE_OPTIONS=%s --import=%s --experimental-loader=%s", existingOpts, shim, shim)
+			}
+			env = append(env, nodeOpts)
+			break
+		}
+	}
+
+	cmd.Env = env
+
+	return cmd
+}
+
 // BuildRepo runs the full build pipeline for a single repository:
 //  1. openwiki code --update --print --language zh-CN (incremental wiki generation)
 //  2. Export graph.json via buildGraph()
@@ -92,23 +181,24 @@ func (b *Builder) BuildRepo(repoID, repoPath, wikiDir string, onProgress ...func
 	openwikiDir := filepath.Join(repoPath, ".openwiki")
 	if _, err := os.Stat(openwikiDir); os.IsNotExist(err) {
 		b.logStep(repoID, fmt.Sprintf("=== Step 0: openwiki init --language %s ===", lang), &logBuf, onProgress...)
-		cmdInit := exec.Command(b.OpenwikiCLI, "init", "--language", lang)
-		cmdInit.Dir = repoPath
+		cmdInit := b.createOpenWikiCmd(repoPath, "init", "--language", lang)
 		var stdoutInit, stderrInit bytes.Buffer
 		cmdInit.Stdout = &stdoutInit
 		cmdInit.Stderr = &stderrInit
 		if err := cmdInit.Run(); err != nil {
-			msg := fmt.Sprintf("init stdout: %s\ninit stderr: %s\nopenwiki init warning (continuing update): %v", stdoutInit.String(), stderrInit.String(), err)
+			msg := fmt.Sprintf("init stdout: %s\ninit stderr: %s\nopenwiki init failed: %v", stdoutInit.String(), stderrInit.String(), err)
 			b.logStep(repoID, msg, &logBuf, onProgress...)
-		} else {
-			b.logStep(repoID, "openwiki init completed successfully", &logBuf, onProgress...)
+			result.Log = logBuf.String()
+			result.Error = fmt.Sprintf("openwiki init failed: %v", err)
+			b.logStep(repoID, "ERROR: "+result.Error, &logBuf, onProgress...)
+			return result
 		}
+		b.logStep(repoID, "openwiki init completed successfully", &logBuf, onProgress...)
 	}
 
 	// Step 1: Run openwiki code --update --print --language <lang>
 	b.logStep(repoID, fmt.Sprintf("=== Step 1: openwiki code --update --print --language %s ===", lang), &logBuf, onProgress...)
-	cmd := exec.Command(b.OpenwikiCLI, "code", "--update", "--print", "--language", lang)
-	cmd.Dir = repoPath
+	cmd := b.createOpenWikiCmd(repoPath, "code", "--update", "--print", "--language", lang)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
