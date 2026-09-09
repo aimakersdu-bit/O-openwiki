@@ -1,54 +1,32 @@
 version: '3.8'
 
 services:
-  orchestrator:
+  # OpenWiki All-in-One 全家桶单容器服务
+  openwiki:
     build:
-      context: ./unit1-orchestrator
+      context: .
       dockerfile: Dockerfile
-    container_name: openwiki-orchestrator
+    container_name: openwiki-allinone
     restart: always
     environment:
-      - PORTAL_PORT=3000
-      - DB_PATH=/data/orchestrator.db
-    volumes:
-      - orchestrator-data:/data
-      - static-wiki-data:/var/www/openwiki-static
-      - repo-cache:/repos
+      - NODE_ENV=production
     ports:
-      - "3000:3000"
-
-  portal:
-    build:
-      context: ./unit2-portal
-      dockerfile: Dockerfile
-    container_name: openwiki-portal
-    restart: always
-    environment:
-      - PORTAL_PORT=8080
-      - ORCHESTRATOR_URL=http://orchestrator:3000
-      - DB_PATH=/data/portal.db
-    volumes:
-      - portal-data:/data
-    ports:
-      - "8080:8080"
-    depends_on:
-      - orchestrator
-
-  nginx:
-    image: nginx:alpine
-    container_name: openwiki-nginx
-    restart: always
-    volumes:
-      - ./unit2-portal/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - static-wiki-data:/var/www/openwiki-static:ro
-    ports:
+      # 映射 Nginx 入口端口 (80)
       - "80:80"
-    depends_on:
-      - portal
-      - orchestrator
-
-volumes:
-  orchestrator-data:
-  portal-data:
-  static-wiki-data:
-  repo-cache:
+      # 可选：直接暴露微服务端口用于调试
+      - "8080:8080"
+      - "3000:3000"
+    volumes:
+      # 【有状态单卷挂载】将宿主机 ./data 目录挂载到容器内 /data/openwiki
+      # 包含:
+      #  - ./data/repos  : Git 源码仓库
+      #  - ./data/static : 导出的静态 Wiki 页面
+      #  - ./data/db     : SQLite 数据库文件 (orchestrator.db & portal.db)
+      #  - ./data/logs   : 运行日志与 Nginx 切割日志
+      - ./data:/data/openwiki
+    healthcheck:
+      test: ["CMD", "/app/healthcheck.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

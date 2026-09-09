@@ -1,0 +1,40 @@
+# ==============================================================================
+# OpenWiki Portal (Unit 2) 生产级 Dockerfile
+# 说明：轻量级 Go Web 服务镜像，托管 API 与后端路由
+# ==============================================================================
+
+FROM debian:bookworm-slim
+
+# 设置工作目录
+WORKDIR /app
+
+# 安装必要的系统依赖 (ca-certificates, sqlite3)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    sqlite3 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建有状态数据目录
+RUN mkdir -p /data/openwiki/static \
+             /data/openwiki/db \
+             /data/openwiki/logs \
+             /app/public
+
+# 从发布包复制二进制与前端公共组件
+ARG TARGETARCH
+COPY bin/${TARGETARCH:-arm}/portal /app/portal
+COPY bin/${TARGETARCH:-arm}/public/ /app/public/
+COPY bin/${TARGETARCH:-arm}/config.yaml /app/config.yaml
+
+# 赋予可执行权限
+RUN chmod +x /app/portal
+
+# 声明端口
+EXPOSE 8080
+
+# 声明持久化卷
+VOLUME ["/data/openwiki/static", "/data/openwiki/db", "/data/openwiki/logs"]
+
+# 启动命令
+ENTRYPOINT ["/app/portal", "-config", "/app/config.yaml", "-public", "/app/public"]

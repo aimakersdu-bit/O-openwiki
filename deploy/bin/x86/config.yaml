@@ -1,0 +1,5 @@
+port: 8080
+db_path: "/data/openwiki/db/portal.db"
+orchestrator_url: "http://127.0.0.1:3000"
+static_output_dir: "/data/openwiki/static"
+session_ttl_hours: 24

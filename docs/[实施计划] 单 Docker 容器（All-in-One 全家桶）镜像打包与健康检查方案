@@ -1,0 +1,66 @@
+# [实施计划] 单 Docker 容器（All-in-One 全家桶）镜像打包与健康检查方案
+
+根据最新要求，将 OpenWiki 的 Orchestrator 调度服务、Portal 门户 API 服务、Nginx 静态托管与反向代理、OpenWiki 全局 CLI 以及日志滚存整合至**单个生产级 Docker 镜像**中，不再拆分为多容器。编写容器启动控制脚本 `entrypoint.sh`、健康与就绪检查脚本 `healthcheck.sh`，并妥善处理所有有状态挂载。
+
+## 用户审核事项
+
+> [!IMPORTANT]
+> 1. **单容器全家桶架构（All-in-One Docker Image）**：
+>    - 内部包含 **Nginx (80端口)** + **Portal (:8080)** + **Orchestrator (:3000)** + **OpenWiki CLI** + **Logrotate**。
+>    - 通过主入口脚本 `entrypoint.sh` 统一调度管理后台守护服务与 Nginx 前台运行。
+> 2. **就绪与健康检查 (Healthcheck & Readiness)**：
+>    - 提供 `healthcheck.sh` 脚本，检测 Nginx 静态服务、Portal 响应及 Orchestrator 运行状态。Docker 镜像中植入 `HEALTHCHECK` 指令。
+> 3. **有状态持久化挂载卷（单容器映射）**：
+>    - 宿主机路径 `./data` -> 容器内 `/data/openwiki`：
+>      - `./data/repos`  -> `/data/openwiki/repos` (Git 仓库)
+>      - `./data/static` -> `/data/openwiki/static` (生成的静态页面)
+>      - `./data/db`     -> `/data/openwiki/db` (SQLite 数据库 `orchestrator.db` 与 `portal.db`)
+>      - `./data/logs`   -> `/data/openwiki/logs` (应用与 Nginx 滚存日志)
+> 4. **执行限制**：只编写 Dockerfile、`entrypoint.sh`、`healthcheck.sh` 及 `docker-compose.yml`，**不会在本地触发 `docker build` 执行**。
+
+## 拟变更文件
+
+### 容器主配置文件
+
+#### [新建] [Dockerfile](file:///Users/bigc/openwiki/deploy/Dockerfile)
+- **基础镜像**：`node:22-bookworm-slim`。
+- **依赖安装**：安装 `nginx`、`git`、`sqlite3`、`logrotate`、`curl`、`cron`，通过 `npm install -g openwiki` 安装 CLI。
+- **脚本植入**：植入 `entrypoint.sh` 与 `healthcheck.sh`，赋予可执行权限。
+- **HEALTHCHECK**：配置 `HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 CMD ["/app/healthcheck.sh"]`。
+- **暴露端口**：80 (Nginx 入口), 8080 (Portal API), 3000 (Orchestrator QA)。
+- **启动入口**：`ENTRYPOINT ["/app/entrypoint.sh"]`。
+
+#### [新建] [entrypoint.sh](file:///Users/bigc/openwiki/deploy/entrypoint.sh)
+- 容器启动初始化脚本：
+  1. 自动创建挂载子目录 `/data/openwiki/{repos,static,db,logs/nginx,logs/orchestrator,logs/portal}`。
+  2. 启动后门后台服务 `cron` 执行 Logrotate 日志切割。
+  3. 后台启动 `orchestrator` 服务并将日志重定向至 `/data/openwiki/logs/orchestrator/app.log`。
+  4. 后台启动 `portal` 服务并将日志重定向至 `/data/openwiki/logs/portal/app.log`。
+  5. 捕捉 Linux 信号 (SIGTERM/SIGINT) 实现优雅停机；前台运行 Nginx (`nginx -g "daemon off;"`)。
+
+#### [新建] [healthcheck.sh](file:///Users/bigc/openwiki/deploy/healthcheck.sh)
+- 健康度与就绪度 (Liveness / Readiness Check) 检查脚本：
+  1. 使用 `curl` 校验 Nginx 80 端口 `/wiki/openwiki/` 静态页面可达性。
+  2. 使用 `curl` 校验 Portal 8080 端口 `/api/repos` 状态码。
+  3. 使用 `curl` 校验 Orchestrator 3000 端口 `/api/builds` 响应。
+  4. 校验 `orchestrator` 和 `portal` 守护进程 PID 是否正常。全部正常返回 `0`，否则返回 `1`。
+
+#### [新建] [nginx.conf](file:///Users/bigc/openwiki/deploy/nginx.conf)
+- 适应单容器内部通信的 Nginx 配置：
+  - `/wiki/` -> 容器内 `/data/openwiki/static/`，带 `Cache-Control: no-cache`。
+  - `/api/`  -> 反向代理至 `127.0.0.1:8080` (Portal)。
+  - `/qa/`   -> 反向代理至 `127.0.0.1:3000` (Orchestrator)，支持流式输出。
+
+#### [新建] [docker-compose.yml](file:///Users/bigc/openwiki/deploy/docker-compose.yml)
+- 单服务极简编排 `openwiki-allinone`：
+  - 映射端口 `80:80`
+  - 挂载单卷 `./data:/data/openwiki`
+
+## 验证计划
+
+### 自动化验证
+- 校验 `Dockerfile` 语法指令完整度（包含 HEALTHCHECK 与 ENTRYPOINT）。
+- 校验 `entrypoint.sh` 与 `healthcheck.sh` 脚本语法及变量引用格式。
+
+### 手动验证
+- 审查单容器 Docker 挂载设计，确保所有 SQLite 数据库、Git 源码及静态页面在宿主机 `./data` 目录落地，保障容器销毁后数据不丢失。
