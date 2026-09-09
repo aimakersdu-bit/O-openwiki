@@ -55,7 +55,13 @@ func (s *Server) routes() {
 
 	// Serve static Wiki pages under /wiki/ in standalone dev execution
 	if s.config.StaticOutputDir != "" {
-		s.mux.Handle("/wiki/", http.StripPrefix("/wiki/", http.FileServer(http.Dir(s.config.StaticOutputDir))))
+		wikiFS := http.StripPrefix("/wiki/", http.FileServer(http.Dir(s.config.StaticOutputDir)))
+		s.mux.HandleFunc("/wiki/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
+			wikiFS.ServeHTTP(w, r)
+		})
 	}
 
 	// Intercept /api/graph to serve static graph JSON based on Referer or query parameter

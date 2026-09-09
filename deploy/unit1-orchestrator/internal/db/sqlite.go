@@ -50,6 +50,22 @@ func CloseDB() error {
 	return nil
 }
 
+// CleanStaleBuilds updates any builds stuck in 'running' status to 'interrupted'.
+func (db *DB) CleanStaleBuilds() error {
+	if db == nil || db.conn == nil {
+		return nil
+	}
+	_, err := db.conn.Exec("UPDATE builds SET status = 'interrupted', finished_at = CURRENT_TIMESTAMP, error = 'Interrupted by daemon restart' WHERE status = 'running'")
+	return err
+}
+
+func CleanStaleBuilds() error {
+	if globalDB != nil {
+		return globalDB.CleanStaleBuilds()
+	}
+	return nil
+}
+
 // GetDB returns the global DB instance.
 func GetDB() *DB {
 	return globalDB

@@ -14,30 +14,33 @@ import (
 
 // Scheduler manages cron-based wiki build jobs for all registered repos.
 type Scheduler struct {
-	cron    *cron.Cron
-	db      *db.DB
-	builder *Builder
-	mu      sync.Mutex
-	entries map[string]cron.EntryID // repo_id -> cron entry ID
+	cron          *cron.Cron
+	db            *db.DB
+	builder       *Builder
+	mu            sync.Mutex
+	entries       map[string]cron.EntryID // repo_id -> cron entry ID
+	runningBuilds map[string]int64        // repo_id -> active buildID
 }
 
 // NewScheduler creates a new Scheduler using the global database.
 func NewScheduler(builder *Builder) *Scheduler {
 	return &Scheduler{
-		cron:    cron.New(),
-		db:      db.GetDB(),
-		builder: builder,
-		entries: make(map[string]cron.EntryID),
+		cron:          cron.New(),
+		db:            db.GetDB(),
+		builder:       builder,
+		entries:       make(map[string]cron.EntryID),
+		runningBuilds: make(map[string]int64),
 	}
 }
 
 // New creates a new Scheduler with explicit database and builder.
 func New(database *db.DB, builder *Builder) *Scheduler {
 	return &Scheduler{
-		cron:    cron.New(),
-		db:      database,
-		builder: builder,
-		entries: make(map[string]cron.EntryID),
+		cron:          cron.New(),
+		db:            database,
+		builder:       builder,
+		entries:       make(map[string]cron.EntryID),
+		runningBuilds: make(map[string]int64),
 	}
 }
 
@@ -51,6 +54,9 @@ func (s *Scheduler) AddRepoJob(repo *db.Repo) error {
 
 // Start loads all active repos from the database, registers their cron jobs, and starts the scheduler.
 func (s *Scheduler) Start() error {
+	// Clean up stale 'running' build records from previous daemon crashes/restarts
+	_ = db.CleanStaleBuilds()
+
 	repos, err := s.db.ListRepos()
 	if err != nil {
 		return fmt.Errorf("list repos: %w", err)
@@ -129,9 +135,23 @@ func (s *Scheduler) UpdateRepoJob(repo *db.Repo) error {
 // 3. openwiki code --update --print
 // 4. Export static files & vendor assets to Nginx output directory
 func (s *Scheduler) runBuild(repo db.Repo, force bool) {
-	log.Printf("[build] starting build for repo %s (force=%v)", repo.ID, force)
-
+	s.mu.Lock()
+	if activeID, running := s.runningBuilds[repo.ID]; running {
+		s.mu.Unlock()
+		log.Printf("[build][%s] build already in progress (build_id=%d), skipping duplicate trigger", repo.ID, activeID)
+		return
+	}
 	buildID, _ := s.db.CreateBuild(repo.ID, "", "running")
+	s.runningBuilds[repo.ID] = buildID
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		delete(s.runningBuilds, repo.ID)
+		s.mu.Unlock()
+	}()
+
+	log.Printf("[build] starting build for repo %s (force=%v, build_id=%d)", repo.ID, force, buildID)
 
 	// Step 1: Git Clone if local directory does not exist
 	var logBuf strings.Builder
