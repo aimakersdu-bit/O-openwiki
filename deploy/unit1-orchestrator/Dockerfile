@@ -15,6 +15,7 @@ RUN apk add --no-cache ca-certificates git nodejs npm bash
 WORKDIR /app
 COPY --from=builder /app/orchestrator /app/orchestrator
 COPY --from=builder /app/assets /app/assets
+COPY --from=builder /app/scripts /app/scripts
 
 EXPOSE 3000
 ENTRYPOINT ["/app/orchestrator"]

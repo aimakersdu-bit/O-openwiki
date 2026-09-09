@@ -64,6 +64,7 @@ func (s *Server) routes() {
 	// Reverse proxy /api/ to Orchestrator URL for standalone dev execution
 	if orchURL, err := url.Parse(s.config.OrchestratorURL); err == nil && orchURL.Scheme != "" {
 		proxy := httputil.NewSingleHostReverseProxy(orchURL)
+		proxy.FlushInterval = -1 // Immediate flush for SSE streaming
 		s.mux.Handle("/api/", proxy)
 	}
 }

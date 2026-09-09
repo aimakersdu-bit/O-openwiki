@@ -9,9 +9,10 @@ import (
 )
 
 type ChatRequest struct {
-	RepoID   string `json:"repo_id"`
-	UserID   string `json:"user_id"`
-	Question string `json:"question"`
+	RepoID    string `json:"repo_id"`
+	UserID    string `json:"user_id"`
+	SessionID string `json:"session_id"`
+	Question  string `json:"question"`
 }
 
 // handleChat handles SSE streaming for OpenWiki QA questions.
@@ -50,11 +51,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
-	// Execute chat via QA process pool
-	if err := s.qaPool.StreamChat(r.Context(), repo, req.UserID, req.Question, w); err != nil {
-		// If headers were not flushed yet or error occurred
-		logPrintf("Chat streaming error for repo %s: %v", req.RepoID, err)
+	// Execute chat via QA Manager (or fallback to pool)
+	if s.qaManager != nil {
+		if err := s.qaManager.StreamChat(r.Context(), repo, req.UserID, req.SessionID, req.Question, w); err != nil {
+			logPrintf("Chat streaming error for repo %s: %v", req.RepoID, err)
+		}
+	} else if s.qaPool != nil {
+		if err := s.qaPool.StreamChat(r.Context(), repo, req.UserID, req.Question, w); err != nil {
+			logPrintf("Chat streaming error for repo %s: %v", req.RepoID, err)
+		}
 	}
 }
 

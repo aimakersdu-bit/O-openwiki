@@ -26,8 +26,11 @@ type Config struct {
 	OpenwikiAPIKey   string `json:"openwiki_api_key"`  // LLM API key
 
 	// QA settings
-	MaxConcurrentQA int `json:"max_concurrent_qa"` // max concurrent chat processes
-	QATimeoutSec    int `json:"qa_timeout_sec"`    // timeout per chat request in seconds
+	MaxConcurrentQA  int    `json:"max_concurrent_qa"`   // max concurrent chat processes
+	QATimeoutSec     int    `json:"qa_timeout_sec"`      // timeout per chat request in seconds
+	QADaemonScript   string `json:"qa_daemon_script"`    // path to qa-daemon.js
+	QASocketDir      string `json:"qa_socket_dir"`       // directory for Unix Domain Sockets
+	QAIdleTimeoutSec int    `json:"qa_idle_timeout_sec"` // idle timeout before worker auto-exits
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -37,15 +40,18 @@ func DefaultConfig() *Config {
 		home = "/tmp"
 	}
 	return &Config{
-		ListenAddr:      ":3000",
-		OpenwikiCLI:     "openwiki",
-		OpenwikiDistDir: "",
-		StaticOutputDir: filepath.Join(home, ".openwiki", "static"),
-		VendorAssetsDir: "assets/vendor",
-		ReposBaseDir:    filepath.Join(home, ".openwiki", "repos"),
-		DBPath:          "orchestrator.db",
-		MaxConcurrentQA: 5,
-		QATimeoutSec:    120,
+		ListenAddr:       ":3000",
+		OpenwikiCLI:      "openwiki",
+		OpenwikiDistDir:  "",
+		StaticOutputDir:  filepath.Join(home, ".openwiki", "static"),
+		VendorAssetsDir:  "assets/vendor",
+		ReposBaseDir:     filepath.Join(home, ".openwiki", "repos"),
+		DBPath:           "orchestrator.db",
+		MaxConcurrentQA:  5,
+		QATimeoutSec:     120,
+		QADaemonScript:   "scripts/qa-daemon.js",
+		QASocketDir:      os.TempDir(),
+		QAIdleTimeoutSec: 7200,
 	}
 }
 

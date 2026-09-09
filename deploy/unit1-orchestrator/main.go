@@ -43,6 +43,8 @@ func main() {
 
 	qaRunner := qa.NewRunner(cfg.OpenwikiCLI, time.Duration(cfg.QATimeoutSec)*time.Second)
 	qaPool := qa.NewPool(qaRunner, cfg.MaxConcurrentQA)
+	qaManager := qa.NewManager(cfg.QADaemonScript, cfg.QASocketDir, cfg.QAIdleTimeoutSec, cfg.OpenwikiDistDir)
+	defer qaManager.Close()
 
 	// Start cron scheduler
 	if err := sched.Start(); err != nil {
@@ -52,7 +54,7 @@ func main() {
 	log.Println("Cron scheduler started successfully")
 
 	// Create API router
-	server := api.NewServer(cfg, sched, qaPool)
+	server := api.NewServer(cfg, sched, qaPool, qaManager)
 
 	addr := cfg.ListenAddr
 	if addr == "" {

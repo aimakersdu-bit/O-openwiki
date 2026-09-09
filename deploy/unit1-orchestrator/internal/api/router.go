@@ -18,15 +18,17 @@ type Server struct {
 	config    *config.Config
 	scheduler *scheduler.Scheduler
 	qaPool    *qa.Pool
+	qaManager *qa.Manager
 	mux       *http.ServeMux
 }
 
 // NewServer creates a new Orchestrator API server.
-func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool) *Server {
+func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, manager *qa.Manager) *Server {
 	s := &Server{
 		config:    cfg,
 		scheduler: sched,
 		qaPool:    pool,
+		qaManager: manager,
 		mux:       http.NewServeMux(),
 	}
 	s.routes()

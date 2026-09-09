@@ -90,6 +90,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  let currentSessionId = 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 7);
+
   async function sendQuestion() {
     const question = chatInput.value.trim();
     if (!question || !activeRepo) return;
@@ -97,7 +99,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     chatInput.value = '';
     appendMessage(question, 'user');
 
-    const botMsgDiv = appendMessage('正在思考中...', 'bot');
+    const botContainer = appendMessage('', 'bot');
+    const statusDiv = document.createElement('div');
+    statusDiv.style.color = '#888';
+    statusDiv.style.fontSize = '12px';
+    statusDiv.style.marginBottom = '6px';
+    statusDiv.textContent = '⏳ 正在思考中...';
+    botContainer.appendChild(statusDiv);
+
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'bot-content-text';
+    botContainer.appendChild(contentDiv);
 
     try {
       const response = await fetch('/api/chat', {
@@ -106,36 +118,91 @@ document.addEventListener('DOMContentLoaded', async () => {
         body: JSON.stringify({
           repo_id: activeRepo.id,
           user_id: currentUser.user_id,
+          session_id: currentSessionId,
           question: question
         })
       });
 
       if (!response.ok) {
         const errText = await response.text();
-        botMsgDiv.textContent = '问答请求失败: ' + errText;
+        statusDiv.style.display = 'none';
+        contentDiv.textContent = '问答请求失败: ' + errText;
         return;
       }
 
-      botMsgDiv.textContent = '';
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      let currentEvent = 'message';
 
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
+        buffer += decoder.decode(value, { stream: true });
 
-        const lines = chunk.split('\n');
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // retain partial line
+
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const content = line.substring(6);
-            botMsgDiv.textContent += content + '\n';
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+          const trimmed = line.trim();
+          if (!trimmed) {
+            currentEvent = 'message';
+            continue;
+          }
+
+          if (trimmed.startsWith('event: ')) {
+            currentEvent = trimmed.substring(7).trim();
+            continue;
+          }
+
+          if (trimmed.startsWith('data: ')) {
+            const rawData = trimmed.substring(6);
+            let parsedData = null;
+            try {
+              parsedData = JSON.parse(rawData);
+            } catch {
+              parsedData = rawData;
+            }
+
+            if (currentEvent === 'status') {
+              if (parsedData && typeof parsedData === 'object') {
+                if (parsedData.stage === 'tool_start') {
+                  statusDiv.textContent = `🔍 正在检索/调用: ${parsedData.name || '工具'}...`;
+                  statusDiv.style.display = 'block';
+                } else if (parsedData.stage === 'tool_end') {
+                  statusDiv.textContent = `⚡ 检索完成，组织语言中...`;
+                }
+              }
+            } else if (currentEvent === 'delta') {
+              statusDiv.style.display = 'none';
+              const textChunk = (parsedData && typeof parsedData === 'object' && parsedData.text !== undefined)
+                ? parsedData.text
+                : (typeof parsedData === 'string' ? parsedData : '');
+              contentDiv.textContent += textChunk;
+              chatMessages.scrollTop = chatMessages.scrollHeight;
+            } else if (currentEvent === 'done') {
+              statusDiv.style.display = 'none';
+            } else if (currentEvent === 'error') {
+              statusDiv.style.display = 'none';
+              const errMsg = (parsedData && parsedData.error) || rawData;
+              contentDiv.textContent += `\n[错误: ${errMsg}]`;
+            } else {
+              // Standard or legacy plaintext streaming fallback
+              const textChunk = (parsedData && typeof parsedData === 'object' && parsedData.text !== undefined)
+                ? parsedData.text
+                : (typeof parsedData === 'string' ? parsedData : (rawData ? rawData + '\n' : ''));
+              if (textChunk) {
+                statusDiv.style.display = 'none';
+                contentDiv.textContent += textChunk;
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+              }
+            }
           }
         }
       }
     } catch (err) {
-      botMsgDiv.textContent += '\n[连接出错: ' + err.message + ']';
+      statusDiv.style.display = 'none';
+      contentDiv.textContent += '\n[连接出错: ' + err.message + ']';
     }
   }
 
