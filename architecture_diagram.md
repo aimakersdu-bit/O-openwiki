@@ -87,7 +87,7 @@ flowchart TD
     Layer4 --> GraphExporter
     GraphExporter --> StaticAssets
     BuilderEngine --> DB_Orch
-
+🏛️ 2. 系统核心架
     QAService --> StaticAssets
 
     %% 绑定样式
