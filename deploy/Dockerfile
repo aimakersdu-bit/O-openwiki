@@ -13,6 +13,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nginx \
     git \
+    openssh-client \
     sqlite3 \
     logrotate \
     curl \

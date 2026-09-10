@@ -28,10 +28,8 @@ mkdir -p "$OUTPUT_DIR"
 echo ""
 echo "=== [2/3] 配置 Go 编译环境 (ARM64) ==="
 export GOARCH="${GOARCH:-arm64}"
-if [ -z "$GOOS" ]; then
-    export GOOS="$(go env GOOS)"
-fi
-export CGO_ENABLED="${CGO_ENABLED:-1}"
+export GOOS="${GOOS:-linux}"
+export CGO_ENABLED="${CGO_ENABLED:-0}"
 
 echo "构建目标架构: OS=$GOOS, ARCH=$GOARCH, CGO_ENABLED=$CGO_ENABLED"
 
