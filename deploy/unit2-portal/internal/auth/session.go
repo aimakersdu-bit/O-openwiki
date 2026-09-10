@@ -23,6 +23,7 @@ func CreateSession(user *UserInfo, ttlHours int) (*db.Session, error) {
 		Token:       token,
 		UserID:      user.UserID,
 		DisplayName: user.DisplayName,
+		Role:        user.Role,
 		ExpiresAt:   expiresAt,
 	}
 

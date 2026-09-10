@@ -33,10 +33,22 @@ func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		s.listRepos(w, r)
 	case http.MethodPost:
+		if session.Role != "admin" {
+			http.Error(w, `{"error":"Forbidden: Administrator privileges required"}`, http.StatusForbidden)
+			return
+		}
 		s.proxyToOrchestrator(w, r, "POST", "/api/repos")
 	case http.MethodPut:
+		if session.Role != "admin" {
+			http.Error(w, `{"error":"Forbidden: Administrator privileges required"}`, http.StatusForbidden)
+			return
+		}
 		s.proxyToOrchestrator(w, r, "PUT", "/api/repos")
 	case http.MethodDelete:
+		if session.Role != "admin" {
+			http.Error(w, `{"error":"Forbidden: Administrator privileges required"}`, http.StatusForbidden)
+			return
+		}
 		target := "/api/repos"
 		if query := r.URL.RawQuery; query != "" {
 			target += "?" + query
@@ -45,6 +57,32 @@ func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleBuildTrigger(w http.ResponseWriter, r *http.Request) {
+	session, err := auth.GetSessionFromRequest(r)
+	if err != nil || session == nil {
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if session.Role != "admin" {
+		http.Error(w, `{"error":"Forbidden: Administrator privileges required to trigger builds"}`, http.StatusForbidden)
+		return
+	}
+	s.proxyToOrchestrator(w, r, "POST", "/api/build/trigger")
+}
+
+func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	session, err := auth.GetSessionFromRequest(r)
+	if err != nil || session == nil {
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if session.Role != "admin" {
+		http.Error(w, `{"error":"Forbidden: Administrator privileges required for audit logs"}`, http.StatusForbidden)
+		return
+	}
+	s.proxyToOrchestrator(w, r, "GET", "/api/build/status")
 }
 
 func (s *Server) listRepos(w http.ResponseWriter, r *http.Request) {

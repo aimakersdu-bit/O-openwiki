@@ -24,6 +24,12 @@ type Config struct {
 		InsecureSkip string `yaml:"insecure_skip_verify"`
 	} `yaml:"ldap"`
 
+	// RBAC Auth Configuration
+	Auth struct {
+		AdminUsers []string `yaml:"admin_users"` // Usernames with admin privileges
+		AdminGroup string   `yaml:"admin_group"` // LDAP group with admin privileges
+	} `yaml:"auth"`
+
 	SessionTTLHours int `yaml:"session_ttl_hours"`
 }
 
@@ -41,6 +47,7 @@ func DefaultConfig() *Config {
 	}
 	cfg.LDAP.URL = "ldap://127.0.0.1:389"
 	cfg.LDAP.UserDNFormat = "%s@company.com"
+	cfg.Auth.AdminUsers = []string{"admin", "bigc"}
 	return cfg
 }
 

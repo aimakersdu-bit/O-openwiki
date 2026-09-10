@@ -42,18 +42,30 @@ window.Auth = {
     window.location.href = '/portal/login.html';
   },
 
-  // Update navbar user badge
+  // Update navbar user badge and toggle role-based UI elements
   renderNavbarUser(user) {
     const userContainer = document.getElementById('navbarUser');
+
+    // Toggle admin-only elements
+    const adminElements = document.querySelectorAll('.admin-only');
+    adminElements.forEach(el => {
+      if (user && user.role === 'admin') {
+        el.style.display = '';
+      } else {
+        el.style.display = 'none';
+      }
+    });
+
     if (!userContainer) return;
 
     if (user) {
       const name = user.display_name || user.user_id;
       const initial = name.charAt(0).toUpperCase();
+      const roleBadge = user.role === 'admin' ? '<span class="badge badge-admin" style="background:#0284c7;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:4px;">管理员</span>' : '<span class="badge badge-user" style="background:#64748b;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:4px;">普通用户</span>';
       userContainer.innerHTML = `
-        <div class="user-info">
+        <div class="user-info" style="display:flex;align-items:center;gap:8px;">
           <span class="user-avatar">${initial}</span>
-          <span class="username">${name}</span>
+          <span class="username">${name}${roleBadge}</span>
           <button onclick="Auth.logout()" class="btn btn-outline btn-sm">退出</button>
         </div>
       `;

@@ -12,6 +12,7 @@ import (
 type UserInfo struct {
 	UserID      string `json:"user_id"`
 	DisplayName string `json:"display_name"`
+	Role        string `json:"role"` // "admin" or "user"
 }
 
 // Authenticate validates user credentials against LDAP / AD server.
@@ -20,11 +21,20 @@ func Authenticate(cfg *config.Config, username, password string) (*UserInfo, err
 		return nil, fmt.Errorf("username and password are required")
 	}
 
+	role := "user"
+	for _, adminUser := range cfg.Auth.AdminUsers {
+		if strings.EqualFold(strings.TrimSpace(adminUser), strings.TrimSpace(username)) {
+			role = "admin"
+			break
+		}
+	}
+
 	// Dev / Mock fallback if LDAP URL is set to mock
 	if cfg.LDAP.URL == "mock" || strings.HasPrefix(cfg.LDAP.URL, "mock://") {
 		return &UserInfo{
 			UserID:      username,
 			DisplayName: "Dev User (" + username + ")",
+			Role:        role,
 		}, nil
 	}
 
@@ -75,5 +85,6 @@ func Authenticate(cfg *config.Config, username, password string) (*UserInfo, err
 	return &UserInfo{
 		UserID:      username,
 		DisplayName: displayName,
+		Role:        role,
 	}, nil
 }

@@ -72,6 +72,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"user_id":      session.UserID,
 		"display_name": session.DisplayName,
+		"role":         session.Role,
 		"expires_at":   session.ExpiresAt,
 	})
 }

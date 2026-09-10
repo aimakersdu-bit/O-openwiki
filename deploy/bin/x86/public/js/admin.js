@@ -1,6 +1,11 @@
 document.addEventListener('DOMContentLoaded', async () => {
   // Check auth and render user in navbar
   const currentUser = await Auth.checkAuth(true);
+  if (currentUser && currentUser.role !== 'admin') {
+    alert('权限不足：仓库配置与管理界面仅允许系统管理员访问！');
+    window.location.href = '/portal/index.html';
+    return;
+  }
   Auth.renderNavbarUser(currentUser);
 
   const registerForm = document.getElementById('registerRepoForm');

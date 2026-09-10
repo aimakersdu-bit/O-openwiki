@@ -14,6 +14,7 @@ type Session struct {
 	Token       string    `json:"token"`
 	UserID      string    `json:"user_id"`
 	DisplayName string    `json:"display_name"`
+	Role        string    `json:"role"`
 	CreatedAt   time.Time `json:"created_at"`
 	ExpiresAt   time.Time `json:"expires_at"`
 }
@@ -31,6 +32,7 @@ func InitDB(dbPath string) error {
 		token TEXT PRIMARY KEY,
 		user_id TEXT NOT NULL,
 		display_name TEXT,
+		role TEXT DEFAULT 'user',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		expires_at DATETIME NOT NULL
 	);
@@ -39,6 +41,9 @@ func InitDB(dbPath string) error {
 	if _, err := DB.Exec(schema); err != nil {
 		return fmt.Errorf("failed to execute schema: %w", err)
 	}
+
+	// Migration: add role column if missing in older schema
+	_, _ = DB.Exec("ALTER TABLE sessions ADD COLUMN role TEXT DEFAULT 'user';")
 
 	return nil
 }
@@ -52,28 +57,33 @@ func CloseDB() {
 // SaveSession creates or updates a user session.
 func SaveSession(s *Session) error {
 	query := `
-	INSERT INTO sessions (token, user_id, display_name, created_at, expires_at)
-	VALUES (?, ?, ?, ?, ?)
+	INSERT INTO sessions (token, user_id, display_name, role, created_at, expires_at)
+	VALUES (?, ?, ?, ?, ?, ?)
 	ON CONFLICT(token) DO UPDATE SET
+		role = excluded.role,
 		expires_at = excluded.expires_at;
 	`
 	timeFormat := "2006-01-02 15:04:05"
 	createdAtStr := time.Now().UTC().Format(timeFormat)
 	expiresAtStr := s.ExpiresAt.UTC().Format(timeFormat)
 
-	_, err := DB.Exec(query, s.Token, s.UserID, s.DisplayName, createdAtStr, expiresAtStr)
+	if s.Role == "" {
+		s.Role = "user"
+	}
+
+	_, err := DB.Exec(query, s.Token, s.UserID, s.DisplayName, s.Role, createdAtStr, expiresAtStr)
 	return err
 }
 
 // GetSession retrieves a valid unexpired session.
 func GetSession(token string) (*Session, error) {
 	query := `
-	SELECT token, user_id, display_name, created_at, expires_at
+	SELECT token, user_id, display_name, COALESCE(role, 'user'), created_at, expires_at
 	FROM sessions WHERE token = ? AND expires_at > CURRENT_TIMESTAMP;
 	`
 	row := DB.QueryRow(query, token)
 	var s Session
-	err := row.Scan(&s.Token, &s.UserID, &s.DisplayName, &s.CreatedAt, &s.ExpiresAt)
+	err := row.Scan(&s.Token, &s.UserID, &s.DisplayName, &s.Role, &s.CreatedAt, &s.ExpiresAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
