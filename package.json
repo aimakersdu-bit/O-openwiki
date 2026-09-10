@@ -39,6 +39,7 @@
     "changeset:version": "changeset version",
     "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
     "coverage": "vitest run --coverage",
+    "deploy:tar": "bash scripts/package-deploy.sh",
     "dev": "tsx src/cli/cli.tsx",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
