@@ -1,4 +1,15 @@
 #!/usr/bin/env node
+import "./vfs-polyfill.js";
+import fs from "node:fs";
+
+process.on("uncaughtException", (err) => {
+  console.error("CRASH STACK:", err && err.stack ? err.stack : err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("UNHANDLED REJECTION STACK:", reason);
+});
+import packageJson from "../../package.json";
+void packageJson;
 import React from "react";
 import { render } from "ink";
 import { installCrashGuard } from "../agent/crash-guard.js";
@@ -25,6 +36,8 @@ import {
   runVisualizeCommand,
 } from "./runners.js";
 
+import { applyLangSmithGates } from "../telemetry/gates.js";
+
 // Register the last-resort handlers before any run starts, so a rejection that
 // escapes every catch (e.g. a subagent error surfacing on the microtask queue) is
 // recorded and stamped instead of hard-killing the process with no telemetry.
@@ -42,6 +55,7 @@ if (
 ) {
   await loadOpenWikiEnv();
 }
+applyLangSmithGates();
 
 const command = await resolveStartupCommand(parsedCommand, {
   cwd: process.cwd(),
@@ -75,8 +89,6 @@ if (command.kind === "auth") {
   process.stderr.write(`${command.message}\n`);
   process.exitCode = command.exitCode;
 } else if (shouldRunNonInteractively(command, process.stdin.isTTY === true)) {
-  // Non-TTY / print mode: framed text on stderr so piped stdout stays clean;
-  // gray only when stderr is a real terminal.
   if (showFirstRunNotice) {
     console.error(renderFirstRunNoticeText(process.stderr.isTTY === true));
   }

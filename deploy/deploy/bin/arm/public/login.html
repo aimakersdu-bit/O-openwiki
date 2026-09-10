@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 - OpenWiki Enterprise Portal</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <header class="navbar">
+    <div class="nav-left">
+      <a href="index.html" class="logo">
+        <span class="logo-icon">⚡</span>
+        <span class="logo-text">OpenWiki <span class="badge">Portal</span></span>
+      </a>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card login-card">
+      <h2>企业 AD 域登录</h2>
+      <p class="subtitle">请输入您的 AD 域账号与密码以进入代码 Wiki 门户</p>
+      <form id="loginForm">
+        <div class="form-group">
+          <label for="username">账号 (sAMAccountName / User Principal)</label>
+          <input type="text" id="username" placeholder="例如 zhangsan" required>
+        </div>
+        <div class="form-group">
+          <label for="password">密码</label>
+          <input type="password" id="password" placeholder="••••••••" required>
+        </div>
+        <div id="loginError" class="alert alert-error" style="display:none;"></div>
+        <button type="submit" class="btn btn-primary btn-block">登 录</button>
+      </form>
+    </section>
+  </main>
+
+  <script src="js/auth.js"></script>
+  <script src="js/login.js"></script>
+</body>
+</html>

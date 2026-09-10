@@ -45,6 +45,16 @@ export function isConnectorId(value: string): value is ConnectorId {
   return (CONNECTOR_IDS as readonly string[]).includes(value);
 }
 
+export const OFFLINE_COMPATIBLE_CONNECTOR_IDS: readonly ConnectorId[] = [
+  "git-repo",
+  "notion",
+  "langsmith",
+];
+
+export function isOfflineCompatibleConnector(id: ConnectorId): boolean {
+  return OFFLINE_COMPATIBLE_CONNECTOR_IDS.includes(id);
+}
+
 /**
  * Connector ids that require auth and have all required env vars set. Used by
  * telemetry as an adoption signal.

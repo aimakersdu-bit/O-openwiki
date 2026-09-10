@@ -3,7 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { restrictDirToCurrentUser } from "../platform/windows-acl.js";
 
-export const openWikiHomeDir = path.join(os.homedir(), ".openwiki");
+export function getOpenWikiHomeDir(): string {
+  if (process.env.OPENWIKI_HOME) {
+    return path.resolve(process.env.OPENWIKI_HOME);
+  }
+  return path.join(process.cwd(), ".openwiki");
+}
+
+export const openWikiHomeDir = getOpenWikiHomeDir();
 export const openWikiConnectorsDir = path.join(openWikiHomeDir, "connectors");
 export const openWikiConversationHistoryDir = path.join(
   openWikiHomeDir,

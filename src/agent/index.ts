@@ -6,7 +6,7 @@ import { AnthropicVertex } from "@anthropic-ai/vertex-sdk";
 import { ChatAnthropic } from "@langchain/anthropic";
 import { ChatBedrockConverse } from "@langchain/aws";
 import { ChatGoogle } from "@langchain/google/node";
-import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
+import { SqliteSaver } from "./sqlite-saver.js";
 import { ChatOpenAI } from "@langchain/openai";
 import { ChatOpenRouter } from "@langchain/openrouter";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
@@ -221,6 +221,7 @@ export async function runOpenWikiAgent(
     // Enrich the error for the CLI's debug/auth UI, then rethrow. The telemetry
     // record is owned by withRunTelemetry, which reads the stage/class tags this
     // error already carries.
+    console.error("FULL ERROR STACK:", error && (error as any).stack ? (error as any).stack : error);
     attachOpenRouterDebugInfo(error, debugFetchCapture.getLastFailure());
 
     throw error;
