@@ -33,6 +33,15 @@ func NewServer(cfg *config.Config, publicFS http.Handler) *Server {
 }
 
 func (s *Server) routes() {
+	// Redirect root / to /portal/
+	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/portal/", http.StatusFound)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
 	// Authentication
 	s.mux.HandleFunc("/portal/login", s.handleLogin)
 	s.mux.HandleFunc("/portal/logout", s.handleLogout)
@@ -41,6 +50,8 @@ func (s *Server) routes() {
 	// Portal data APIs
 	s.mux.HandleFunc("/portal/repos", s.handleRepos)
 	s.mux.HandleFunc("/portal/sessions", s.handleSessions)
+	s.mux.HandleFunc("/portal/qa/sessions", s.handleQASessions)
+	s.mux.HandleFunc("/portal/qa/messages", s.handleQAMessages)
 	s.mux.HandleFunc("/portal/build/trigger", s.handleBuildTrigger)
 	s.mux.HandleFunc("/portal/audit", s.handleAudit)
 

@@ -139,34 +139,38 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         return `
           <tr>
-            <td>
+            <td class="col-nowrap">
               <strong>${API.escapeHTML(repo.name)}</strong>
               <div style="font-size:0.75rem; color:var(--text-secondary);">${API.escapeHTML(repo.id)}</div>
             </td>
             <td>
-              <code>${API.escapeHTML(repo.git_url)}</code>
-              <div><span class="badge">${API.escapeHTML(repo.branch)}</span></div>
+              <code style="display:block; max-width:280px; word-break:break-all; font-size:0.8rem;">${API.escapeHTML(repo.git_url)}</code>
+              <div style="margin-top:0.25rem;"><span class="badge" style="background:rgba(56,189,248,0.15); color:var(--accent-color);">${API.escapeHTML(repo.branch)}</span></div>
             </td>
-            <td><code style="font-size:0.8rem;">${API.escapeHTML(repo.local_path)}</code></td>
-            <td><code>${API.escapeHTML(repo.schedule)}</code></td>
             <td>
+              <code style="display:block; max-width:260px; word-break:break-all; font-size:0.8rem;">${API.escapeHTML(repo.local_path)}</code>
+            </td>
+            <td class="col-center col-nowrap">
+              <code style="font-size:0.85rem;">${API.escapeHTML(repo.schedule)}</code>
+            </td>
+            <td class="col-center col-nowrap">
               <span class="badge" style="background:${repo.status === 'active' ? 'rgba(74, 222, 128, 0.15)' : 'rgba(248, 113, 113, 0.15)'}; color:${repo.status === 'active' ? 'var(--success-color)' : 'var(--error-color)'}">
                 ${API.escapeHTML(repo.status)}
               </span>
             </td>
-            <td>${buildBadge}</td>
-            <td>
-              <div style="display:flex; gap:0.35rem; flex-wrap:wrap;">
-                <button class="btn btn-secondary btn-sm trigger-build-btn" data-id="${repo.id}">
+            <td class="col-center col-nowrap">${buildBadge}</td>
+            <td class="col-center col-nowrap">
+              <div style="display:inline-flex; gap:0.35rem; align-items:center;">
+                <button class="btn btn-secondary btn-sm trigger-build-btn" data-id="${repo.id}" style="white-space:nowrap;">
                   ⚡ 立即构建
                 </button>
-                <button class="btn btn-outline btn-sm view-log-btn" data-id="${repo.id}">
+                <button class="btn btn-outline btn-sm view-log-btn" data-id="${repo.id}" style="white-space:nowrap;">
                   📋 日志
                 </button>
-                <button class="btn btn-secondary btn-sm edit-repo-btn" data-id="${repo.id}">
+                <button class="btn btn-secondary btn-sm edit-repo-btn" data-id="${repo.id}" style="white-space:nowrap;">
                   ✏️ 编辑
                 </button>
-                <button class="btn btn-secondary btn-sm delete-repo-btn" data-id="${repo.id}" style="color:var(--error-color); border-color:rgba(248,113,113,0.4);">
+                <button class="btn btn-secondary btn-sm delete-repo-btn" data-id="${repo.id}" style="color:var(--error-color); border-color:rgba(248,113,113,0.4); white-space:nowrap;">
                   🗑️ 删除
                 </button>
               </div>

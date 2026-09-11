@@ -39,6 +39,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/repos", s.handleRepos)
 	s.mux.HandleFunc("/api/chat", s.handleChat)
 	s.mux.HandleFunc("/api/qa/history", s.handleQAHistory)
+	s.mux.HandleFunc("/api/qa/sessions", s.handleUserQASessions)
+	s.mux.HandleFunc("/api/qa/messages", s.handleQAMessages)
 	s.mux.HandleFunc("/api/build/status", s.handleBuildStatus)
 	s.mux.HandleFunc("/api/build/trigger", s.handleBuildTrigger)
 

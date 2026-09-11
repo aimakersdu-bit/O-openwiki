@@ -1,0 +1,11 @@
+port: 8099
+db_path: "/Users/bigc/openwiki/deploy/data/portal.db"
+orchestrator_url: "http://127.0.0.1:3009"
+static_output_dir: "/Users/bigc/openwiki/deploy/data/static"
+session_ttl_hours: 24
+ldap:
+  url: "mock"
+auth:
+  admin_users:
+    - "admin"
+    - "bigc"

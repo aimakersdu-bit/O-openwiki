@@ -166,6 +166,79 @@ docker compose up -d
 
 ---
 
+### 3. Git SSH 方式下载与秘钥挂载配置
+
+OpenWiki 后端调度器已原生支持 SSH 协议的 Git 仓库下载（如 `git@github.com:org/repo.git` 或 `git@gitlab.company.com:group/repo.git`）。服务内部已配置非交互式免密交互探针 `GIT_SSH_COMMAND=ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new`。
+
+#### 挂载私钥方式（推荐）：
+只需在启动容器时将宿主机包含 Git 权限的 SSH 秘钥目录挂载到容器的 `/root/.ssh`（推荐只读 `:ro`）：
+
+- **Docker Direct 运行**：
+  ```bash
+  docker run -d \
+    --name openwiki \
+    --restart always \
+    -p 80:80 -p 8080:8080 -p 3000:3000 \
+    -v /data/openwiki:/data/openwiki \
+    -v ~/.ssh:/root/.ssh:ro \
+    openwiki:arm64
+  ```
+
+- **Docker Compose 运行**：
+  在 `docker-compose.yml` 的 `volumes` 节点下配置：
+  ```yaml
+      volumes:
+        - /data/openwiki:/data/openwiki
+        - ~/.ssh:/root/.ssh:ro
+  ```
+
+---
+
+### 4. Git HTTP 方式账号密码 / Token 统一配置
+
+对于使用 HTTP/HTTPS 协议的私有仓库（如 `https://gitlab.company.com/group/project.git`），可通过以下三种方式配置鉴权凭据：
+
+#### 方式 A：单仓库 URL 内嵌凭据（最简便、按仓库配置）
+在 Web 门户注册仓库时，直接在 Git URL 中带上账号密码或个人访问令牌 (Personal Access Token)：
+- **密码方式**：`https://<username>:<password>@gitlab.company.com/group/project.git`
+- **Token 方式**：`https://oauth2:<your_token>@gitlab.company.com/group/project.git`
+- **GitHub Token**：`https://token:<your_token>@github.com/org/repo.git`
+
+#### 方式 B：统一挂载全局 Git Credentials 凭据文件（企业级统一配置）
+若希望全局免去在每一个仓库 URL 中暴露明文密码，可以在宿主机准备全局 Git 凭据文件并挂载到容器中：
+
+1. **在宿主机（或部署节点）创建 `git-credentials` 文件**（例如位于 `/data/openwiki/.git-credentials`）：
+   ```text
+   https://your_username:your_password_or_token@gitlab.company.com
+   https://your_username:your_password_or_token@github.com
+   ```
+
+2. **在宿主机创建匹配的 `.gitconfig` 文件**（例如位于 `/data/openwiki/.gitconfig`）：
+   ```ini
+   [credential]
+       helper = store --file=/root/.git-credentials
+   ```
+
+3. **在容器启动时将凭据挂载到容器**：
+   - **Docker Direct 运行**：
+     ```bash
+     docker run -d \
+       --name openwiki \
+       -v /data/openwiki:/data/openwiki \
+       -v /data/openwiki/.git-credentials:/root/.git-credentials:ro \
+       -v /data/openwiki/.gitconfig:/root/.gitconfig:ro \
+       openwiki:arm64
+     ```
+   - **Docker Compose 运行**：
+     ```yaml
+         volumes:
+           - ./data:/data/openwiki
+           - ./data/.git-credentials:/root/.git-credentials:ro
+           - ./data/.gitconfig:/root/.gitconfig:ro
+     ```
+
+---
+
 ### 3. 服务端口与数据持久化说明
 
 #### 对外服务端口映射

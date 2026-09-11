@@ -34,7 +34,7 @@ func NewRunner(cli string, timeout time.Duration) *Runner {
 
 // StreamChat executes openwiki code chat and streams standard output line by line to outWriter.
 // It records the complete session to SQLite once finished.
-func (r *Runner) StreamChat(ctx context.Context, repo *db.Repo, userID string, question string, outWriter io.Writer) error {
+func (r *Runner) StreamChat(ctx context.Context, repo *db.Repo, userID string, sessionID string, question string, outWriter io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 
@@ -59,7 +59,7 @@ func (r *Runner) StreamChat(ctx context.Context, repo *db.Repo, userID string, q
 		if outWriter != nil {
 			fmt.Fprintf(outWriter, "data: [Error: %s]\n\n", errMsg)
 		}
-		_ = db.RecordQASession(repo.ID, userID, question, "Error: "+errMsg)
+		_ = db.RecordQASession(sessionID, repo.ID, userID, question, "Error: "+errMsg)
 		return fmt.Errorf("%s", errMsg)
 	}
 
@@ -92,14 +92,14 @@ func (r *Runner) StreamChat(ctx context.Context, repo *db.Repo, userID string, q
 			fmt.Fprintf(outWriter, "data: [Error: %s]\n\n", errMsg)
 		}
 		// Record error attempt if failed
-		_ = db.RecordQASession(repo.ID, userID, question, "Error: "+errMsg)
+		_ = db.RecordQASession(sessionID, repo.ID, userID, question, "Error: "+errMsg)
 		return fmt.Errorf("chat command failed: %s", errMsg)
 	}
 
 	fullAnswer := string(answerBuf)
 
 	// Record QA session to database
-	if err := db.RecordQASession(repo.ID, userID, question, fullAnswer); err != nil {
+	if err := db.RecordQASession(sessionID, repo.ID, userID, question, fullAnswer); err != nil {
 		// Log DB error but don't fail the chat stream
 		fmt.Printf("Warning: failed to record QA session: %v\n", err)
 	}

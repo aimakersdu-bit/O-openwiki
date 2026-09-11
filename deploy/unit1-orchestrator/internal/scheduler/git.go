@@ -74,11 +74,13 @@ func GitClone(gitURL, localPath, branch string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	finalURL := injectGitCredentials(gitURL)
+
 	args := []string{"clone"}
 	if branch != "" {
 		args = append(args, "--branch", branch, "--single-branch")
 	}
-	args = append(args, gitURL, localPath)
+	args = append(args, finalURL, localPath)
 
 	cmd := gitCmd(ctx, "", args...)
 	var stderr bytes.Buffer
@@ -87,6 +89,50 @@ func GitClone(gitURL, localPath, branch string) error {
 		return fmt.Errorf("git clone: %s: %w", stderr.String(), err)
 	}
 	return nil
+}
+
+func injectGitCredentials(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return rawURL
+	}
+	schemeEnd := strings.Index(rawURL, "://")
+	if schemeEnd == -1 {
+		return rawURL
+	}
+	rest := rawURL[schemeEnd+3:]
+	slashIdx := strings.Index(rest, "/")
+	hostPart := rest
+	if slashIdx != -1 {
+		hostPart = rest[:slashIdx]
+	}
+	if strings.Contains(hostPart, "@") {
+		return rawURL // Already has inline credentials
+	}
+
+	user := os.Getenv("GIT_HTTP_USERNAME")
+	if user == "" {
+		user = os.Getenv("GIT_USERNAME")
+	}
+	pass := os.Getenv("GIT_HTTP_PASSWORD")
+	if pass == "" {
+		pass = os.Getenv("GIT_PASSWORD")
+	}
+	token := os.Getenv("GIT_HTTP_TOKEN")
+	if token == "" {
+		token = os.Getenv("GIT_TOKEN")
+	}
+
+	if token != "" {
+		if user == "" {
+			user = "oauth2"
+		}
+		return rawURL[:schemeEnd+3] + user + ":" + token + "@" + rest
+	} else if user != "" && pass != "" {
+		return rawURL[:schemeEnd+3] + user + ":" + pass + "@" + rest
+	}
+
+	return rawURL
 }
 
 // GitCurrentHead returns the current HEAD commit hash.

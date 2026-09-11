@@ -23,6 +23,22 @@ mkdir -p /data/openwiki/repos \
          /data/openwiki/logs/orchestrator \
          /data/openwiki/logs/portal
 
+# 1.5 自动初始化全局 Git HTTP 统一凭据 (若环境变量提供)
+GIT_USER="${GIT_HTTP_USERNAME:-$GIT_USERNAME}"
+GIT_PASS="${GIT_HTTP_PASSWORD:-$GIT_PASSWORD}"
+GIT_TOK="${GIT_HTTP_TOKEN:-$GIT_TOKEN}"
+
+if [ -n "$GIT_PASS" ] && [ -n "$GIT_USER" ]; then
+    echo "--> 自动配置容器全局 Git HTTP 统一凭据 (用户: $GIT_USER)..."
+    git config --global credential.helper 'store --file=/root/.git-credentials'
+    echo "https://${GIT_USER}:${GIT_PASS}@${GIT_HTTP_HOST:-gitlab.company.com}" > /root/.git-credentials
+elif [ -n "$GIT_TOK" ]; then
+    echo "--> 自动配置容器全局 Git HTTP Token 统一凭据..."
+    git config --global credential.helper 'store --file=/root/.git-credentials'
+    USER_NAME="${GIT_USER:-oauth2}"
+    echo "https://${USER_NAME}:${GIT_TOK}@${GIT_HTTP_HOST:-gitlab.company.com}" > /root/.git-credentials
+fi
+
 # 2. 生成 Orchestrator 默认配置文件 (如不存在)
 if [ ! -f /app/config.json ]; then
     echo "--> 生成 Orchestrator 默认配置文件 config.json..."

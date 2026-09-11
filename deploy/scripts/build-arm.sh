@@ -28,10 +28,8 @@ mkdir -p "$OUTPUT_DIR"
 echo ""
 echo "=== [2/3] 配置 Go 编译环境 (ARM64) ==="
 export GOARCH="${GOARCH:-arm64}"
-if [ -z "$GOOS" ]; then
-    export GOOS="$(go env GOOS)"
-fi
-export CGO_ENABLED="${CGO_ENABLED:-1}"
+export GOOS="${GOOS:-linux}"
+export CGO_ENABLED="${CGO_ENABLED:-0}"
 
 echo "构建目标架构: OS=$GOOS, ARCH=$GOARCH, CGO_ENABLED=$CGO_ENABLED"
 
@@ -57,10 +55,10 @@ if [ -d "$ROOT_DIR/deploy/unit1-orchestrator/scripts" ]; then
     chmod +x "$OUTPUT_DIR/scripts/"*.sh 2>/dev/null || true
 fi
 
-# 拷贝 assets/vendor (离线静态库)
-mkdir -p "$OUTPUT_DIR/assets/vendor"
-if [ -d "$ROOT_DIR/deploy/unit1-orchestrator/assets/vendor" ]; then
-    cp -r "$ROOT_DIR/deploy/unit1-orchestrator/assets/vendor/"* "$OUTPUT_DIR/assets/vendor/"
+# 拷贝 assets (包含 index.html, client.js 及离线 vendor 库)
+mkdir -p "$OUTPUT_DIR/assets"
+if [ -d "$ROOT_DIR/deploy/unit1-orchestrator/assets" ]; then
+    cp -r "$ROOT_DIR/deploy/unit1-orchestrator/assets/"* "$OUTPUT_DIR/assets/"
 fi
 
 # 拷贝 public (Portal 网页组件)

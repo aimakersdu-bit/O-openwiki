@@ -278,7 +278,7 @@ func (m *Manager) StreamChat(ctx context.Context, repo *db.Repo, userID string, 
 		if outWriter != nil {
 			fmt.Fprintf(outWriter, "event: error\ndata: [Error: %s]\n\n", errMsg)
 		}
-		_ = db.RecordQASession(repo.ID, userID, question, "Error: "+errMsg)
+		_ = db.RecordQASession(sessionID, repo.ID, userID, question, "Error: "+errMsg)
 		return fmt.Errorf("%s", errMsg)
 	}
 
@@ -322,7 +322,7 @@ func (m *Manager) StreamChat(ctx context.Context, repo *db.Repo, userID string, 
 		if outWriter != nil {
 			fmt.Fprintf(outWriter, "event: error\ndata: [Error: %s]\n\n", errMsg)
 		}
-		_ = db.RecordQASession(repo.ID, userID, question, "Error: "+errMsg)
+		_ = db.RecordQASession(sessionID, repo.ID, userID, question, "Error: "+errMsg)
 		return fmt.Errorf("%s", errMsg)
 	}
 	defer resp.Body.Close()
@@ -333,7 +333,7 @@ func (m *Manager) StreamChat(ctx context.Context, repo *db.Repo, userID string, 
 		if outWriter != nil {
 			fmt.Fprintf(outWriter, "event: error\ndata: [Error: %s]\n\n", errMsg)
 		}
-		_ = db.RecordQASession(repo.ID, userID, question, "Error: "+errMsg)
+		_ = db.RecordQASession(sessionID, repo.ID, userID, question, "Error: "+errMsg)
 		return fmt.Errorf("%s", errMsg)
 	}
 
@@ -394,7 +394,7 @@ func (m *Manager) StreamChat(ctx context.Context, repo *db.Repo, userID string, 
 	}
 
 	// Record QA session in SQLite database
-	if err := db.RecordQASession(repo.ID, userID, question, answerText); err != nil {
+	if err := db.RecordQASession(sessionID, repo.ID, userID, question, answerText); err != nil {
 		log.Printf("[QA-Manager] Warning: failed to record QA session: %v", err)
 	}
 

@@ -206,7 +206,7 @@ function cleanupAndExit(code = 0) {
         if (socketPath && fs.existsSync(socketPath)) {
           fs.unlinkSync(socketPath);
         }
-      } catch {}
+      } catch { }
       process.exit(code);
     });
   } catch {
@@ -268,7 +268,7 @@ const server = http.createServer(async (req, res) => {
     const sendSSE = (event, data) => {
       try {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-      } catch {}
+      } catch { }
     };
 
     // Client disconnect handling

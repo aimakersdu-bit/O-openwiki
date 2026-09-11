@@ -34,6 +34,11 @@ type Config struct {
 
 	// Language settings
 	DefaultLanguage string `json:"default_language"` // default language tag for init/update/chat (e.g. "zh-CN")
+
+	// Git Global HTTP Credentials
+	GitHTTPUsername string `json:"git_http_username"`
+	GitHTTPPassword string `json:"git_http_password"`
+	GitHTTPToken    string `json:"git_http_token"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -103,5 +108,24 @@ func overrideEnv(cfg *Config) {
 	}
 	if envRepos := os.Getenv("REPOS_BASE_DIR"); envRepos != "" {
 		cfg.ReposBaseDir = envRepos
+	}
+
+	// Git HTTP Credentials Overrides
+	if envUser := os.Getenv("GIT_HTTP_USERNAME"); envUser != "" {
+		cfg.GitHTTPUsername = envUser
+	} else if envUser := os.Getenv("GIT_USERNAME"); envUser != "" {
+		cfg.GitHTTPUsername = envUser
+	}
+
+	if envPass := os.Getenv("GIT_HTTP_PASSWORD"); envPass != "" {
+		cfg.GitHTTPPassword = envPass
+	} else if envPass := os.Getenv("GIT_PASSWORD"); envPass != "" {
+		cfg.GitHTTPPassword = envPass
+	}
+
+	if envToken := os.Getenv("GIT_HTTP_TOKEN"); envToken != "" {
+		cfg.GitHTTPToken = envToken
+	} else if envToken := os.Getenv("GIT_TOKEN"); envToken != "" {
+		cfg.GitHTTPToken = envToken
 	}
 }

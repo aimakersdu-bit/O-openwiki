@@ -4,5 +4,13 @@ orchestrator_url: "http://127.0.0.1:3000"
 session_ttl_hours: 24
 
 ldap:
-  url: "mock"
-  user_dn_format: "%s@company.com"
+  enabled: true
+  url: "mock" # 生产环境设为: "ldap://172.20.2.137:389"
+  user_dn_format: "%s@oa.bx"
+  bind_dn: "baixin_coder@oa.bx"
+  bind_password: "8dErNZ8@"
+  base_dn: "OU=中信百信银行,DC=oa,DC=bx"
+  user_search_filter: "(&(objectCategory=person)(objectClass=user)(|(userPrincipalName={username})(sAMAccountName={username})))"
+  username_attribute: "cn"
+  email_attribute: "mail"
+  display_name_attribute: "displayName"
