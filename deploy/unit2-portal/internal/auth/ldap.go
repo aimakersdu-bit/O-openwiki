@@ -38,14 +38,19 @@ func Authenticate(cfg *config.Config, username, password string) (*UserInfo, err
 		}, nil
 	}
 
+	ldapURL := cfg.LDAP.URL
+	if ldapURL == "" && cfg.LDAP.ServerURI != "" {
+		ldapURL = cfg.LDAP.ServerURI
+	}
+
 	var conn *ldap.Conn
 	var err error
 
-	if strings.HasPrefix(cfg.LDAP.URL, "ldaps://") {
-		tlsConfig := &tls.Config{InsecureSkipVerify: true}
-		conn, err = ldap.DialURL(cfg.LDAP.URL, ldap.DialWithTLSConfig(tlsConfig))
+	if strings.HasPrefix(ldapURL, "ldaps://") {
+		tlsConfig := &tls.Config{InsecureSkipVerify: cfg.LDAP.InsecureSkip}
+		conn, err = ldap.DialURL(ldapURL, ldap.DialWithTLSConfig(tlsConfig))
 	} else {
-		conn, err = ldap.DialURL(cfg.LDAP.URL)
+		conn, err = ldap.DialURL(ldapURL)
 	}
 
 	if err != nil {
@@ -53,17 +58,84 @@ func Authenticate(cfg *config.Config, username, password string) (*UserInfo, err
 	}
 	defer conn.Close()
 
-	// Form user principal name / bind DN
-	bindDN := fmt.Sprintf(cfg.LDAP.UserDNFormat, username)
+	userDN := ""
+	displayName := username
 
-	// Attempt User Bind
-	if err := conn.Bind(bindDN, password); err != nil {
-		return nil, fmt.Errorf("LDAP authentication failed: %w", err)
+	// Mode 1: Admin Bind + User Search (Enterprise Mode)
+	if cfg.LDAP.BindDN != "" && cfg.LDAP.BindPassword != "" {
+		if err := conn.Bind(cfg.LDAP.BindDN, cfg.LDAP.BindPassword); err != nil {
+			return nil, fmt.Errorf("LDAP admin bind failed: %w", err)
+		}
+
+		baseDN := cfg.LDAP.BaseDN
+		if baseDN == "" {
+			baseDN = cfg.LDAP.UserSearchBase
+		}
+
+		filter := cfg.LDAP.UserSearchFilter
+		if filter == "" {
+			filter = fmt.Sprintf("(sAMAccountName=%s)", ldap.EscapeFilter(username))
+		} else {
+			// Replace {username} or %s in user_search_filter
+			filter = strings.ReplaceAll(filter, "{username}", ldap.EscapeFilter(username))
+			if strings.Contains(filter, "%s") {
+				filter = fmt.Sprintf(filter, ldap.EscapeFilter(username))
+			}
+		}
+
+		attrDisplayName := cfg.LDAP.DisplayNameAttribute
+		if attrDisplayName == "" {
+			attrDisplayName = "displayName"
+		}
+		attrUsername := cfg.LDAP.UsernameAttribute
+		if attrUsername == "" {
+			attrUsername = "cn"
+		}
+
+		attributes := []string{attrDisplayName, attrUsername, "sAMAccountName", "userPrincipalName", "mail"}
+
+		searchRequest := ldap.NewSearchRequest(
+			baseDN,
+			ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+			filter,
+			attributes,
+			nil,
+		)
+
+		sr, err := conn.Search(searchRequest)
+		if err != nil {
+			return nil, fmt.Errorf("LDAP user search failed: %w", err)
+		}
+		if len(sr.Entries) == 0 {
+			return nil, fmt.Errorf("LDAP user not found: %s", username)
+		}
+
+		entry := sr.Entries[0]
+		userDN = entry.DN
+
+		if dnVal := entry.GetAttributeValue(attrDisplayName); dnVal != "" {
+			displayName = dnVal
+		} else if cnVal := entry.GetAttributeValue("cn"); cnVal != "" {
+			displayName = cnVal
+		} else if samVal := entry.GetAttributeValue("sAMAccountName"); samVal != "" {
+			displayName = samVal
+		}
+	} else {
+		// Mode 2: Direct User DN Bind (Fallback)
+		if cfg.LDAP.UserDNFormat != "" {
+			userDN = fmt.Sprintf(cfg.LDAP.UserDNFormat, username)
+		} else {
+			userDN = username
+		}
 	}
 
-	displayName := username
-	// Search for display name if BaseDN is configured
-	if cfg.LDAP.BaseDN != "" {
+	// Attempt User Bind to verify user password
+	if err := conn.Bind(userDN, password); err != nil {
+		return nil, fmt.Errorf("LDAP user authentication failed: %w", err)
+	}
+
+	// If display name is still default username and BaseDN is available in Mode 2, attempt search
+	if displayName == username && cfg.LDAP.BaseDN != "" && cfg.LDAP.BindDN == "" {
 		searchRequest := ldap.NewSearchRequest(
 			cfg.LDAP.BaseDN,
 			ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
