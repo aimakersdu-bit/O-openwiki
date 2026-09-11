@@ -45,7 +45,7 @@ func (p *Pool) StreamChat(ctx context.Context, repo *db.Repo, userID string, que
 	p.incActive()
 	defer p.decActive()
 
-	return p.runner.StreamChat(ctx, repo, userID, question, outWriter)
+	return p.runner.StreamChat(ctx, repo, userID, "", question, outWriter)
 }
 
 func (p *Pool) incActive() {

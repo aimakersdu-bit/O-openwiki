@@ -42,11 +42,25 @@
   <aside id="chatDrawer" class="chat-drawer">
     <div class="chat-resizer" id="chatResizer" title="按住左右拖拽调节宽度"></div>
     <div class="chat-header">
-      <div>
+      <div class="chat-header-title">
         <h3 id="chatRepoTitle">AI 代码问答</h3>
         <span id="chatRepoBadge" class="badge">Repo</span>
       </div>
-      <button id="closeChatBtn" class="btn-close">&times;</button>
+      <div class="chat-header-actions">
+        <button id="newSessionBtn" class="btn btn-sm btn-secondary" title="开启新会话">➕ 新建</button>
+        <button id="toggleHistoryBtn" class="btn btn-sm btn-secondary" title="查看历史会话">📜 历史</button>
+        <button id="closeChatBtn" class="btn-close" title="关闭">&times;</button>
+      </div>
+    </div>
+    <!-- Session History Panel -->
+    <div id="sessionHistoryPanel" class="session-history-panel" style="display: none;">
+      <div class="session-history-header">
+        <span>📜 历史对话列表</span>
+        <button id="closeHistoryBtn" class="btn-close-sm" title="关闭">&times;</button>
+      </div>
+      <div id="sessionList" class="session-list">
+        <!-- Injected session items -->
+      </div>
     </div>
     <div class="chat-body" id="chatMessages">
       <div class="chat-welcome">

@@ -73,7 +73,7 @@ func (s *Server) createRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Branch == "" {
-		req.Branch = "master"
+		req.Branch = "main"
 	}
 	if req.Schedule == "" {
 		req.Schedule = "0 2 * * *"

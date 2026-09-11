@@ -151,7 +151,7 @@ func TestQASessionCRUD(t *testing.T) {
 		ID: "repo-1", Name: "R1", GitURL: "u", Branch: "b", LocalPath: "p", Schedule: "s", Status: "active",
 	})
 
-	err := database.CreateQASession("repo-1", "user-alice", "What is OpenWiki?", "OpenWiki is a wiki tool.")
+	err := database.CreateQASession("sess-123", "repo-1", "user-alice", "What is OpenWiki?", "OpenWiki is a wiki tool.")
 	if err != nil {
 		t.Fatalf("CreateQASession failed: %v", err)
 	}

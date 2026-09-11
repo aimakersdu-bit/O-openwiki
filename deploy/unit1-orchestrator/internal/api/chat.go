@@ -89,3 +89,76 @@ func (s *Server) handleQAHistory(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(sessions)
 }
+
+// handleUserQASessions returns session summaries for a given user and repo.
+func (s *Server) handleUserQASessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		s.handleDeleteQASession(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	repoID := r.URL.Query().Get("repo_id")
+	userID := r.URL.Query().Get("user_id")
+
+	if repoID == "" || userID == "" {
+		http.Error(w, "repo_id and user_id are required", http.StatusBadRequest)
+		return
+	}
+
+	sessions, err := db.ListUserQASessions(repoID, userID, 50)
+	if err != nil {
+		http.Error(w, "Failed to query user QA sessions: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(sessions)
+}
+
+// handleQAMessages returns chronological messages for a specific session_id.
+func (s *Server) handleQAMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sessionID := r.URL.Query().Get("session_id")
+	userID := r.URL.Query().Get("user_id")
+
+	if sessionID == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+
+	messages, err := db.GetQASessionMessages(sessionID, userID)
+	if err != nil {
+		http.Error(w, "Failed to query QA messages: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(messages)
+}
+
+// handleDeleteQASession deletes a specific session and its messages.
+func (s *Server) handleDeleteQASession(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session_id")
+	userID := r.URL.Query().Get("user_id")
+
+	if sessionID == "" || userID == "" {
+		http.Error(w, "session_id and user_id are required", http.StatusBadRequest)
+		return
+	}
+
+	if err := db.DeleteQASession(sessionID, userID); err != nil {
+		http.Error(w, "Failed to delete QA session: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"success":true}`))
+}

@@ -41,6 +41,8 @@ func (s *Server) routes() {
 	// Portal data APIs
 	s.mux.HandleFunc("/portal/repos", s.handleRepos)
 	s.mux.HandleFunc("/portal/sessions", s.handleSessions)
+	s.mux.HandleFunc("/portal/qa/sessions", s.handleQASessions)
+	s.mux.HandleFunc("/portal/qa/messages", s.handleQAMessages)
 	s.mux.HandleFunc("/portal/build/trigger", s.handleBuildTrigger)
 	s.mux.HandleFunc("/portal/audit", s.handleAudit)
 

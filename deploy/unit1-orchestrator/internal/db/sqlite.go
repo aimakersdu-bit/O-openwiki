@@ -109,23 +109,34 @@ func GetLatestBuilds(repoID string, limit int) ([]Build, error) {
 	return globalDB.ListBuilds(repoID, limit)
 }
 
-func RecordQASession(repoID, userID, question, answer string) error {
-	return globalDB.CreateQASession(repoID, userID, question, answer)
+func RecordQASession(sessionID, repoID, userID, question, answer string) error {
+	return globalDB.CreateQASession(sessionID, repoID, userID, question, answer)
 }
 
 func ListQASessions(repoID, userID string, limit int) ([]QASession, error) {
 	return globalDB.ListQASessions(repoID, userID, limit)
 }
 
+func ListUserQASessions(repoID, userID string, limit int) ([]QASessionSummary, error) {
+	return globalDB.ListUserQASessions(repoID, userID, limit)
+}
+
+func GetQASessionMessages(sessionID, userID string) ([]QASession, error) {
+	return globalDB.GetQASessionMessages(sessionID, userID)
+}
+
+func DeleteQASession(sessionID, userID string) error {
+	return globalDB.DeleteQASession(sessionID, userID)
+}
 
 // migrate creates all required tables if they do not exist.
 func (db *DB) migrate() error {
-	migrations := []string{
+	tables := []string{
 		`CREATE TABLE IF NOT EXISTS repos (
 			id          TEXT PRIMARY KEY,
 			name        TEXT NOT NULL,
 			git_url     TEXT NOT NULL,
-			branch      TEXT NOT NULL DEFAULT 'master',
+			branch      TEXT NOT NULL DEFAULT 'main',
 			local_path  TEXT NOT NULL,
 			wiki_dir    TEXT,
 			static_dir  TEXT,
@@ -146,21 +157,36 @@ func (db *DB) migrate() error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS qa_sessions (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id  TEXT,
 			repo_id     TEXT NOT NULL REFERENCES repos(id),
 			user_id     TEXT NOT NULL,
 			question    TEXT NOT NULL,
 			answer      TEXT,
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_builds_repo ON builds(repo_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_qa_repo_user ON qa_sessions(repo_id, user_id)`,
 	}
 
-	for _, m := range migrations {
-		if _, err := db.conn.Exec(m); err != nil {
-			return fmt.Errorf("exec migration: %w", err)
+	for _, t := range tables {
+		if _, err := db.conn.Exec(t); err != nil {
+			return fmt.Errorf("exec table creation: %w", err)
 		}
 	}
+
+	// Try adding session_id column if table existed without it
+	db.conn.Exec(`ALTER TABLE qa_sessions ADD COLUMN session_id TEXT`)
+
+	indices := []string{
+		`CREATE INDEX IF NOT EXISTS idx_builds_repo ON builds(repo_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_qa_repo_user ON qa_sessions(repo_id, user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_qa_session_id ON qa_sessions(session_id)`,
+	}
+
+	for _, idx := range indices {
+		if _, err := db.conn.Exec(idx); err != nil {
+			return fmt.Errorf("exec index creation: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -328,6 +354,7 @@ func (db *DB) ListBuilds(repoID string, limit int) ([]Build, error) {
 // QASession represents a single Q&A exchange.
 type QASession struct {
 	ID        int64  `json:"id"`
+	SessionID string `json:"session_id"`
 	RepoID    string `json:"repo_id"`
 	UserID    string `json:"user_id"`
 	Question  string `json:"question"`
@@ -335,16 +362,30 @@ type QASession struct {
 	CreatedAt string `json:"created_at"`
 }
 
+type QASessionSummary struct {
+	SessionID    string `json:"session_id"`
+	RepoID       string `json:"repo_id"`
+	UserID       string `json:"user_id"`
+	Title        string `json:"title"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+	MessageCount int    `json:"message_count"`
+}
+
 // CreateQASession records a Q&A exchange.
-func (db *DB) CreateQASession(repoID, userID, question, answer string) error {
-	_, err := db.conn.Exec(`INSERT INTO qa_sessions (repo_id, user_id, question, answer)
-		VALUES (?, ?, ?, ?)`, repoID, userID, question, answer)
+func (db *DB) CreateQASession(sessionID, repoID, userID, question, answer string) error {
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("sess_%d", time.Now().UnixNano())
+	}
+	timeStr := time.Now().Local().Format("2006-01-02 15:04:05")
+	_, err := db.conn.Exec(`INSERT INTO qa_sessions (session_id, repo_id, user_id, question, answer, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, sessionID, repoID, userID, question, answer, timeStr)
 	return err
 }
 
 // ListQASessions returns Q&A history for a user in a repo.
 func (db *DB) ListQASessions(repoID, userID string, limit int) ([]QASession, error) {
-	rows, err := db.conn.Query(`SELECT id, repo_id, user_id, question, COALESCE(answer,''), created_at
+	rows, err := db.conn.Query(`SELECT id, COALESCE(session_id,''), repo_id, user_id, question, COALESCE(answer,''), created_at
 		FROM qa_sessions WHERE repo_id = ? AND user_id = ? ORDER BY id DESC LIMIT ?`,
 		repoID, userID, limit)
 	if err != nil {
@@ -355,10 +396,85 @@ func (db *DB) ListQASessions(repoID, userID string, limit int) ([]QASession, err
 	var sessions []QASession
 	for rows.Next() {
 		var s QASession
-		if err := rows.Scan(&s.ID, &s.RepoID, &s.UserID, &s.Question, &s.Answer, &s.CreatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.SessionID, &s.RepoID, &s.UserID, &s.Question, &s.Answer, &s.CreatedAt); err != nil {
 			return nil, err
 		}
 		sessions = append(sessions, s)
 	}
 	return sessions, rows.Err()
+}
+
+// ListUserQASessions returns session summaries for a user in a repo.
+func (db *DB) ListUserQASessions(repoID, userID string, limit int) ([]QASessionSummary, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	query := `
+		SELECT 
+			COALESCE(session_id, printf('legacy_%d', id)) as sess_id,
+			repo_id,
+			user_id,
+			MIN(question) as first_question,
+			MIN(created_at) as first_created,
+			MAX(created_at) as last_created,
+			COUNT(id) as msg_count
+		FROM qa_sessions 
+		WHERE repo_id = ? AND user_id = ? 
+		GROUP BY sess_id
+		ORDER BY last_created DESC 
+		LIMIT ?
+	`
+	rows, err := db.conn.Query(query, repoID, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var summaries []QASessionSummary
+	for rows.Next() {
+		var s QASessionSummary
+		if err := rows.Scan(&s.SessionID, &s.RepoID, &s.UserID, &s.Title, &s.CreatedAt, &s.UpdatedAt, &s.MessageCount); err != nil {
+			return nil, err
+		}
+		if len([]rune(s.Title)) > 30 {
+			s.Title = string([]rune(s.Title)[:30]) + "..."
+		}
+		summaries = append(summaries, s)
+	}
+	return summaries, rows.Err()
+}
+
+// GetQASessionMessages returns all Q&A messages for a specific session_id in chronological order.
+func (db *DB) GetQASessionMessages(sessionID, userID string) ([]QASession, error) {
+	var rows *sql.Rows
+	var err error
+	if userID != "" {
+		query := `SELECT id, COALESCE(session_id,''), repo_id, user_id, question, COALESCE(answer,''), created_at
+			FROM qa_sessions WHERE (session_id = ? OR (session_id IS NULL AND printf('legacy_%d', id) = ?)) AND user_id = ? ORDER BY id ASC`
+		rows, err = db.conn.Query(query, sessionID, sessionID, userID)
+	} else {
+		query := `SELECT id, COALESCE(session_id,''), repo_id, user_id, question, COALESCE(answer,''), created_at
+			FROM qa_sessions WHERE session_id = ? OR (session_id IS NULL AND printf('legacy_%d', id) = ?) ORDER BY id ASC`
+		rows, err = db.conn.Query(query, sessionID, sessionID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []QASession
+	for rows.Next() {
+		var s QASession
+		if err := rows.Scan(&s.ID, &s.SessionID, &s.RepoID, &s.UserID, &s.Question, &s.Answer, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		messages = append(messages, s)
+	}
+	return messages, rows.Err()
+}
+
+// DeleteQASession deletes a session and its messages.
+func (db *DB) DeleteQASession(sessionID, userID string) error {
+	_, err := db.conn.Exec(`DELETE FROM qa_sessions WHERE (session_id = ? OR printf('legacy_%d', id) = ?) AND user_id = ?`, sessionID, sessionID, userID)
+	return err
 }

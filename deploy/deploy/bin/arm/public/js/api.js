@@ -68,12 +68,39 @@ window.API = {
     return await res.json();
   },
 
-  // Fetch QA Chat History
+  // Fetch QA Chat Log History (for Audit Page history.html)
   async getQASessions(repoID) {
     const res = await fetch(`/portal/sessions?repo_id=${encodeURIComponent(repoID)}`);
     if (!res.ok) throw new Error('无法获取问答历史 (' + res.status + ')');
     return await res.json();
   },
+
+  // Fetch user QA sessions for a repo
+  async getUserQASessions(repoID) {
+    const res = await fetch(`/portal/qa/sessions?repo_id=${encodeURIComponent(repoID)}`);
+    if (!res.ok) throw new Error('无法获取历史会话列表 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // Fetch messages for a specific QA session
+  async getQASessionMessages(sessionId) {
+    const res = await fetch(`/portal/qa/messages?session_id=${encodeURIComponent(sessionId)}`);
+    if (!res.ok) throw new Error('无法获取会话消息历史 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // Delete a specific QA session
+  async deleteQASession(sessionId) {
+    const res = await fetch(`/portal/qa/sessions?session_id=${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || '删除会话失败');
+    }
+    return await res.json();
+  },
+
 
   // Format timestamp into local YYYY-MM-DD HH:mm:ss
   formatDate(dateStr) {
