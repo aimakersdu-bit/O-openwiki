@@ -302,6 +302,7 @@ input:focus, select:focus, textarea:focus {
 .data-table th, .data-table td {
   padding: 0.85rem 1rem;
   text-align: left;
+  vertical-align: middle;
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -310,14 +311,34 @@ input:focus, select:focus, textarea:focus {
   color: var(--text-secondary);
   font-size: 0.85rem;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .data-table td {
   font-size: 0.9rem;
 }
 
+.data-table td code {
+  white-space: normal;
+  word-break: break-all;
+  max-width: 320px;
+  display: inline-block;
+}
+
 .data-table tr:hover td {
   background: var(--bg-card-hover);
+}
+
+.data-table .col-nowrap {
+  white-space: nowrap;
+}
+
+.data-table .col-center {
+  text-align: center;
+}
+
+.data-table .col-right {
+  text-align: right;
 }
 
 /* Chat Drawer Resizer Handle */
