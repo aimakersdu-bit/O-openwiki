@@ -1,16 +1,30 @@
+# 百信 RepoWiki Portal (Unit 2) 标准配置文件
 port: 8080
 db_path: "portal.db"
 orchestrator_url: "http://127.0.0.1:3000"
 session_ttl_hours: 24
 
+# LDAP / AD 认证配置
 ldap:
   enabled: true
-  url: "mock" # 生产环境设为: "ldap://172.20.2.137:389"
+  # 💡 切换模式：
+  # - 本地开发/测试 Mock 模式: 设置 url: "mock"
+  # - 生产 LDAP/AD 模式: 设置 url: "ldap://:389"
+  url: "mock"
   user_dn_format: "%s@oa.bx"
   bind_dn: "baixin_coder@oa.bx"
-  bind_password: "8dErNZ8@"
+  bind_password: ""
   base_dn: "OU=中信百信银行,DC=oa,DC=bx"
   user_search_filter: "(&(objectCategory=person)(objectClass=user)(|(userPrincipalName={username})(sAMAccountName={username})))"
   username_attribute: "cn"
   email_attribute: "mail"
   display_name_attribute: "displayName"
+  user_status_attribute: "userAccountControl"
+  insecure_skip_verify: true
+
+# 系统管理员配置 (拥有仓库运维与构建管理权限的用户列表)
+auth:
+  admin_users:
+    - "admin"
+    - "bigc"
+    - "cuixiang"
