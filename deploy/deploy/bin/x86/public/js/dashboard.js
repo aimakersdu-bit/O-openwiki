@@ -32,13 +32,32 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      repoList.innerHTML = repos.map(repo => `
+      // Fetch latest build status for each repo to filter only successfully built repos
+      const buildPromises = repos.map(r => API.getBuildHistory(r.id).catch(() => []));
+      const buildsList = await Promise.all(buildPromises);
+
+      const successfulRepos = repos.filter((repo, i) => {
+        const builds = buildsList[i] || [];
+        return builds.length > 0 && builds[0].status === 'success';
+      });
+
+      if (successfulRepos.length === 0) {
+        repoList.innerHTML = `
+          <div class="card" style="grid-column: 1 / -1; text-align: center; padding: 3rem;">
+            <p style="color: var(--text-secondary); margin-bottom: 1rem;">暂无已完成构建的 Wiki 仓库。</p>
+            <a href="admin.html" class="btn btn-primary">⚡ 前往【仓库运维与构建】发起构建</a>
+          </div>
+        `;
+        return;
+      }
+
+      repoList.innerHTML = successfulRepos.map(repo => `
         <div class="repo-card">
           <div>
             <div class="repo-title">${API.escapeHTML(repo.name)} <span class="badge">${API.escapeHTML(repo.branch)}</span></div>
             <div class="repo-meta">
-              <div>Git: <code>${API.escapeHTML(repo.git_url)}</code></div>
-              <div>状态: <span style="color: ${repo.status === 'active' ? 'var(--success-color)' : 'var(--error-color)'}">${API.escapeHTML(repo.status)}</span></div>
+              <div>仓库标识: <code>${API.escapeHTML(repo.id)}</code></div>
+              <div>状态: <span style="color: var(--success-color);">✅ 已构建完成</span></div>
             </div>
           </div>
           <div class="repo-actions">
