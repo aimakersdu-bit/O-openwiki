@@ -56,13 +56,32 @@ try {
   console.error(`[QA-Daemon] Failed to change cwd to ${repoDir}:`, err);
 }
 
+import { execSync } from 'node:child_process';
+
 // 2. Dynamically import runOpenWikiAgent
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let agentModulePath = '';
 
+let globalNpmDist = '';
+try {
+  const globalRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
+  if (globalRoot) {
+    globalNpmDist = path.join(globalRoot, 'openwiki', 'dist', 'agent', 'index.js');
+  }
+} catch (e) {}
+
+let requireResolved = '';
+try {
+  const req = createRequire(import.meta.url);
+  requireResolved = req.resolve('openwiki/dist/agent/index.js');
+} catch (e) {}
+
 const candidates = [
   process.env.OPENWIKI_DIST_DIR ? path.join(process.env.OPENWIKI_DIST_DIR, 'agent', 'index.js') : '',
+  requireResolved,
+  globalNpmDist,
   path.resolve(__dirname, '../../../dist/agent/index.js'),
+  path.resolve(__dirname, '../../dist/agent/index.js'),
   path.resolve(repoDir, 'node_modules/openwiki/dist/agent/index.js'),
   path.resolve('/app/dist/agent/index.js')
 ].filter(Boolean);

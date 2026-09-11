@@ -99,5 +99,26 @@ window.API = {
   // Helper for escaping HTML special characters
   escapeHTML(str) {
     return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  },
+
+  // Helper for rendering Markdown text to HTML
+  renderMarkdown(str) {
+    if (!str) return '';
+    if (typeof window.marked !== 'undefined' && typeof window.marked.parse === 'function') {
+      try {
+        return window.marked.parse(str);
+      } catch (e) {
+        console.warn('marked parsing error:', e);
+      }
+    }
+    // Fallback simple renderer
+    const escaped = this.escapeHTML(str);
+    return escaped
+      .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+      .replace(/^## (.*$)/gim, '<h2>$1</h2>')
+      .replace(/^# (.*$)/gim, '<h1>$1</h1>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\n/g, '<br>');
   }
 };

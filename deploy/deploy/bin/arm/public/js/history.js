@@ -43,11 +43,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             <span>提问用户: <strong style="color:var(--text-primary);">${API.escapeHTML(sess.user_id)}</strong></span>
             <span>提问时间: ${API.formatDate(sess.created_at)}</span>
           </div>
-          <div style="font-weight:600; color:var(--accent-color); margin-bottom:0.5rem;">
+          <div style="font-weight:600; color:var(--accent-color); margin-bottom:0.75rem;">
             ❓ 问题: ${API.escapeHTML(sess.question)}
           </div>
-          <div style="background:#1e293b; border-radius:8px; padding:1rem; font-size:0.9rem; white-space:pre-wrap; font-family:monospace; color:var(--text-primary); max-height:240px; overflow-y:auto;">
-${API.escapeHTML(sess.answer || '无回答内容')}
+          <div class="bot-content-text" style="background:#1e293b; border-radius:8px; padding:1rem; font-size:0.95rem; color:var(--text-primary); max-height:360px; overflow-y:auto;">
+            ${API.renderMarkdown(sess.answer || '无回答内容')}
           </div>
         </div>
       `).join('');

@@ -54,6 +54,7 @@ type BuildResult struct {
 //  2. Export graph.json via buildGraph()
 //  3. Copy visualizer frontend assets (PAGE HTML + client.js + client-lib.js)
 //  4. Copy pre-downloaded vendor/ libraries for intranet offline use
+//
 // logStep prints to console log and appends to in-memory log buffer, triggering onProgress if provided.
 func (b *Builder) logStep(repoID, msg string, logBuf *strings.Builder, onProgress ...func(string)) {
 	log.Printf("[build][%s] %s", repoID, msg)

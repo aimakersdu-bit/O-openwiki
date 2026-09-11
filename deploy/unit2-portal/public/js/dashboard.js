@@ -89,6 +89,61 @@ document.addEventListener('DOMContentLoaded', async () => {
   refreshBtn.addEventListener('click', loadRepos);
   loadRepos();
 
+  // Chat Drawer Resizer Drag Logic
+  const chatResizer = document.getElementById('chatResizer');
+  let isResizing = false;
+
+  // Restore saved width from localStorage
+  const savedWidth = localStorage.getItem('chatDrawerWidth');
+  if (savedWidth) {
+    const parsedW = parseInt(savedWidth, 10);
+    if (!isNaN(parsedW)) {
+      const clampedW = Math.min(Math.max(parsedW, 360), Math.floor(window.innerWidth * 0.85));
+      chatDrawer.style.width = clampedW + 'px';
+    }
+  }
+
+  if (chatResizer) {
+    chatResizer.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      isResizing = true;
+      chatResizer.classList.add('dragging');
+      document.body.style.cursor = 'ew-resize';
+      document.body.style.userSelect = 'none';
+
+      const startX = e.clientX;
+      const startWidth = chatDrawer.offsetWidth;
+
+      function onMouseMove(moveEvent) {
+        if (!isResizing) return;
+        const deltaX = startX - moveEvent.clientX; // Dragging left increases drawer width
+        let newWidth = startWidth + deltaX;
+        const minW = 360;
+        const maxW = Math.floor(window.innerWidth * 0.85);
+
+        if (newWidth < minW) newWidth = minW;
+        if (newWidth > maxW) newWidth = maxW;
+
+        chatDrawer.style.width = newWidth + 'px';
+      }
+
+      function onMouseUp() {
+        if (isResizing) {
+          isResizing = false;
+          chatResizer.classList.remove('dragging');
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+          localStorage.setItem('chatDrawerWidth', chatDrawer.offsetWidth);
+          window.removeEventListener('mousemove', onMouseMove);
+          window.removeEventListener('mouseup', onMouseUp);
+        }
+      }
+
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup', onMouseUp);
+    });
+  }
+
   // Chat Drawer Logic
   function openChat(repoId, repoName) {
     activeRepo = { id: repoId, name: repoName };
@@ -149,6 +204,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
+      let fullMarkdown = '';
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
@@ -197,14 +253,17 @@ document.addEventListener('DOMContentLoaded', async () => {
               const textChunk = (parsedData && typeof parsedData === 'object' && parsedData.text !== undefined)
                 ? parsedData.text
                 : (typeof parsedData === 'string' ? parsedData : '');
-              contentDiv.textContent += textChunk;
+              fullMarkdown += textChunk;
+              contentDiv.innerHTML = API.renderMarkdown(fullMarkdown);
               chatMessages.scrollTop = chatMessages.scrollHeight;
             } else if (currentEvent === 'done') {
               statusDiv.style.display = 'none';
+              contentDiv.innerHTML = API.renderMarkdown(fullMarkdown);
             } else if (currentEvent === 'error') {
               statusDiv.style.display = 'none';
               const errMsg = (parsedData && parsedData.error) || rawData;
-              contentDiv.textContent += `\n[错误: ${errMsg}]`;
+              fullMarkdown += `\n\n**[错误: ${errMsg}]**`;
+              contentDiv.innerHTML = API.renderMarkdown(fullMarkdown);
             } else {
               // Standard or legacy plaintext streaming fallback
               const textChunk = (parsedData && typeof parsedData === 'object' && parsedData.text !== undefined)
@@ -212,7 +271,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 : (typeof parsedData === 'string' ? parsedData : (rawData ? rawData + '\n' : ''));
               if (textChunk) {
                 statusDiv.style.display = 'none';
-                contentDiv.textContent += textChunk;
+                fullMarkdown += textChunk;
+                contentDiv.innerHTML = API.renderMarkdown(fullMarkdown);
                 chatMessages.scrollTop = chatMessages.scrollHeight;
               }
             }
@@ -221,7 +281,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     } catch (err) {
       statusDiv.style.display = 'none';
-      contentDiv.textContent += '\n[连接出错: ' + err.message + ']';
+      fullMarkdown += '\n\n**[连接出错: ' + err.message + ']**';
+      contentDiv.innerHTML = API.renderMarkdown(fullMarkdown);
     }
   }
 
