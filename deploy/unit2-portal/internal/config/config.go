@@ -28,6 +28,7 @@ type Config struct {
 		UsernameAttribute    string `yaml:"username_attribute"`     // e.g. cn
 		EmailAttribute       string `yaml:"email_attribute"`        // e.g. mail
 		DisplayNameAttribute string `yaml:"display_name_attribute"` // e.g. displayName
+		UserStatusAttribute  string `yaml:"user_status_attribute"`  // e.g. userAccountControl
 		InsecureSkip         bool   `yaml:"insecure_skip_verify"`
 	} `yaml:"ldap"`
 
