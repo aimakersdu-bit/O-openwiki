@@ -383,11 +383,19 @@ func (db *DB) CreateQASession(sessionID, repoID, userID, question, answer string
 	return err
 }
 
-// ListQASessions returns Q&A history for a user in a repo.
+// ListQASessions returns Q&A history for a user in a repo, or all users if userID is empty.
 func (db *DB) ListQASessions(repoID, userID string, limit int) ([]QASession, error) {
-	rows, err := db.conn.Query(`SELECT id, COALESCE(session_id,''), repo_id, user_id, question, COALESCE(answer,''), created_at
-		FROM qa_sessions WHERE repo_id = ? AND user_id = ? ORDER BY id DESC LIMIT ?`,
-		repoID, userID, limit)
+	var rows *sql.Rows
+	var err error
+	if userID != "" {
+		rows, err = db.conn.Query(`SELECT id, COALESCE(session_id,''), repo_id, user_id, question, COALESCE(answer,''), created_at
+			FROM qa_sessions WHERE repo_id = ? AND user_id = ? ORDER BY id DESC LIMIT ?`,
+			repoID, userID, limit)
+	} else {
+		rows, err = db.conn.Query(`SELECT id, COALESCE(session_id,''), repo_id, user_id, question, COALESCE(answer,''), created_at
+			FROM qa_sessions WHERE repo_id = ? ORDER BY id DESC LIMIT ?`,
+			repoID, limit)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -404,27 +412,48 @@ func (db *DB) ListQASessions(repoID, userID string, limit int) ([]QASession, err
 	return sessions, rows.Err()
 }
 
-// ListUserQASessions returns session summaries for a user in a repo.
+// ListUserQASessions returns session summaries for a user in a repo, or all users if userID is empty.
 func (db *DB) ListUserQASessions(repoID, userID string, limit int) ([]QASessionSummary, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	query := `
-		SELECT 
-			COALESCE(session_id, printf('legacy_%d', id)) as sess_id,
-			repo_id,
-			user_id,
-			MIN(question) as first_question,
-			MIN(created_at) as first_created,
-			MAX(created_at) as last_created,
-			COUNT(id) as msg_count
-		FROM qa_sessions 
-		WHERE repo_id = ? AND user_id = ? 
-		GROUP BY sess_id
-		ORDER BY last_created DESC 
-		LIMIT ?
-	`
-	rows, err := db.conn.Query(query, repoID, userID, limit)
+	var rows *sql.Rows
+	var err error
+	if userID != "" {
+		query := `
+			SELECT 
+				COALESCE(session_id, printf('legacy_%d', id)) as sess_id,
+				repo_id,
+				user_id,
+				MIN(question) as first_question,
+				MIN(created_at) as first_created,
+				MAX(created_at) as last_created,
+				COUNT(id) as msg_count
+			FROM qa_sessions 
+			WHERE repo_id = ? AND user_id = ? 
+			GROUP BY sess_id
+			ORDER BY last_created DESC 
+			LIMIT ?
+		`
+		rows, err = db.conn.Query(query, repoID, userID, limit)
+	} else {
+		query := `
+			SELECT 
+				COALESCE(session_id, printf('legacy_%d', id)) as sess_id,
+				repo_id,
+				user_id,
+				MIN(question) as first_question,
+				MIN(created_at) as first_created,
+				MAX(created_at) as last_created,
+				COUNT(id) as msg_count
+			FROM qa_sessions 
+			WHERE repo_id = ? 
+			GROUP BY sess_id
+			ORDER BY last_created DESC 
+			LIMIT ?
+		`
+		rows, err = db.conn.Query(query, repoID, limit)
+	}
 	if err != nil {
 		return nil, err
 	}

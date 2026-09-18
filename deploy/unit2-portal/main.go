@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -37,8 +38,29 @@ func main() {
 	defer db.CloseDB()
 	log.Printf("Portal database initialized at %s", cfg.DBPath)
 
-	// Create file server handler for static frontend
-	publicFS := http.FileServer(http.Dir(*publicDir))
+	// Resolve public static frontend directory dynamically with fallback candidates
+	publicPath := *publicDir
+	if _, err := os.Stat(filepath.Join(publicPath, "login.html")); os.IsNotExist(err) {
+		execPath, _ := os.Executable()
+		execDir := filepath.Dir(execPath)
+		cwd, _ := os.Getwd()
+
+		candidates := []string{
+			filepath.Join(cwd, "deploy", "unit2-portal", "public"),
+			filepath.Join(cwd, "unit2-portal", "public"),
+			filepath.Join(execDir, "public"),
+			filepath.Join(execDir, "..", "unit2-portal", "public"),
+			filepath.Join(execDir, "..", "public"),
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(filepath.Join(c, "login.html")); err == nil {
+				publicPath = c
+				break
+			}
+		}
+	}
+	log.Printf("Portal serving static web assets from: %s", publicPath)
+	publicFS := http.FileServer(http.Dir(publicPath))
 
 	// Create Portal API server
 	server := api.NewServer(cfg, publicFS)
