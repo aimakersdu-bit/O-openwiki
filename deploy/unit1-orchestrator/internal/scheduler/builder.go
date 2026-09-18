@@ -280,10 +280,21 @@ func (b *Builder) copyVisualizerAssets(staticDir string, log *strings.Builder) e
 	}
 
 	distViz := filepath.Join(b.OpenwikiDistDir, "visualize")
+	assetsDir := filepath.Dir(b.VendorAssetsDir)
+
+	clientSrc := filepath.Join(assetsDir, "client.js")
+	if _, err := os.Stat(clientSrc); os.IsNotExist(err) {
+		clientSrc = filepath.Join(distViz, "client.js")
+	}
+
+	clientLibSrc := filepath.Join(assetsDir, "client-lib.js")
+	if _, err := os.Stat(clientLibSrc); os.IsNotExist(err) {
+		clientLibSrc = filepath.Join(distViz, "client-lib.js")
+	}
 
 	assets := map[string]string{
-		"client.js":     filepath.Join(distViz, "client.js"),
-		"client-lib.js": filepath.Join(distViz, "client-lib.js"),
+		"client.js":     clientSrc,
+		"client-lib.js": clientLibSrc,
 	}
 
 	for name, src := range assets {
