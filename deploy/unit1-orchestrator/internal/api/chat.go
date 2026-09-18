@@ -63,6 +63,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			logPrintf("Chat streaming error for repo %s: %v", req.RepoID, err)
 		}
 	}
+
+	// Asynchronously re-export graph and notify visualizer SSE clients if wiki docs were updated
+	go func() {
+		if s.scheduler != nil && s.scheduler.GetBuilder() != nil {
+			wikiDir := repo.WikiDir
+			if wikiDir == "" {
+				wikiDir = repo.LocalPath + "/openwiki"
+			}
+			if err := s.scheduler.GetBuilder().ExportActiveGraph(repo.ID, wikiDir); err == nil {
+				s.BroadcastReload()
+			}
+		}
+	}()
 }
 
 // handleQAHistory returns historical Q&A sessions for a given user and repo.
@@ -104,8 +117,8 @@ func (s *Server) handleUserQASessions(w http.ResponseWriter, r *http.Request) {
 	repoID := r.URL.Query().Get("repo_id")
 	userID := r.URL.Query().Get("user_id")
 
-	if repoID == "" || userID == "" {
-		http.Error(w, "repo_id and user_id are required", http.StatusBadRequest)
+	if repoID == "" {
+		http.Error(w, "repo_id is required", http.StatusBadRequest)
 		return
 	}
 

@@ -33,6 +33,11 @@ func NewScheduler(builder *Builder) *Scheduler {
 	}
 }
 
+// GetBuilder returns the Scheduler's builder instance.
+func (s *Scheduler) GetBuilder() *Builder {
+	return s.builder
+}
+
 // New creates a new Scheduler with explicit database and builder.
 func New(database *db.DB, builder *Builder) *Scheduler {
 	return &Scheduler{

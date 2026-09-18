@@ -55,6 +55,8 @@ cat <<EOF > "$TMP_DIR/portal-config.yaml"
 port: $PORTAL_PORT
 db_path: "$TMP_DIR/portal.db"
 orchestrator_url: "http://localhost:$ORCH_PORT"
+auth:
+  admin_users: ["e2e_user"]
 ldap:
   url: "mock"
 EOF

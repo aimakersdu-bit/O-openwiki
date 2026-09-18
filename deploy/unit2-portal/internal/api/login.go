@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/openwiki/portal/internal/auth"
 	"github.com/openwiki/portal/internal/db"
@@ -32,7 +33,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	userInfo, err := auth.Authenticate(s.config, req.Username, req.Password)
 	if err != nil {
-		http.Error(w, "Authentication failed: "+err.Error(), http.StatusUnauthorized)
+		msg := "用户名或密码错误，请重试"
+		errStr := err.Error()
+		if strings.Contains(errStr, "connect") || strings.Contains(errStr, "dial") || strings.Contains(errStr, "timeout") {
+			msg = "AD 域认证服务连接超时/失败，请联系系统管理员"
+		} else if strings.Contains(errStr, "disabled") {
+			msg = "该 AD 域账号已被禁用，请联系系统管理员"
+		} else if strings.Contains(errStr, "required") {
+			msg = "请输入账号和密码"
+		}
+		http.Error(w, msg, http.StatusUnauthorized)
 		return
 	}
 

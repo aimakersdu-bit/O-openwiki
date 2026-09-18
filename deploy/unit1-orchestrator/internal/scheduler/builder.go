@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Builder handles the openwiki update and static export process for a single repo.
@@ -175,8 +176,15 @@ func (b *Builder) BuildRepo(repoID, repoPath, wikiDir string, onProgress ...func
 		wikiDir = filepath.Join(repoPath, "openwiki")
 	}
 
-	// Resolve static output directory for this repo
-	staticDir := filepath.Join(b.StaticOutputDir, repoID)
+	// Resolve static output directory for this repo, and create a staging directory for zero-downtime atomic swap
+	finalStaticDir := filepath.Join(b.StaticOutputDir, repoID)
+	stagingDir := filepath.Join(b.StaticOutputDir, fmt.Sprintf("%s_tmp_%d", repoID, time.Now().UnixNano()))
+	defer func() {
+		// Clean up staging directory if it still exists (e.g. on build failure)
+		if _, err := os.Stat(stagingDir); err == nil {
+			os.RemoveAll(stagingDir)
+		}
+	}()
 
 	// Step 0: Check if .openwiki exists; if not, run openwiki init first
 	openwikiDir := filepath.Join(repoPath, ".openwiki")
@@ -217,29 +225,54 @@ func (b *Builder) BuildRepo(repoID, repoPath, wikiDir string, onProgress ...func
 	head, _ := GitCurrentHead(repoPath)
 	result.GitHead = head
 
-	// Step 2: Export graph.json
+	// Step 2: Export graph.json into staging directory
 	b.logStep(repoID, "=== Step 2: Export graph.json ===", &logBuf, onProgress...)
-	if err := b.exportGraph(wikiDir, staticDir, &logBuf); err != nil {
+	if err := b.exportGraph(wikiDir, stagingDir, &logBuf); err != nil {
 		b.logStep(repoID, fmt.Sprintf("graph export failed: %v", err), &logBuf, onProgress...)
 		// Non-fatal: continue with other steps
 	} else {
 		b.logStep(repoID, "graph.json exported successfully", &logBuf, onProgress...)
 	}
 
-	// Step 3: Copy visualizer frontend assets
+	// Step 3: Copy visualizer frontend assets into staging directory
 	b.logStep(repoID, "=== Step 3: Copy visualizer assets ===", &logBuf, onProgress...)
-	if err := b.copyVisualizerAssets(staticDir, &logBuf); err != nil {
+	if err := b.copyVisualizerAssets(stagingDir, &logBuf); err != nil {
 		b.logStep(repoID, fmt.Sprintf("copy visualizer assets failed: %v", err), &logBuf, onProgress...)
 	} else {
 		b.logStep(repoID, "visualizer assets copied successfully", &logBuf, onProgress...)
 	}
 
-	// Step 4: Copy vendor libraries (intranet offline)
+	// Step 4: Copy vendor libraries (intranet offline) into staging directory
 	b.logStep(repoID, "=== Step 4: Copy vendor libraries ===", &logBuf, onProgress...)
-	if err := b.copyVendorAssets(staticDir, &logBuf); err != nil {
+	if err := b.copyVendorAssets(stagingDir, &logBuf); err != nil {
 		b.logStep(repoID, fmt.Sprintf("copy vendor assets failed: %v", err), &logBuf, onProgress...)
 	} else {
 		b.logStep(repoID, "vendor libraries copied successfully", &logBuf, onProgress...)
+	}
+
+	// Step 5: Atomic Directory Swap (Zero-Downtime Release)
+	b.logStep(repoID, "=== Step 5: Atomic directory swap ===", &logBuf, onProgress...)
+	if err := os.MkdirAll(b.StaticOutputDir, 0755); err != nil {
+		b.logStep(repoID, fmt.Sprintf("mkdir static base failed: %v", err), &logBuf, onProgress...)
+	}
+	oldDir := finalStaticDir + "_old"
+	_ = os.RemoveAll(oldDir)
+
+	if _, err := os.Stat(finalStaticDir); err == nil {
+		if err := os.Rename(finalStaticDir, oldDir); err != nil {
+			b.logStep(repoID, fmt.Sprintf("rename active static dir failed: %v", err), &logBuf, onProgress...)
+		}
+	}
+
+	if err := os.Rename(stagingDir, finalStaticDir); err != nil {
+		b.logStep(repoID, fmt.Sprintf("atomic swap staging to final failed: %v", err), &logBuf, onProgress...)
+		// Rollback if rename failed
+		if _, errOld := os.Stat(oldDir); errOld == nil {
+			_ = os.Rename(oldDir, finalStaticDir)
+		}
+	} else {
+		_ = os.RemoveAll(oldDir)
+		b.logStep(repoID, "atomic swap completed successfully", &logBuf, onProgress...)
 	}
 
 	result.Success = true
@@ -280,10 +313,21 @@ func (b *Builder) copyVisualizerAssets(staticDir string, log *strings.Builder) e
 	}
 
 	distViz := filepath.Join(b.OpenwikiDistDir, "visualize")
+	assetsDir := filepath.Dir(b.VendorAssetsDir)
+
+	clientSrc := filepath.Join(assetsDir, "client.js")
+	if _, err := os.Stat(clientSrc); os.IsNotExist(err) {
+		clientSrc = filepath.Join(distViz, "client.js")
+	}
+
+	clientLibSrc := filepath.Join(assetsDir, "client-lib.js")
+	if _, err := os.Stat(clientLibSrc); os.IsNotExist(err) {
+		clientLibSrc = filepath.Join(distViz, "client-lib.js")
+	}
 
 	assets := map[string]string{
-		"client.js":     filepath.Join(distViz, "client.js"),
-		"client-lib.js": filepath.Join(distViz, "client-lib.js"),
+		"client.js":     clientSrc,
+		"client-lib.js": clientLibSrc,
 	}
 
 	for name, src := range assets {
@@ -366,4 +410,11 @@ func copyFile(src, dst string) error {
 
 	_, err = io.Copy(out, in)
 	return err
+}
+
+// ExportActiveGraph re-exports api/graph for the currently active deployed version of a repo (used after QA creates/updates wiki docs).
+func (b *Builder) ExportActiveGraph(repoID, wikiDir string) error {
+	staticDir := filepath.Join(b.StaticOutputDir, repoID)
+	var logBuf strings.Builder
+	return b.exportGraph(wikiDir, staticDir, &logBuf)
 }

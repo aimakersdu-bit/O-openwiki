@@ -37,16 +37,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      // Fetch latest build status for each repo to filter only successfully built repos
+      // Fetch latest build status for each repo to display repos with a successful build history
       const buildPromises = repos.map(r => API.getBuildHistory(r.id).catch(() => []));
       const buildsList = await Promise.all(buildPromises);
 
-      const successfulRepos = repos.filter((repo, i) => {
+      const validRepos = repos.filter((repo, i) => {
         const builds = buildsList[i] || [];
-        return builds.length > 0 && builds[0].status === 'success';
+        return builds.some(b => b.status === 'success');
       });
 
-      if (successfulRepos.length === 0) {
+      if (validRepos.length === 0) {
         repoList.innerHTML = `
           <div class="card" style="grid-column: 1 / -1; text-align: center; padding: 3rem;">
             <p style="color: var(--text-secondary); margin-bottom: 1rem;">暂无已完成构建的 Wiki 仓库。</p>
@@ -56,27 +56,37 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      repoList.innerHTML = successfulRepos.map(repo => `
-        <div class="repo-card">
-          <div>
-            <div class="repo-title">${API.escapeHTML(repo.name)} <span class="badge">${API.escapeHTML(repo.branch)}</span></div>
-            <div class="repo-meta">
-              <div>仓库标识: <code>${API.escapeHTML(repo.id)}</code></div>
-              <div>状态: <span style="color: var(--success-color);">✅ 已构建完成</span></div>
+      repoList.innerHTML = validRepos.map((repo, idx) => {
+        const repoOriginalIndex = repos.findIndex(r => r.id === repo.id);
+        const builds = buildsList[repoOriginalIndex] || [];
+        const latestBuild = builds[0];
+        const isBuilding = latestBuild && (latestBuild.status === 'pending' || latestBuild.status === 'running');
+        const statusHtml = isBuilding
+          ? `<span style="color: var(--accent-color);">⚡ 增量构建中 (Build #${latestBuild.id})...</span>`
+          : `<span style="color: var(--success-color);">✅ 已构建完成</span>`;
+
+        return `
+          <div class="repo-card">
+            <div>
+              <div class="repo-title">${API.escapeHTML(repo.name)} <span class="badge">${API.escapeHTML(repo.branch)}</span></div>
+              <div class="repo-meta">
+                <div>仓库标识: <code>${API.escapeHTML(repo.id)}</code></div>
+                <div>状态: ${statusHtml}</div>
+              </div>
+            </div>
+            <div class="repo-actions">
+              <!-- Nginx Static Wiki Link -->
+              <a href="${repo.wiki_url}" target="_blank" class="btn btn-primary btn-sm">
+                📖 查看 Wiki
+              </a>
+              <!-- QA Chat Drawer -->
+              <button class="btn btn-secondary btn-sm chat-btn" data-id="${repo.id}" data-name="${API.escapeHTML(repo.name)}">
+                💬 AI 问答
+              </button>
             </div>
           </div>
-          <div class="repo-actions">
-            <!-- Nginx Static Wiki Link -->
-            <a href="${repo.wiki_url}" target="_blank" class="btn btn-primary btn-sm">
-              📖 查看 Wiki
-            </a>
-            <!-- QA Chat Drawer -->
-            <button class="btn btn-secondary btn-sm chat-btn" data-id="${repo.id}" data-name="${API.escapeHTML(repo.name)}">
-              💬 AI 问答
-            </button>
-          </div>
-        </div>
-      `).join('');
+        `;
+      }).join('');
 
       // Attach click listeners to chat buttons
       document.querySelectorAll('.chat-btn').forEach(btn => {
@@ -307,7 +317,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   sendChatBtn.addEventListener('click', sendQuestion);
   chatInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.ctrlKey) {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendQuestion();
     }

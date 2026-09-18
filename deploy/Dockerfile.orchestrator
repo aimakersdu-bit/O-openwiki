@@ -39,7 +39,7 @@ ARG TARGETARCH
 COPY bin/${TARGETARCH:-arm}/orchestrator /app/orchestrator
 COPY bin/${TARGETARCH:-arm}/scripts/ /app/scripts/
 COPY bin/${TARGETARCH:-arm}/dist/ /app/dist/
-COPY bin/${TARGETARCH:-arm}/assets/vendor/ /app/assets/vendor/
+COPY bin/${TARGETARCH:-arm}/assets/ /app/assets/
 COPY bin/${TARGETARCH:-arm}/config.json /app/config.json
 
 # 赋予可执行权限

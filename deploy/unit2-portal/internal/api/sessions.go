@@ -56,7 +56,11 @@ func (s *Server) handleQASessions(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "repo_id required", http.StatusBadRequest)
 			return
 		}
-		url := fmt.Sprintf("%s/api/qa/sessions?user_id=%s&repo_id=%s", s.config.OrchestratorURL, session.UserID, repoID)
+		userIDParam := session.UserID
+		if session.Role == "admin" {
+			userIDParam = "" // Admin can view all users' QA audit logs
+		}
+		url := fmt.Sprintf("%s/api/qa/sessions?user_id=%s&repo_id=%s", s.config.OrchestratorURL, userIDParam, repoID)
 		resp, err := s.httpClient.Get(url)
 		if err != nil {
 			http.Error(w, "Failed to connect to orchestrator: "+err.Error(), http.StatusBadGateway)
