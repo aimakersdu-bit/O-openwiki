@@ -412,9 +412,13 @@ function renderMermaid() {
         code.closest("pre")?.replaceWith(pre);
         i++;
     });
-    if (i > 0) {
+    if (i > 0 && typeof mermaid !== "undefined") {
         try {
-            mermaid.run({ nodes: $("#detail").querySelectorAll(".mermaid") });
+            if (typeof mermaid.run === "function") {
+                mermaid.run({ nodes: $("#detail").querySelectorAll(".mermaid") });
+            } else if (typeof mermaid.init === "function") {
+                mermaid.init(undefined, $("#detail").querySelectorAll(".mermaid"));
+            }
         }
         catch {
             // Diagram render failures are non-fatal; leave the source block in place.
@@ -429,10 +433,16 @@ function toggleTheme() {
     const root = document.documentElement;
     const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
     root.setAttribute("data-theme", next);
-    mermaid.initialize({
-        startOnLoad: false,
-        theme: next === "dark" ? "dark" : "neutral",
-    });
+    if (typeof mermaid !== "undefined" && typeof mermaid.initialize === "function") {
+        try {
+            mermaid.initialize({
+                startOnLoad: false,
+                theme: next === "dark" ? "dark" : "neutral",
+            });
+        } catch (e) {
+            console.warn("mermaid initialize failed:", e);
+        }
+    }
     if (G)
         G.backgroundColor(graphBg()); // node/label colors are read live each frame
     if (current)
@@ -551,6 +561,14 @@ function connectSSE() {
 // Wire the theme toggle, configure the markdown/diagram libraries, then do the
 // first load and open the live-reload stream.
 $("#theme").addEventListener("click", toggleTheme);
-mermaid.initialize({ startOnLoad: false, theme: "dark" });
-marked.setOptions({ breaks: false, gfm: true });
+if (typeof mermaid !== "undefined" && typeof mermaid.initialize === "function") {
+    try {
+        mermaid.initialize({ startOnLoad: false, theme: "dark" });
+    } catch (e) {
+        console.warn("mermaid initialize failed:", e);
+    }
+}
+if (typeof marked !== "undefined" && typeof marked.setOptions === "function") {
+    marked.setOptions({ breaks: false, gfm: true });
+}
 void load(true).then(connectSSE);

@@ -37,16 +37,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      // Fetch latest build status for each repo to filter only successfully built repos
+      // Fetch latest build status for each repo to display repos with a successful build history
       const buildPromises = repos.map(r => API.getBuildHistory(r.id).catch(() => []));
       const buildsList = await Promise.all(buildPromises);
 
-      const successfulRepos = repos.filter((repo, i) => {
+      const validRepos = repos.filter((repo, i) => {
         const builds = buildsList[i] || [];
-        return builds.length > 0 && builds[0].status === 'success';
+        return builds.some(b => b.status === 'success');
       });
 
-      if (successfulRepos.length === 0) {
+      if (validRepos.length === 0) {
         repoList.innerHTML = `
           <div class="card" style="grid-column: 1 / -1; text-align: center; padding: 3rem;">
             <p style="color: var(--text-secondary); margin-bottom: 1rem;">暂无已完成构建的 Wiki 仓库。</p>
@@ -56,27 +56,37 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      repoList.innerHTML = successfulRepos.map(repo => `
-        <div class="repo-card">
-          <div>
-            <div class="repo-title">${API.escapeHTML(repo.name)} <span class="badge">${API.escapeHTML(repo.branch)}</span></div>
-            <div class="repo-meta">
-              <div>仓库标识: <code>${API.escapeHTML(repo.id)}</code></div>
-              <div>状态: <span style="color: var(--success-color);">✅ 已构建完成</span></div>
+      repoList.innerHTML = validRepos.map((repo, idx) => {
+        const repoOriginalIndex = repos.findIndex(r => r.id === repo.id);
+        const builds = buildsList[repoOriginalIndex] || [];
+        const latestBuild = builds[0];
+        const isBuilding = latestBuild && (latestBuild.status === 'pending' || latestBuild.status === 'running');
+        const statusHtml = isBuilding
+          ? `<span style="color: var(--accent-color);">⚡ 增量构建中 (Build #${latestBuild.id})...</span>`
+          : `<span style="color: var(--success-color);">✅ 已构建完成</span>`;
+
+        return `
+          <div class="repo-card">
+            <div>
+              <div class="repo-title">${API.escapeHTML(repo.name)} <span class="badge">${API.escapeHTML(repo.branch)}</span></div>
+              <div class="repo-meta">
+                <div>仓库标识: <code>${API.escapeHTML(repo.id)}</code></div>
+                <div>状态: ${statusHtml}</div>
+              </div>
+            </div>
+            <div class="repo-actions">
+              <!-- Nginx Static Wiki Link -->
+              <a href="${repo.wiki_url}" target="_blank" class="btn btn-primary btn-sm">
+                📖 查看 Wiki
+              </a>
+              <!-- QA Chat Drawer -->
+              <button class="btn btn-secondary btn-sm chat-btn" data-id="${repo.id}" data-name="${API.escapeHTML(repo.name)}">
+                💬 AI 问答
+              </button>
             </div>
           </div>
-          <div class="repo-actions">
-            <!-- Nginx Static Wiki Link -->
-            <a href="${repo.wiki_url}" target="_blank" class="btn btn-primary btn-sm">
-              📖 查看 Wiki
-            </a>
-            <!-- QA Chat Drawer -->
-            <button class="btn btn-secondary btn-sm chat-btn" data-id="${repo.id}" data-name="${API.escapeHTML(repo.name)}">
-              💬 AI 问答
-            </button>
-          </div>
-        </div>
-      `).join('');
+        `;
+      }).join('');
 
       // Attach click listeners to chat buttons
       document.querySelectorAll('.chat-btn').forEach(btn => {
@@ -217,6 +227,38 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Initialize mermaid if available
+  if (typeof window.mermaid !== 'undefined' && typeof window.mermaid.initialize === 'function') {
+    try {
+      window.mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+    } catch (e) {
+      console.warn('mermaid init error:', e);
+    }
+  }
+
+  function renderMermaidInElement(container) {
+    if (typeof window.mermaid === 'undefined' || !container) return;
+    const blocks = container.querySelectorAll('code.language-mermaid');
+    blocks.forEach((code) => {
+      const pre = document.createElement('pre');
+      pre.className = 'mermaid';
+      pre.textContent = code.textContent;
+      code.closest('pre')?.replaceWith(pre);
+    });
+    const nodes = container.querySelectorAll('.mermaid');
+    if (nodes.length > 0) {
+      try {
+        if (typeof window.mermaid.run === 'function') {
+          window.mermaid.run({ nodes: nodes });
+        } else if (typeof window.mermaid.init === 'function') {
+          window.mermaid.init(undefined, nodes);
+        }
+      } catch (e) {
+        console.warn('mermaid render error:', e);
+      }
+    }
+  }
+
   async function loadSessionHistory() {
     if (!activeRepo || !sessionList) return;
     sessionList.innerHTML = '<div style="color: var(--text-secondary); font-size: 0.8rem; padding: 0.5rem;">加载会话历史中...</div>';
@@ -236,7 +278,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         info.className = 'session-info';
         const title = document.createElement('div');
         title.className = 'session-title';
-        title.textContent = sess.first_query || ('会话 ' + sess.session_id);
+        const rawTitle = sess.title || sess.question;
+        title.textContent = rawTitle ? rawTitle : ('会话 ' + (sess.session_id ? sess.session_id.substring(0, 8) : ''));
         const meta = document.createElement('div');
         meta.className = 'session-meta';
         meta.textContent = `${sess.message_count}条对话 • ${API.formatDate(sess.updated_at)}`;
@@ -305,15 +348,48 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  sendChatBtn.addEventListener('click', sendQuestion);
+  let activeAbortController = null;
+
+  function setChatStreamingState(isStreaming) {
+    if (isStreaming) {
+      sendChatBtn.textContent = '⏹️ 停止';
+      sendChatBtn.style.background = '#ef4444';
+      sendChatBtn.style.borderColor = '#ef4444';
+      chatInput.disabled = true;
+    } else {
+      sendChatBtn.textContent = '发送';
+      sendChatBtn.style.background = '';
+      sendChatBtn.style.borderColor = '';
+      chatInput.disabled = false;
+      activeAbortController = null;
+    }
+  }
+
+  sendChatBtn.addEventListener('click', () => {
+    if (activeAbortController) {
+      // User clicked "Stop" button during active streaming
+      activeAbortController.abort();
+      activeAbortController = null;
+      setChatStreamingState(false);
+      return;
+    }
+    sendQuestion();
+  });
+
   chatInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.ctrlKey) {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      sendQuestion();
+      if (!activeAbortController) {
+        sendQuestion();
+      }
     }
   });
 
   async function sendQuestion() {
+    if (activeAbortController) {
+      return; // Already streaming
+    }
+
     const question = chatInput.value.trim();
     if (!question || !activeRepo) return;
 
@@ -332,10 +408,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     contentDiv.className = 'bot-content-text';
     botContainer.appendChild(contentDiv);
 
+    activeAbortController = new AbortController();
+    setChatStreamingState(true);
+
+    let fullMarkdown = '';
+
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: activeAbortController.signal,
         body: JSON.stringify({
           repo_id: activeRepo.id,
           user_id: currentUser.user_id,
@@ -351,7 +433,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      let fullMarkdown = '';
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
@@ -406,6 +487,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else if (currentEvent === 'done') {
               statusDiv.style.display = 'none';
               contentDiv.innerHTML = API.renderMarkdown(fullMarkdown);
+              renderMermaidInElement(contentDiv);
               if (sessionHistoryPanel && sessionHistoryPanel.style.display !== 'none') {
                 loadSessionHistory();
               }
@@ -431,8 +513,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     } catch (err) {
       statusDiv.style.display = 'none';
-      fullMarkdown += '\n\n**[连接出错: ' + err.message + ']**';
+      if (err.name === 'AbortError') {
+        fullMarkdown += '\n\n**[已停止本次对话]**';
+      } else {
+        fullMarkdown += '\n\n**[连接出错: ' + err.message + ']**';
+      }
       contentDiv.innerHTML = API.renderMarkdown(fullMarkdown);
+    } finally {
+      renderMermaidInElement(contentDiv);
+      setChatStreamingState(false);
     }
   }
 
@@ -451,6 +540,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const contentDiv = document.createElement('div');
     contentDiv.className = 'bot-content-text';
     contentDiv.innerHTML = API.renderMarkdown(markdownText);
+    renderMermaidInElement(contentDiv);
     div.appendChild(contentDiv);
     chatMessages.appendChild(div);
     chatMessages.scrollTop = chatMessages.scrollHeight;

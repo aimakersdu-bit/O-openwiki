@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/openwiki/orchestrator/internal/config"
+	"github.com/openwiki/orchestrator/internal/mcp"
 	"github.com/openwiki/orchestrator/internal/qa"
 	"github.com/openwiki/orchestrator/internal/scheduler"
 )
@@ -20,6 +21,7 @@ type Server struct {
 	scheduler *scheduler.Scheduler
 	qaPool    *qa.Pool
 	qaManager *qa.Manager
+	mcpServer *mcp.Server
 	mux       *http.ServeMux
 
 	sseMu    sync.RWMutex
@@ -27,12 +29,13 @@ type Server struct {
 }
 
 // NewServer creates a new Orchestrator API server.
-func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, manager *qa.Manager) *Server {
+func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, manager *qa.Manager, mcpServer *mcp.Server) *Server {
 	s := &Server{
 		config:    cfg,
 		scheduler: sched,
 		qaPool:    pool,
 		qaManager: manager,
+		mcpServer: mcpServer,
 		mux:       http.NewServeMux(),
 		sseChans:  make(map[chan string]bool),
 	}
@@ -48,6 +51,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/qa/messages", s.handleQAMessages)
 	s.mux.HandleFunc("/api/build/status", s.handleBuildStatus)
 	s.mux.HandleFunc("/api/build/trigger", s.handleBuildTrigger)
+
+	// MCP Protocol Endpoints (MCP 2025 Streamable HTTP & Legacy Remote SSE fallback)
+	if s.mcpServer != nil {
+		s.mux.HandleFunc("/mcp", s.mcpServer.HandleStreamableHTTP)
+		s.mux.HandleFunc("/mcp/", s.mcpServer.HandleStreamableHTTP)
+		s.mux.HandleFunc("/mcp/sse", s.mcpServer.HandleLegacySSE)
+		s.mux.HandleFunc("/mcp/messages", s.mcpServer.HandleLegacyMessages)
+	}
 
 	// SSE events endpoint for visualizer hot reload (OpenWiki EventSource /events protocol)
 	s.mux.HandleFunc("/api/events", s.handleEvents)
@@ -115,7 +126,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Enable CORS for Portal requests
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Session-Id")
+	w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id")
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)

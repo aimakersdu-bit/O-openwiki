@@ -13,6 +13,7 @@ import (
 	"github.com/openwiki/orchestrator/internal/api"
 	"github.com/openwiki/orchestrator/internal/config"
 	"github.com/openwiki/orchestrator/internal/db"
+	"github.com/openwiki/orchestrator/internal/mcp"
 	"github.com/openwiki/orchestrator/internal/qa"
 	"github.com/openwiki/orchestrator/internal/scheduler"
 )
@@ -53,8 +54,11 @@ func main() {
 	defer sched.Stop()
 	log.Println("Cron scheduler started successfully")
 
+	// Create MCP server
+	mcpServer := mcp.NewServer(cfg, db.GetDB(), qaManager)
+
 	// Create API router
-	server := api.NewServer(cfg, sched, qaPool, qaManager)
+	server := api.NewServer(cfg, sched, qaPool, qaManager, mcpServer)
 
 	addr := cfg.ListenAddr
 	if addr == "" {

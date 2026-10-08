@@ -26,7 +26,11 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	repoID := r.URL.Query().Get("repo_id")
 	if repoID != "" {
 		// Forward query to orchestrator QA logs if needed
-		url := fmt.Sprintf("%s/api/qa/history?user_id=%s&repo_id=%s", s.config.OrchestratorURL, session.UserID, repoID)
+		userIDParam := session.UserID
+		if session.Role == "admin" {
+			userIDParam = "" // Admin can view all users' QA audit logs
+		}
+		url := fmt.Sprintf("%s/api/qa/history?user_id=%s&repo_id=%s", s.config.OrchestratorURL, userIDParam, repoID)
 		resp, err := s.httpClient.Get(url)
 		if err == nil && resp.StatusCode == http.StatusOK {
 			defer resp.Body.Close()
@@ -119,7 +123,12 @@ func (s *Server) handleQAMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	url := fmt.Sprintf("%s/api/qa/messages?session_id=%s&user_id=%s", s.config.OrchestratorURL, sessionID, session.UserID)
+	userIDParam := session.UserID
+	if session.Role == "admin" {
+		userIDParam = "" // Admin can view all users' QA session messages
+	}
+
+	url := fmt.Sprintf("%s/api/qa/messages?session_id=%s&user_id=%s", s.config.OrchestratorURL, sessionID, userIDParam)
 	resp, err := s.httpClient.Get(url)
 	if err != nil {
 		http.Error(w, "Failed to connect to orchestrator: "+err.Error(), http.StatusBadGateway)
