@@ -5,103 +5,362 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const repoList = document.getElementById('repoList');
   const refreshBtn = document.getElementById('refreshBtn');
+  const repoSearchInput = document.getElementById('repoSearchInput');
+  const clearSearchBtn = document.getElementById('clearSearchBtn');
+  const statusFilter = document.getElementById('statusFilter');
+  const pageSizeSelect = document.getElementById('pageSizeSelect');
+  const repoCountStats = document.getElementById('repoCountStats');
+  const paginationBar = document.getElementById('paginationBar');
 
-  // Chat Drawer Elements
-  const chatDrawer = document.getElementById('chatDrawer');
-  const closeChatBtn = document.getElementById('closeChatBtn');
-  const newSessionBtn = document.getElementById('newSessionBtn');
-  const toggleHistoryBtn = document.getElementById('toggleHistoryBtn');
-  const sessionHistoryPanel = document.getElementById('sessionHistoryPanel');
-  const closeHistoryBtn = document.getElementById('closeHistoryBtn');
-  const sessionList = document.getElementById('sessionList');
-  const chatRepoTitle = document.getElementById('chatRepoTitle');
-  const chatRepoBadge = document.getElementById('chatRepoBadge');
-  const chatMessages = document.getElementById('chatMessages');
-  const chatInput = document.getElementById('chatInput');
-  const sendChatBtn = document.getElementById('sendChatBtn');
+  // Dashboard Repos State
+  let allRepos = [];
+  let filteredRepos = [];
+  let currentPage = 1;
+  let pageSize = 9;
+  const buildStatusCache = new Map(); // repoId -> statusObject
+  let searchQuery = '';
+  let selectedStatus = 'all';
+  let searchDebounceTimer = null;
 
-  let activeRepo = null;
+  // Helper to parse build list into display status
+  function parseBuildStatus(repo, builds = []) {
+    const latestBuild = builds[0];
+    const hasSuccess = builds.some(b => b.status === 'success' || b.status === 'skipped');
+    const isBuilding = latestBuild && (latestBuild.status === 'pending' || latestBuild.status === 'running');
+
+    let statusKey = 'unbuilt'; // 'ready', 'building', 'unbuilt'
+    let statusHtml = '';
+
+    if (isBuilding) {
+      statusKey = 'building';
+      statusHtml = `<span style="color: var(--accent-color);">⚡ 增量构建中 (Build #${latestBuild.id})...</span>`;
+    } else if (latestBuild && latestBuild.status === 'success') {
+      statusKey = 'ready';
+      statusHtml = `<span style="color: var(--success-color);">✅ 已构建完成</span>`;
+    } else if (latestBuild && latestBuild.status === 'skipped') {
+      statusKey = 'ready';
+      statusHtml = `<span style="color: var(--success-color);" title="定时检测无新提交，Wiki 为最新版本">✅ 已构建完成 (无代码更新)</span>`;
+    } else if (latestBuild && latestBuild.status === 'failed') {
+      if (hasSuccess) {
+        statusKey = 'ready';
+        statusHtml = `<span style="color: #f59e0b;">⚠️ 最新构建失败 (保留历史Wiki)</span>`;
+      } else {
+        statusKey = 'unbuilt';
+        statusHtml = `<span style="color: var(--error-color, #ef4444);">❌ 构建失败</span>`;
+      }
+    } else if (hasSuccess) {
+      statusKey = 'ready';
+      statusHtml = `<span style="color: var(--success-color);">✅ 已构建完成</span>`;
+    } else {
+      statusKey = 'unbuilt';
+      statusHtml = `<span style="color: var(--text-secondary);">⏳ 尚未构建</span>`;
+    }
+
+    const wikiActionHtml = hasSuccess
+      ? `<a href="${repo.wiki_url}" target="_blank" class="btn btn-primary btn-sm">📖 查看 Wiki</a>`
+      : `<button class="btn btn-primary btn-sm" disabled style="opacity: 0.5; cursor: not-allowed;" title="仓库尚未生成 Wiki 页面">📖 尚未构建</button>`;
+
+    const chatActionHtml = hasSuccess
+      ? `<button class="btn btn-secondary btn-sm chat-btn" data-id="${repo.id}" data-name="${API.escapeHTML(repo.name)}">💬 AI 问答</button>`
+      : `<button class="btn btn-secondary btn-sm" disabled style="opacity: 0.5; cursor: not-allowed;" title="知识库尚未就绪，请先完成构建">💬 AI 问答</button>`;
+
+    return {
+      statusKey,
+      hasSuccess,
+      isBuilding,
+      latestBuild,
+      statusHtml,
+      wikiActionHtml,
+      chatActionHtml
+    };
+  }
+
+  // Render pagination bar
+  function renderPaginationBar(totalPages, page) {
+    if (!paginationBar) return;
+    if (totalPages <= 1 || pageSize === 'all') {
+      paginationBar.style.display = 'none';
+      paginationBar.innerHTML = '';
+      return;
+    }
+
+    paginationBar.style.display = 'flex';
+    let html = '';
+
+    // Previous button
+    html += `<button class="page-btn" ${page <= 1 ? 'disabled' : ''} data-page="${page - 1}">« 上一页</button>`;
+
+    // Page numbers
+    const pagesToShow = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pagesToShow.push(i);
+    } else {
+      pagesToShow.push(1);
+      if (page > 3) pagesToShow.push('...');
+      
+      const start = Math.max(2, page - 1);
+      const end = Math.min(totalPages - 1, page + 1);
+      for (let i = start; i <= end; i++) {
+        if (!pagesToShow.includes(i)) pagesToShow.push(i);
+      }
+
+      if (page < totalPages - 2) pagesToShow.push('...');
+      if (!pagesToShow.includes(totalPages)) pagesToShow.push(totalPages);
+    }
+
+    pagesToShow.forEach(p => {
+      if (p === '...') {
+        html += `<span class="page-ellipsis">...</span>`;
+      } else {
+        html += `<button class="page-btn ${p === page ? 'active' : ''}" data-page="${p}">${p}</button>`;
+      }
+    });
+
+    // Next button
+    html += `<button class="page-btn" ${page >= totalPages ? 'disabled' : ''} data-page="${page + 1}">下一页 »</button>`;
+
+    paginationBar.innerHTML = html;
+
+    // Attach listeners
+    paginationBar.querySelectorAll('.page-btn:not(:disabled):not(.active)').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const targetPage = parseInt(btn.getAttribute('data-page'), 10);
+        if (!isNaN(targetPage)) {
+          currentPage = targetPage;
+          renderCurrentPage();
+          repoList.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+    });
+  }
+
+  // Render currently active page of repos
+  async function renderCurrentPage() {
+    const totalItems = filteredRepos.length;
+    const size = (pageSize === 'all') ? (totalItems || 1) : parseInt(pageSize, 10);
+    const totalPages = Math.ceil(totalItems / size) || 1;
+
+    if (currentPage > totalPages) currentPage = totalPages;
+    if (currentPage < 1) currentPage = 1;
+
+    // Update stats label
+    if (repoCountStats) {
+      if (allRepos.length === 0) {
+        repoCountStats.textContent = '共 0 个仓库';
+      } else if (filteredRepos.length === allRepos.length) {
+        repoCountStats.textContent = `共 ${allRepos.length} 个仓库`;
+      } else {
+        repoCountStats.textContent = `匹配 ${filteredRepos.length} / 共 ${allRepos.length} 个`;
+      }
+    }
+
+    // Handle empty search / filter results
+    if (totalItems === 0) {
+      repoList.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-state-icon">🔍</div>
+          <div class="empty-state-text">未找到符合条件的仓库</div>
+          <div class="empty-state-desc">请尝试调整搜索关键词或重置构建状态过滤器</div>
+        </div>
+      `;
+      renderPaginationBar(0, 1);
+      return;
+    }
+
+    // Slice items for current page
+    const startIndex = (currentPage - 1) * size;
+    const endIndex = (pageSize === 'all') ? totalItems : Math.min(startIndex + size, totalItems);
+    const pageRepos = filteredRepos.slice(startIndex, endIndex);
+
+    // Concurrently fetch build status ONLY for page items that are not in cache
+    const uncachedPageRepos = pageRepos.filter(r => !buildStatusCache.has(r.id));
+    if (uncachedPageRepos.length > 0) {
+      const promises = uncachedPageRepos.map(r => 
+        API.getBuildHistory(r.id)
+          .then(builds => buildStatusCache.set(r.id, parseBuildStatus(r, builds)))
+          .catch(() => buildStatusCache.set(r.id, parseBuildStatus(r, [])))
+      );
+      await Promise.all(promises);
+    }
+
+    // Render cards HTML
+    repoList.innerHTML = pageRepos.map(repo => {
+      const status = buildStatusCache.get(repo.id) || parseBuildStatus(repo, []);
+      return `
+        <div class="repo-card">
+          <div>
+            <div class="repo-title">${API.escapeHTML(repo.name)} <span class="badge">${API.escapeHTML(repo.branch)}</span></div>
+            <div class="repo-meta">
+              <div>仓库标识: <code>${API.escapeHTML(repo.id)}</code></div>
+              <div>状态: ${status.statusHtml}</div>
+            </div>
+          </div>
+          <div class="repo-actions">
+            ${status.wikiActionHtml}
+            ${status.chatActionHtml}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    // Attach click listeners to chat buttons on current page
+    repoList.querySelectorAll('.chat-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const repoId = e.currentTarget.getAttribute('data-id');
+        const repoName = e.currentTarget.getAttribute('data-name');
+        openChat(repoId, repoName);
+      });
+    });
+
+    // Render pagination bar
+    renderPaginationBar(totalPages, currentPage);
+  }
+
+  // Filter repos according to search and status selector
+  async function applyFiltersAndRender(resetPage = false) {
+    if (resetPage) {
+      currentPage = 1;
+    }
+
+    // If user filtered by a specific build status, ensure all repos have their status cached
+    if (selectedStatus !== 'all') {
+      const uncachedRepos = allRepos.filter(r => !buildStatusCache.has(r.id));
+      if (uncachedRepos.length > 0) {
+        if (repoCountStats) repoCountStats.textContent = '正在检测构建状态...';
+        const promises = uncachedRepos.map(r => 
+          API.getBuildHistory(r.id)
+            .then(builds => buildStatusCache.set(r.id, parseBuildStatus(r, builds)))
+            .catch(() => buildStatusCache.set(r.id, parseBuildStatus(r, [])))
+        );
+        await Promise.all(promises);
+      }
+    }
+
+    const query = searchQuery.trim().toLowerCase();
+    filteredRepos = allRepos.filter(repo => {
+      // 1. Keyword search (name or id)
+      const matchesSearch = !query || 
+        (repo.name && repo.name.toLowerCase().includes(query)) ||
+        (repo.id && repo.id.toLowerCase().includes(query));
+      if (!matchesSearch) return false;
+
+      // 2. Status filter
+      if (selectedStatus === 'all') return true;
+      const status = buildStatusCache.get(repo.id);
+      if (!status) return true;
+      return status.statusKey === selectedStatus;
+    });
+
+    await renderCurrentPage();
+  }
+
+  // Background lazy-prefetch remaining repos' status when idle
+  function prefetchRemainingStatus() {
+    const uncachedRepos = allRepos.filter(r => !buildStatusCache.has(r.id));
+    if (uncachedRepos.length === 0) return;
+
+    // Low-concurrency background fetch (batch size 3)
+    let index = 0;
+    function fetchNextBatch() {
+      if (index >= uncachedRepos.length) return;
+      const batch = uncachedRepos.slice(index, index + 3);
+      index += 3;
+      Promise.all(batch.map(r => 
+        API.getBuildHistory(r.id)
+          .then(builds => buildStatusCache.set(r.id, parseBuildStatus(r, builds)))
+          .catch(() => buildStatusCache.set(r.id, parseBuildStatus(r, [])))
+      )).then(() => {
+        if (window.requestIdleCallback) {
+          window.requestIdleCallback(fetchNextBatch, { timeout: 2000 });
+        } else {
+          setTimeout(fetchNextBatch, 200);
+        }
+      });
+    }
+
+    if (window.requestIdleCallback) {
+      window.requestIdleCallback(fetchNextBatch, { timeout: 1500 });
+    } else {
+      setTimeout(fetchNextBatch, 500);
+    }
+  }
 
   // Load Repos List
   async function loadRepos() {
     repoList.innerHTML = '<p style="color: var(--text-secondary);">加载仓库列表中...</p>';
+    if (repoCountStats) repoCountStats.textContent = '加载中...';
     try {
-      const repos = await API.getRepos();
-      if (!repos || repos.length === 0) {
+      allRepos = (await API.getRepos()) || [];
+      if (allRepos.length === 0) {
         repoList.innerHTML = `
           <div class="card" style="grid-column: 1 / -1; text-align: center; padding: 3rem;">
             <p style="color: var(--text-secondary); margin-bottom: 1rem;">暂无已注册的代码仓库。</p>
             <a href="admin.html" class="btn btn-primary">➕ 前往仓库运维管理注册新仓库</a>
           </div>
         `;
+        if (repoCountStats) repoCountStats.textContent = '共 0 个仓库';
+        if (paginationBar) paginationBar.style.display = 'none';
         return;
       }
 
-      // Fetch latest build status for each repo to display repos with a successful build history
-      const buildPromises = repos.map(r => API.getBuildHistory(r.id).catch(() => []));
-      const buildsList = await Promise.all(buildPromises);
-
-      const validRepos = repos.filter((repo, i) => {
-        const builds = buildsList[i] || [];
-        return builds.some(b => b.status === 'success');
-      });
-
-      if (validRepos.length === 0) {
-        repoList.innerHTML = `
-          <div class="card" style="grid-column: 1 / -1; text-align: center; padding: 3rem;">
-            <p style="color: var(--text-secondary); margin-bottom: 1rem;">暂无已完成构建的 Wiki 仓库。</p>
-            <a href="admin.html" class="btn btn-primary">⚡ 前往【仓库运维与构建】发起构建</a>
-          </div>
-        `;
-        return;
-      }
-
-      repoList.innerHTML = validRepos.map((repo, idx) => {
-        const repoOriginalIndex = repos.findIndex(r => r.id === repo.id);
-        const builds = buildsList[repoOriginalIndex] || [];
-        const latestBuild = builds[0];
-        const isBuilding = latestBuild && (latestBuild.status === 'pending' || latestBuild.status === 'running');
-        const statusHtml = isBuilding
-          ? `<span style="color: var(--accent-color);">⚡ 增量构建中 (Build #${latestBuild.id})...</span>`
-          : `<span style="color: var(--success-color);">✅ 已构建完成</span>`;
-
-        return `
-          <div class="repo-card">
-            <div>
-              <div class="repo-title">${API.escapeHTML(repo.name)} <span class="badge">${API.escapeHTML(repo.branch)}</span></div>
-              <div class="repo-meta">
-                <div>仓库标识: <code>${API.escapeHTML(repo.id)}</code></div>
-                <div>状态: ${statusHtml}</div>
-              </div>
-            </div>
-            <div class="repo-actions">
-              <!-- Nginx Static Wiki Link -->
-              <a href="${repo.wiki_url}" target="_blank" class="btn btn-primary btn-sm">
-                📖 查看 Wiki
-              </a>
-              <!-- QA Chat Drawer -->
-              <button class="btn btn-secondary btn-sm chat-btn" data-id="${repo.id}" data-name="${API.escapeHTML(repo.name)}">
-                💬 AI 问答
-              </button>
-            </div>
-          </div>
-        `;
-      }).join('');
-
-      // Attach click listeners to chat buttons
-      document.querySelectorAll('.chat-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-          const repoId = e.currentTarget.getAttribute('data-id');
-          const repoName = e.currentTarget.getAttribute('data-name');
-          openChat(repoId, repoName);
-        });
-      });
+      await applyFiltersAndRender(false);
+      // Trigger background prefetch for remaining repos
+      prefetchRemainingStatus();
     } catch (err) {
       repoList.innerHTML = `<p style="color: var(--error-color);">加载仓库列表失败: ${err.message}</p>`;
+      if (repoCountStats) repoCountStats.textContent = '加载失败';
     }
   }
 
-  refreshBtn.addEventListener('click', loadRepos);
+  // Toolbar Event Listeners
+  if (repoSearchInput) {
+    repoSearchInput.addEventListener('input', (e) => {
+      const val = e.target.value;
+      if (clearSearchBtn) {
+        clearSearchBtn.style.display = val ? 'flex' : 'none';
+      }
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => {
+        searchQuery = val;
+        applyFiltersAndRender(true);
+      }, 200);
+    });
+  }
+
+  if (clearSearchBtn) {
+    clearSearchBtn.addEventListener('click', () => {
+      if (repoSearchInput) {
+        repoSearchInput.value = '';
+        repoSearchInput.focus();
+      }
+      clearSearchBtn.style.display = 'none';
+      searchQuery = '';
+      applyFiltersAndRender(true);
+    });
+  }
+
+  if (statusFilter) {
+    statusFilter.addEventListener('change', (e) => {
+      selectedStatus = e.target.value;
+      applyFiltersAndRender(true);
+    });
+  }
+
+  if (pageSizeSelect) {
+    pageSizeSelect.addEventListener('change', (e) => {
+      pageSize = e.target.value;
+      applyFiltersAndRender(true);
+    });
+  }
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => {
+      buildStatusCache.clear();
+      loadRepos();
+    });
+  }
+
+  // Initial load
   loadRepos();
 
   // Chat Drawer Resizer Drag Logic
