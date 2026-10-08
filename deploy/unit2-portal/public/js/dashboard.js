@@ -227,6 +227,38 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Initialize mermaid if available
+  if (typeof window.mermaid !== 'undefined' && typeof window.mermaid.initialize === 'function') {
+    try {
+      window.mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+    } catch (e) {
+      console.warn('mermaid init error:', e);
+    }
+  }
+
+  function renderMermaidInElement(container) {
+    if (typeof window.mermaid === 'undefined' || !container) return;
+    const blocks = container.querySelectorAll('code.language-mermaid');
+    blocks.forEach((code) => {
+      const pre = document.createElement('pre');
+      pre.className = 'mermaid';
+      pre.textContent = code.textContent;
+      code.closest('pre')?.replaceWith(pre);
+    });
+    const nodes = container.querySelectorAll('.mermaid');
+    if (nodes.length > 0) {
+      try {
+        if (typeof window.mermaid.run === 'function') {
+          window.mermaid.run({ nodes: nodes });
+        } else if (typeof window.mermaid.init === 'function') {
+          window.mermaid.init(undefined, nodes);
+        }
+      } catch (e) {
+        console.warn('mermaid render error:', e);
+      }
+    }
+  }
+
   async function loadSessionHistory() {
     if (!activeRepo || !sessionList) return;
     sessionList.innerHTML = '<div style="color: var(--text-secondary); font-size: 0.8rem; padding: 0.5rem;">加载会话历史中...</div>';
@@ -246,7 +278,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         info.className = 'session-info';
         const title = document.createElement('div');
         title.className = 'session-title';
-        title.textContent = sess.first_query || ('会话 ' + sess.session_id);
+        const rawTitle = sess.title || sess.question;
+        title.textContent = rawTitle ? rawTitle : ('会话 ' + (sess.session_id ? sess.session_id.substring(0, 8) : ''));
         const meta = document.createElement('div');
         meta.className = 'session-meta';
         meta.textContent = `${sess.message_count}条对话 • ${API.formatDate(sess.updated_at)}`;
@@ -315,15 +348,48 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  sendChatBtn.addEventListener('click', sendQuestion);
+  let activeAbortController = null;
+
+  function setChatStreamingState(isStreaming) {
+    if (isStreaming) {
+      sendChatBtn.textContent = '⏹️ 停止';
+      sendChatBtn.style.background = '#ef4444';
+      sendChatBtn.style.borderColor = '#ef4444';
+      chatInput.disabled = true;
+    } else {
+      sendChatBtn.textContent = '发送';
+      sendChatBtn.style.background = '';
+      sendChatBtn.style.borderColor = '';
+      chatInput.disabled = false;
+      activeAbortController = null;
+    }
+  }
+
+  sendChatBtn.addEventListener('click', () => {
+    if (activeAbortController) {
+      // User clicked "Stop" button during active streaming
+      activeAbortController.abort();
+      activeAbortController = null;
+      setChatStreamingState(false);
+      return;
+    }
+    sendQuestion();
+  });
+
   chatInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      sendQuestion();
+      if (!activeAbortController) {
+        sendQuestion();
+      }
     }
   });
 
   async function sendQuestion() {
+    if (activeAbortController) {
+      return; // Already streaming
+    }
+
     const question = chatInput.value.trim();
     if (!question || !activeRepo) return;
 
@@ -342,10 +408,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     contentDiv.className = 'bot-content-text';
     botContainer.appendChild(contentDiv);
 
+    activeAbortController = new AbortController();
+    setChatStreamingState(true);
+
+    let fullMarkdown = '';
+
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: activeAbortController.signal,
         body: JSON.stringify({
           repo_id: activeRepo.id,
           user_id: currentUser.user_id,
@@ -361,7 +433,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      let fullMarkdown = '';
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
@@ -416,6 +487,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else if (currentEvent === 'done') {
               statusDiv.style.display = 'none';
               contentDiv.innerHTML = API.renderMarkdown(fullMarkdown);
+              renderMermaidInElement(contentDiv);
               if (sessionHistoryPanel && sessionHistoryPanel.style.display !== 'none') {
                 loadSessionHistory();
               }
@@ -441,8 +513,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     } catch (err) {
       statusDiv.style.display = 'none';
-      fullMarkdown += '\n\n**[连接出错: ' + err.message + ']**';
+      if (err.name === 'AbortError') {
+        fullMarkdown += '\n\n**[已停止本次对话]**';
+      } else {
+        fullMarkdown += '\n\n**[连接出错: ' + err.message + ']**';
+      }
       contentDiv.innerHTML = API.renderMarkdown(fullMarkdown);
+    } finally {
+      renderMermaidInElement(contentDiv);
+      setChatStreamingState(false);
     }
   }
 
@@ -461,6 +540,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const contentDiv = document.createElement('div');
     contentDiv.className = 'bot-content-text';
     contentDiv.innerHTML = API.renderMarkdown(markdownText);
+    renderMermaidInElement(contentDiv);
     div.appendChild(contentDiv);
     chatMessages.appendChild(div);
     chatMessages.scrollTop = chatMessages.scrollHeight;

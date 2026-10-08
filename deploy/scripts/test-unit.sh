@@ -7,6 +7,7 @@ echo "=========================================="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(dirname "$SCRIPT_DIR")"
+export CGO_ENABLED=1
 
 echo "--> [1/2] Testing & Building Unit 1 (orchestrator)..."
 cd "$DEPLOY_DIR/unit1-orchestrator"

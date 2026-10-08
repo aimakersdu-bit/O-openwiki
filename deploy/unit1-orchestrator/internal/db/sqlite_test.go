@@ -167,3 +167,70 @@ func TestQASessionCRUD(t *testing.T) {
 		t.Errorf("expected question 'What is OpenWiki?', got %s", sessions[0].Question)
 	}
 }
+
+func TestGetRepoByNameOrID(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repoA := &Repo{
+		ID:        "id-alpha",
+		Name:      "shared-name",
+		GitURL:    "https://github.com/test/alpha.git",
+		Branch:    "main",
+		LocalPath: "/tmp/alpha",
+		Status:    "active",
+	}
+	repoB := &Repo{
+		ID:        "shared-name", // ID 恰好等于 repoA 的 Name
+		Name:      "name-beta",
+		GitURL:    "https://github.com/test/beta.git",
+		Branch:    "main",
+		LocalPath: "/tmp/beta",
+		Status:    "active",
+	}
+
+	if err := database.CreateRepo(repoA); err != nil {
+		t.Fatalf("CreateRepo repoA failed: %v", err)
+	}
+	if err := database.CreateRepo(repoB); err != nil {
+		t.Fatalf("CreateRepo repoB failed: %v", err)
+	}
+
+	// 1. By ID for Repo A
+	found, err := database.GetRepoByNameOrID("id-alpha")
+	if err != nil || found == nil {
+		t.Fatalf("expected to find repoA by ID, got %v, err=%v", found, err)
+	}
+	if found.ID != "id-alpha" {
+		t.Errorf("expected id-alpha, got %s", found.ID)
+	}
+
+	// 2. Disambiguation: "shared-name" matches repoB's ID and repoA's Name.
+	// Must prioritize ID, so it must return repoB!
+	found, err = database.GetRepoByNameOrID("shared-name")
+	if err != nil || found == nil {
+		t.Fatalf("expected to find repoB by ID priority, got %v, err=%v", found, err)
+	}
+	if found.ID != "shared-name" || found.Name != "name-beta" {
+		t.Errorf("expected repoB (ID=shared-name), got ID=%s Name=%s", found.ID, found.Name)
+	}
+
+	// 3. Fallback to Name for repoB
+	found, err = database.GetRepoByNameOrID("name-beta")
+	if err != nil || found == nil {
+		t.Fatalf("expected to find repoB by Name, got %v, err=%v", found, err)
+	}
+	if found.ID != "shared-name" {
+		t.Errorf("expected ID=shared-name, got %s", found.ID)
+	}
+
+	// 4. Non-existent identifier
+	found, err = database.GetRepoByNameOrID("non-existent")
+	if err != nil {
+		t.Fatalf("expected no error for non-existent repo, got %v", err)
+	}
+	if found != nil {
+		t.Errorf("expected nil for non-existent repo, got %v", found)
+	}
+}
+

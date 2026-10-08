@@ -19,9 +19,9 @@ curl -sSL -o "$VENDOR_DIR/marked.min.js" "https://unpkg.com/marked/marked.min.js
 echo "[3/4] Downloading dompurify.min.js..."
 curl -sSL -o "$VENDOR_DIR/dompurify.min.js" "https://unpkg.com/dompurify/dist/purify.min.js"
 
-# 4. mermaid
+# 4. mermaid (pinned to 9.4.3 UMD release for universal browser compatibility)
 echo "[4/4] Downloading mermaid.min.js..."
-curl -sSL -o "$VENDOR_DIR/mermaid.min.js" "https://unpkg.com/mermaid/dist/mermaid.min.js"
+curl -sSL -o "$VENDOR_DIR/mermaid.min.js" "https://cdnjs.cloudflare.com/ajax/libs/mermaid/9.4.3/mermaid.min.js"
 
 echo "All vendor assets successfully downloaded for intranet offline deployment!"
 ls -lh "$VENDOR_DIR"

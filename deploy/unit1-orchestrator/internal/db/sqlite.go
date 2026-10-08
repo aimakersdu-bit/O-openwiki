@@ -81,6 +81,10 @@ func GetRepo(id string) (*Repo, error) {
 	return globalDB.GetRepo(id)
 }
 
+func GetRepoByNameOrID(identifier string) (*Repo, error) {
+	return globalDB.GetRepoByNameOrID(identifier)
+}
+
 func SaveRepo(r *Repo) error {
 	return globalDB.CreateRepo(r)
 }
@@ -107,6 +111,10 @@ func FinishBuild(id int64, status, buildLog, buildErr string) error {
 
 func GetLatestBuilds(repoID string, limit int) ([]Build, error) {
 	return globalDB.ListBuilds(repoID, limit)
+}
+
+func GetLatestBuild(repoID string) (*Build, error) {
+	return globalDB.GetLatestBuild(repoID)
 }
 
 func RecordQASession(sessionID, repoID, userID, question, answer string) error {
@@ -245,6 +253,31 @@ func (db *DB) GetRepo(id string) (*Repo, error) {
 	return r, err
 }
 
+// GetRepoByNameOrID returns a single repository by ID first, and falls back to Name.
+func (db *DB) GetRepoByNameOrID(identifier string) (*Repo, error) {
+	// 1. Prioritize exact ID match
+	r, err := db.GetRepo(identifier)
+	if err != nil {
+		return nil, err
+	}
+	if r != nil {
+		return r, nil
+	}
+
+	// 2. Fallback to Name match
+	r = &Repo{}
+	err = db.conn.QueryRow(`SELECT id, name, git_url, branch, local_path, 
+		COALESCE(wiki_dir,''), COALESCE(static_dir,''), schedule, status, 
+		created_at, updated_at FROM repos WHERE name = ? LIMIT 1`, identifier).
+		Scan(&r.ID, &r.Name, &r.GitURL, &r.Branch, &r.LocalPath,
+			&r.WikiDir, &r.StaticDir, &r.Schedule, &r.Status,
+			&r.CreatedAt, &r.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return r, err
+}
+
 // CreateRepo inserts a new repository.
 func (db *DB) CreateRepo(r *Repo) error {
 	_, err := db.conn.Exec(`INSERT INTO repos (id, name, git_url, branch, local_path, wiki_dir, static_dir, schedule, status)
@@ -347,6 +380,18 @@ func (db *DB) ListBuilds(repoID string, limit int) ([]Build, error) {
 		builds = append(builds, b)
 	}
 	return builds, rows.Err()
+}
+
+// GetLatestBuild returns the most recent build for a repo.
+func (db *DB) GetLatestBuild(repoID string) (*Build, error) {
+	builds, err := db.ListBuilds(repoID, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(builds) == 0 {
+		return nil, nil
+	}
+	return &builds[0], nil
 }
 
 // --- QA Session CRUD ---
