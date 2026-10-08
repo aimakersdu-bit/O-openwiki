@@ -88,6 +88,44 @@
 +----------------------------------------------------------------------------------------------------+
 ```
 
+### 3. SSE 流式传输与 Markdown 数据协议格式规范
+
+整个交互链路返回的内容**100% 为标准 GitHub Flavored Markdown 文本**（含标题、代码块高亮、列表与表格），在不同交互阶段的数据协议如下：
+
+#### (1) 推理过程中：SSE 实时增量推送 (打字机效果)
+服务端通过 SSE 长连接通道持续向 OpenCode 推送标准 MCP `notifications/message` 通知包：
+```http
+event: message
+data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"### 1. 架构总览\nOpenWiki 采用","logger":"openwiki-mcp"}}
+
+event: message
+data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"模块化设计，分为以下核心组件：\n- **Unit 1**: 调度器\n- **Unit 2**: 门户后台\n","logger":"openwiki-mcp"}}
+```
+- **字段说明**：`params.data` 即增量 Markdown 片段 (Delta Tokens)，OpenCode 逐包追加并在 UI 上实时渲染流式 Markdown。
+
+#### (2) 推理结束时：最终结果包 (Final Tool Result)
+AI 生成结束且 SQLite 审计记录落库后，下发标准 JSON-RPC Tool Call 响应：
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "### 1. 架构总览\n\nOpenWiki 采用模块化设计，分为以下核心组件：\n\n- **Unit 1 (Orchestrator)**：核心调度器，负责代码同步、知识库构建与问答路由；\n- **Unit 2 (Portal)**：管理后台与门户，支持权限、构建管理与问答审计查看。\n\n#### 核心实现示例\n```go\ntype Server struct {\n    mux *http.ServeMux\n}\n```\n\n以上内容均基于当前代码仓库最新索引生成。"
+      }
+    ],
+    "isError": false
+  }
+}
+```
+- **字段说明**：`result.content[0].text` 包含格式完整闭合的 Markdown 全文，供 OpenCode 进行后续的思考与任务规划。
+
+#### (3) 审计落库与后台查看
+- SQLite 表 `qa_sessions.answer` 完整保存上述 Markdown 全文字符串；
+- 现有 Web 管理门户在渲染历史记录时，直接进行 Markdown 富文本展示。
+
 ---
 
 ## 二、实施任务清单 (Task Breakdown)
