@@ -37,33 +37,41 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      // Fetch latest build status for each repo to display repos with a successful build history
+      // Fetch latest build status for each repo to display their real-time status
       const buildPromises = repos.map(r => API.getBuildHistory(r.id).catch(() => []));
       const buildsList = await Promise.all(buildPromises);
 
-      const validRepos = repos.filter((repo, i) => {
-        const builds = buildsList[i] || [];
-        return builds.some(b => b.status === 'success');
-      });
-
-      if (validRepos.length === 0) {
-        repoList.innerHTML = `
-          <div class="card" style="grid-column: 1 / -1; text-align: center; padding: 3rem;">
-            <p style="color: var(--text-secondary); margin-bottom: 1rem;">暂无已完成构建的 Wiki 仓库。</p>
-            <a href="admin.html" class="btn btn-primary">⚡ 前往【仓库运维与构建】发起构建</a>
-          </div>
-        `;
-        return;
-      }
-
-      repoList.innerHTML = validRepos.map((repo, idx) => {
-        const repoOriginalIndex = repos.findIndex(r => r.id === repo.id);
-        const builds = buildsList[repoOriginalIndex] || [];
+      repoList.innerHTML = repos.map((repo, idx) => {
+        const builds = buildsList[idx] || [];
         const latestBuild = builds[0];
+        // skipped 代表代码无新提交、跳过重复构建，属于已构建完成就绪状态
+        const hasSuccess = builds.some(b => b.status === 'success' || b.status === 'skipped');
         const isBuilding = latestBuild && (latestBuild.status === 'pending' || latestBuild.status === 'running');
-        const statusHtml = isBuilding
-          ? `<span style="color: var(--accent-color);">⚡ 增量构建中 (Build #${latestBuild.id})...</span>`
-          : `<span style="color: var(--success-color);">✅ 已构建完成</span>`;
+
+        let statusHtml = '';
+        if (isBuilding) {
+          statusHtml = `<span style="color: var(--accent-color);">⚡ 增量构建中 (Build #${latestBuild.id})...</span>`;
+        } else if (latestBuild && latestBuild.status === 'success') {
+          statusHtml = `<span style="color: var(--success-color);">✅ 已构建完成</span>`;
+        } else if (latestBuild && latestBuild.status === 'skipped') {
+          statusHtml = `<span style="color: var(--success-color);" title="定时检测无新提交，Wiki 为最新版本">✅ 已构建完成 (无代码更新)</span>`;
+        } else if (latestBuild && latestBuild.status === 'failed') {
+          statusHtml = hasSuccess
+            ? `<span style="color: #f59e0b;">⚠️ 最新构建失败 (保留历史Wiki)</span>`
+            : `<span style="color: var(--error-color, #ef4444);">❌ 构建失败</span>`;
+        } else if (hasSuccess) {
+          statusHtml = `<span style="color: var(--success-color);">✅ 已构建完成</span>`;
+        } else {
+          statusHtml = `<span style="color: var(--text-secondary);">⏳ 尚未构建</span>`;
+        }
+
+        const wikiActionHtml = hasSuccess
+          ? `<a href="${repo.wiki_url}" target="_blank" class="btn btn-primary btn-sm">📖 查看 Wiki</a>`
+          : `<button class="btn btn-primary btn-sm" disabled style="opacity: 0.5; cursor: not-allowed;" title="仓库尚未生成 Wiki 页面">📖 尚未构建</button>`;
+
+        const chatActionHtml = hasSuccess
+          ? `<button class="btn btn-secondary btn-sm chat-btn" data-id="${repo.id}" data-name="${API.escapeHTML(repo.name)}">💬 AI 问答</button>`
+          : `<button class="btn btn-secondary btn-sm" disabled style="opacity: 0.5; cursor: not-allowed;" title="知识库尚未就绪，请先完成构建">💬 AI 问答</button>`;
 
         return `
           <div class="repo-card">
@@ -75,14 +83,8 @@ document.addEventListener('DOMContentLoaded', async () => {
               </div>
             </div>
             <div class="repo-actions">
-              <!-- Nginx Static Wiki Link -->
-              <a href="${repo.wiki_url}" target="_blank" class="btn btn-primary btn-sm">
-                📖 查看 Wiki
-              </a>
-              <!-- QA Chat Drawer -->
-              <button class="btn btn-secondary btn-sm chat-btn" data-id="${repo.id}" data-name="${API.escapeHTML(repo.name)}">
-                💬 AI 问答
-              </button>
+              ${wikiActionHtml}
+              ${chatActionHtml}
             </div>
           </div>
         `;
