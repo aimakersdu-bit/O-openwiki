@@ -52,7 +52,7 @@ if [ ! -f /app/config.json ]; then
   "repos_base_dir": "/data/openwiki/repos",
   "db_path": "/data/openwiki/db/orchestrator.db",
   "max_concurrent_qa": 5,
-  "qa_timeout_sec": 120,
+  "qa_timeout_sec": 600,
   "default_language": "zh-CN"
 }
 EOF

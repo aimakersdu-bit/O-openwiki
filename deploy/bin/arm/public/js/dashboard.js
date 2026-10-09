@@ -505,13 +505,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Initialize mermaid if available
   if (typeof window.mermaid !== 'undefined' && typeof window.mermaid.initialize === 'function') {
     try {
-      window.mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+      window.mermaid.initialize({
+        startOnLoad: false,
+        theme: 'dark',
+        securityLevel: 'loose',
+        suppressErrorRendering: true
+      });
     } catch (e) {
       console.warn('mermaid init error:', e);
     }
   }
 
-  function renderMermaidInElement(container) {
+  let mermaidCounter = 0;
+  async function renderMermaidInElement(container) {
     if (typeof window.mermaid === 'undefined' || !container) return;
     const blocks = container.querySelectorAll('code.language-mermaid');
     blocks.forEach((code) => {
@@ -520,16 +526,50 @@ document.addEventListener('DOMContentLoaded', async () => {
       pre.textContent = code.textContent;
       code.closest('pre')?.replaceWith(pre);
     });
-    const nodes = container.querySelectorAll('.mermaid');
-    if (nodes.length > 0) {
+
+    const nodes = container.querySelectorAll('.mermaid:not([data-processed="true"])');
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      node.setAttribute('data-processed', 'true');
+      const rawText = (node.textContent || '').trim();
+      if (!rawText) continue;
+
+      // 预清洗常见格式瑕疵与安全占位符
+      let cleaned = rawText
+        .replace(/\/\/\s*\[安全策略.*\]/g, '')
+        .replace(/\.\.\.\s*\[代码过长.*\]\s*\.\.\./g, '')
+        .trim();
+
+      const renderId = 'mermaid_' + Date.now() + '_' + (++mermaidCounter);
       try {
-        if (typeof window.mermaid.run === 'function') {
-          window.mermaid.run({ nodes: nodes });
+        if (typeof window.mermaid.render === 'function') {
+          const res = await window.mermaid.render(renderId, cleaned);
+          const svg = (typeof res === 'object' && res.svg) ? res.svg : res;
+          node.innerHTML = svg;
+          node.classList.add('mermaid-rendered');
+        } else if (typeof window.mermaid.run === 'function') {
+          node.textContent = cleaned;
+          await window.mermaid.run({ nodes: [node] });
         } else if (typeof window.mermaid.init === 'function') {
-          window.mermaid.init(undefined, nodes);
+          node.textContent = cleaned;
+          window.mermaid.init(undefined, [node]);
         }
-      } catch (e) {
-        console.warn('mermaid render error:', e);
+      } catch (err) {
+        console.warn('Mermaid isolated render failed, falling back to styled code:', err);
+        // 清理 mermaid 错误 DOM 产生在 body 下的残留节点
+        const errorEl = document.getElementById('d' + renderId);
+        if (errorEl) errorEl.remove();
+
+        const fallback = document.createElement('div');
+        fallback.className = 'mermaid-fallback-box';
+        fallback.style.margin = '0.5rem 0';
+        fallback.innerHTML = `
+          <div style="font-size:0.75rem; color:var(--text-secondary); margin-bottom:0.25rem;">
+            📊 <em>[Mermaid 流程图代码展示]</em>
+          </div>
+          <pre style="margin:0; background:rgba(0,0,0,0.3); padding:0.6rem; border-radius:6px; font-size:0.8rem; overflow-x:auto; border:1px solid rgba(255,255,255,0.1);"><code>${API.escapeHTML(cleaned)}</code></pre>
+        `;
+        node.replaceWith(fallback);
       }
     }
   }
@@ -659,6 +699,40 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     }
   });
+
+  // 统一拦截问答界面中的超链接点击，避免 404
+  if (chatMessages) {
+    chatMessages.addEventListener('click', (e) => {
+      const a = e.target.closest('a');
+      if (!a) return;
+      const href = a.getAttribute('href');
+      if (!href) return;
+
+      // 1. 如果是外链 (http/https 开头)
+      if (/^https?:\/\//i.test(href)) {
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
+        return; // 允许正常打开新标签页
+      }
+
+      // 2. 如果是当前页面纯锚点 (#xxx)
+      if (href.startsWith('#')) {
+        return;
+      }
+
+      // 3. 内部 Wiki 相对文档或 .md 链接 (如 openwiki/quickstart.md, zk-repro-client.md)
+      e.preventDefault();
+      if (activeRepo && activeRepo.id) {
+        // 提取干净的文档 ID (去除 openwiki/ 前缀与 .md 后缀)
+        let cleanDoc = href.replace(/^\/?(openwiki\/)?/, '').replace(/\.md$/, '');
+        const hashPart = cleanDoc.includes('#') ? cleanDoc.split('#')[1] : cleanDoc;
+        const targetUrl = `/wiki/${encodeURIComponent(activeRepo.id)}/#${encodeURIComponent(hashPart)}`;
+        window.open(targetUrl, '_blank');
+      } else {
+        console.warn('当前未选中仓库，无法映射 Wiki 文档链接:', href);
+      }
+    });
+  }
 
   async function sendQuestion() {
     if (activeAbortController) {

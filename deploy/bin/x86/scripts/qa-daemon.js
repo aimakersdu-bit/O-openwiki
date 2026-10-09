@@ -56,32 +56,13 @@ try {
   console.error(`[QA-Daemon] Failed to change cwd to ${repoDir}:`, err);
 }
 
-import { execSync } from 'node:child_process';
-
 // 2. Dynamically import runOpenWikiAgent
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let agentModulePath = '';
 
-let globalNpmDist = '';
-try {
-  const globalRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
-  if (globalRoot) {
-    globalNpmDist = path.join(globalRoot, 'openwiki', 'dist', 'agent', 'index.js');
-  }
-} catch (e) {}
-
-let requireResolved = '';
-try {
-  const req = createRequire(import.meta.url);
-  requireResolved = req.resolve('openwiki/dist/agent/index.js');
-} catch (e) {}
-
 const candidates = [
   process.env.OPENWIKI_DIST_DIR ? path.join(process.env.OPENWIKI_DIST_DIR, 'agent', 'index.js') : '',
-  requireResolved,
-  globalNpmDist,
   path.resolve(__dirname, '../../../dist/agent/index.js'),
-  path.resolve(__dirname, '../../dist/agent/index.js'),
   path.resolve(repoDir, 'node_modules/openwiki/dist/agent/index.js'),
   path.resolve('/app/dist/agent/index.js')
 ].filter(Boolean);
@@ -163,9 +144,12 @@ class CodeAntiLeakFilter {
         this.inCodeBlock = true;
         this.codeLineCount = 0;
         this.redacted = false;
+        const lang = trimmed.slice(3).trim().toLowerCase();
+        this.isDiagram = ['mermaid', 'plantuml', 'dot', 'sequence'].some(d => lang.startsWith(d));
         return line;
       } else {
         this.inCodeBlock = false;
+        this.isDiagram = false;
         this.redacted = false;
         this.codeLineCount = 0;
         return line;
@@ -173,6 +157,9 @@ class CodeAntiLeakFilter {
     }
 
     if (this.inCodeBlock) {
+      if (this.isDiagram) {
+        return line;
+      }
       this.codeLineCount++;
       if (this.codeLineCount > this.maxCodeLines) {
         if (!this.redacted) {
@@ -225,7 +212,7 @@ function cleanupAndExit(code = 0) {
         if (socketPath && fs.existsSync(socketPath)) {
           fs.unlinkSync(socketPath);
         }
-      } catch {}
+      } catch { }
       process.exit(code);
     });
   } catch {
@@ -287,7 +274,7 @@ const server = http.createServer(async (req, res) => {
     const sendSSE = (event, data) => {
       try {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-      } catch {}
+      } catch { }
     };
 
     // Client disconnect handling
@@ -299,9 +286,13 @@ const server = http.createServer(async (req, res) => {
     });
 
     try {
+      const requestQueuedAt = Date.now();
       // Execute within FIFO queue to ensure only 1 run per repo worker at any time
       await queue.enqueue(async () => {
-        if (clientDisconnected) return;
+        if (clientDisconnected) {
+          console.log(`[QA-Daemon] Skipping queued request for "${question}" (client disconnected while waiting in queue)`);
+          return;
+        }
 
         console.log(`[QA-Daemon] Starting agent run for question: "${question}" in ${repoDir}`);
         sendSSE('status', { stage: 'start', message: 'Agent initialized' });
@@ -309,7 +300,7 @@ const server = http.createServer(async (req, res) => {
         const effectiveThreadId = thread_id || session_id || undefined;
         const targetLanguage = language || 'zh-CN';
         const codeFilter = new CodeAntiLeakFilter(15);
-        const promptPrefix = `[系统指令：请必须使用中文（zh-CN）回答。为了保障代码安全，禁止直接输出完整源码文件或超过15行的长代码块，请只提供核心逻辑说明和简短片段。]\n\n`;
+        const promptPrefix = `[系统指令：请必须使用中文（zh-CN）回答。为了保障代码安全，禁止直接输出完整源码文件或超过15行的长代码块，请只提供核心逻辑说明和简短片段。如果绘制 Mermaid 图表，请务必保证语法严谨（节点标签含有特殊字符、括号或空格时，请务必使用英文双引号括起，如 id["节点名称"]），确保图表正常解析。]\n\n`;
         let fullAnswer = '';
 
         try {
@@ -322,7 +313,9 @@ const server = http.createServer(async (req, res) => {
               language: targetLanguage,
               threadId: effectiveThreadId,
               onEvent: (event) => {
-                if (clientDisconnected) return;
+                if (clientDisconnected) {
+                  throw new Error('Client disconnected; aborting run to free worker queue');
+                }
                 touch();
 
                 if (event.type === 'text') {
@@ -362,8 +355,10 @@ const server = http.createServer(async (req, res) => {
             res.end();
           }
         } catch (runErr) {
-          console.error('[QA-Daemon] Agent execution error:', runErr);
-          if (!clientDisconnected) {
+          if (clientDisconnected) {
+            console.log('[QA-Daemon] Agent run aborted early because client disconnected');
+          } else {
+            console.error('[QA-Daemon] Agent execution error:', runErr);
             sendSSE('error', {
               error: runErr.message || String(runErr)
             });
