@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -270,5 +271,128 @@ func TestStreamableHTTPProtocol(t *testing.T) {
 
 	if jsonResp.Error != nil {
 		t.Fatalf("unexpected RPC error: %v", jsonResp.Error)
+	}
+}
+
+func TestMCPProgressParamsParsing(t *testing.T) {
+	reqData := []byte(`{
+		"jsonrpc": "2.0",
+		"id": 100,
+		"method": "tools/call",
+		"params": {
+			"name": "ask_repository",
+			"arguments": {
+				"repo_name": "test",
+				"user_id": "test_user",
+				"question": "test question"
+			},
+			"_meta": {
+				"progressToken": "prog-token-123"
+			}
+		}
+	}`)
+
+	var req JSONRPCRequest
+	if err := json.Unmarshal(reqData, &req); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	var params CallToolRequestParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		t.Fatalf("unmarshal params error: %v", err)
+	}
+
+	if params.Meta == nil || params.Meta.ProgressToken != "prog-token-123" {
+		t.Fatalf("expected progressToken prog-token-123, got %+v", params.Meta)
+	}
+}
+
+func TestLegacySSEImmediateAcceptedAndStream(t *testing.T) {
+	server, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	session, err := server.sessions.GetOrCreate("test-legacy-sess")
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	body := []byte(`{
+		"jsonrpc": "2.0",
+		"id": 200,
+		"method": "tools/call",
+		"params": {
+			"name": "ask_repository",
+			"arguments": {
+				"repo_name": "non-existent",
+				"user_id": "u1",
+				"question": "q1"
+			},
+			"_meta": {
+				"progressToken": "token-xyz"
+			}
+		}
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/messages?sessionId=test-legacy-sess", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	server.HandleLegacyMessages(w, req)
+
+	// 1. Must respond 202 Accepted immediately
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted, got %d", w.Code)
+	}
+
+	// 2. Channel must receive notifications or response asynchronously
+	select {
+	case msg := <-session.MsgChan:
+		if msg == nil {
+			t.Fatalf("received nil message on MsgChan")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for asynchronous message on MsgChan")
+	}
+}
+
+func TestStreamableHTTPStreamingResponse(t *testing.T) {
+	server, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	body := []byte(`{
+		"jsonrpc": "2.0",
+		"id": 300,
+		"method": "tools/call",
+		"params": {
+			"name": "ask_repository",
+			"arguments": {
+				"repo_name": "non-existent",
+				"user_id": "u1",
+				"question": "q1"
+			},
+			"_meta": {
+				"progressToken": "token-sse-stream"
+			}
+		}
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+	req.Header.Set("Accept", "text/event-stream")
+	w := httptest.NewRecorder()
+
+	server.HandleStreamableHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(contentType, "text/event-stream") {
+		t.Fatalf("expected Content-Type text/event-stream, got %s", contentType)
+	}
+
+	bodyStr := w.Body.String()
+	if !strings.Contains(bodyStr, "event: message") {
+		t.Fatalf("expected SSE chunks containing 'event: message', got: %s", bodyStr)
 	}
 }

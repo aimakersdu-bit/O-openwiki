@@ -74,10 +74,10 @@ func (s *Server) GetTools() []Tool {
 }
 
 // ExecuteTool dispatches and executes the requested tool.
-func (s *Server) ExecuteTool(ctx context.Context, session *ClientSession, name string, args map[string]any) (*CallToolResult, error) {
+func (s *Server) ExecuteTool(ctx context.Context, session *ClientSession, name string, args map[string]any, meta *RequestMeta, onStreamToken func(token string)) (*CallToolResult, error) {
 	switch name {
 	case "ask_repository":
-		return s.handleAskRepository(ctx, session, args)
+		return s.handleAskRepository(ctx, session, args, meta, onStreamToken)
 	case "list_repositories":
 		return s.handleListRepositories(ctx)
 	default:
@@ -91,7 +91,7 @@ func (s *Server) ExecuteTool(ctx context.Context, session *ClientSession, name s
 	}
 }
 
-func (s *Server) handleAskRepository(ctx context.Context, session *ClientSession, args map[string]any) (*CallToolResult, error) {
+func (s *Server) handleAskRepository(ctx context.Context, session *ClientSession, args map[string]any, meta *RequestMeta, onStreamToken func(token string)) (*CallToolResult, error) {
 	repoName, _ := args["repo_name"].(string)
 	userID, _ := args["user_id"].(string)
 	question, _ := args["question"].(string)
@@ -101,6 +101,22 @@ func (s *Server) handleAskRepository(ctx context.Context, session *ClientSession
 	userID = strings.TrimSpace(userID)
 	question = strings.TrimSpace(question)
 	sessionID = strings.TrimSpace(sessionID)
+
+	var progressToken any
+	if meta != nil {
+		progressToken = meta.ProgressToken
+	}
+
+	sendNotification := func(notif any) {
+		if session != nil {
+			session.Send(notif)
+		}
+		if onStreamToken != nil {
+			if data, err := json.Marshal(notif); err == nil {
+				onStreamToken(string(data))
+			}
+		}
+	}
 
 	// Strict user_id audit check
 	if userID == "" {
@@ -155,20 +171,60 @@ func (s *Server) handleAskRepository(ctx context.Context, session *ClientSession
 		sessionID = fmt.Sprintf("mcp_sess_%d_%s", time.Now().Unix(), hex.EncodeToString(b))
 	}
 
-	// Create stream writer adapter to push tokens via MCP notification if session is active
-	writer := NewMCPStreamWriter(func(token string) {
-		if session != nil {
-			notif := JSONRPCNotification{
-				JSONRPC: "2.0",
-				Method:  "notifications/message",
-				Params: LoggingMessageParams{
-					Level:  "info",
-					Data:   token,
-					Logger: "openwiki-mcp",
-				},
+	// 1. Initial progress notification if progressToken is present
+	if progressToken != nil {
+		sendNotification(JSONRPCNotification{
+			JSONRPC: "2.0",
+			Method:  "notifications/progress",
+			Params: ProgressParams{
+				ProgressToken: progressToken,
+				Progress:      5,
+				Message:       "Connecting to repository knowledge base...",
+			},
+		})
+	}
+
+	// 2. Periodic progress heartbeat (every 3 seconds) to ensure client never times out
+	stopHeartbeat := make(chan struct{})
+	defer close(stopHeartbeat)
+	if progressToken != nil {
+		go func() {
+			ticker := time.NewTicker(3 * time.Second)
+			defer ticker.Stop()
+			step := 10.0
+			for {
+				select {
+				case <-stopHeartbeat:
+					return
+				case <-ticker.C:
+					if step < 90 {
+						step += 10
+					}
+					sendNotification(JSONRPCNotification{
+						JSONRPC: "2.0",
+						Method:  "notifications/progress",
+						Params: ProgressParams{
+							ProgressToken: progressToken,
+							Progress:      step,
+							Message:       "Analyzing codebase and reasoning...",
+						},
+					})
+				}
 			}
-			session.Send(notif)
-		}
+		}()
+	}
+
+	// Create stream writer adapter to push tokens via MCP notification
+	writer := NewMCPStreamWriter(func(token string) {
+		sendNotification(JSONRPCNotification{
+			JSONRPC: "2.0",
+			Method:  "notifications/message",
+			Params: LoggingMessageParams{
+				Level:  "info",
+				Data:   token,
+				Logger: "openwiki-mcp",
+			},
+		})
 	})
 
 	if s.qaManager == nil {
@@ -194,6 +250,19 @@ func (s *Server) handleAskRepository(ctx context.Context, session *ClientSession
 				Text: fmt.Sprintf("execution failed: %v", err),
 			}},
 		}, nil
+	}
+
+	// Final progress notification
+	if progressToken != nil {
+		sendNotification(JSONRPCNotification{
+			JSONRPC: "2.0",
+			Method:  "notifications/progress",
+			Params: ProgressParams{
+				ProgressToken: progressToken,
+				Progress:      100,
+				Message:       "Complete",
+			},
+		})
 	}
 
 	fullAnswer := writer.FullAnswer()
@@ -340,7 +409,7 @@ func (s *Server) ProcessJSONRPC(ctx context.Context, session *ClientSession, bod
 			}, nil
 		}
 
-		res, err := s.ExecuteTool(ctx, session, params.Name, params.Arguments)
+		res, err := s.ExecuteTool(ctx, session, params.Name, params.Arguments, params.Meta, nil)
 		if err != nil {
 			return &JSONRPCResponse{
 				JSONRPC: "2.0",
@@ -453,6 +522,68 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer r.Body.Close()
 
+		var req JSONRPCRequest
+		isJSONRPC := json.Unmarshal(body, &req) == nil
+
+		acceptHeader := r.Header.Get("Accept")
+		wantsSSE := strings.Contains(acceptHeader, "text/event-stream")
+
+		// If client requests Streamable HTTP SSE streaming and is calling a tool
+		if isJSONRPC && req.Method == "tools/call" && wantsSSE {
+			var params CallToolRequestParams
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				http.Error(w, "Invalid params for tools/call", http.StatusBadRequest)
+				return
+			}
+
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			w.Header().Set("X-Accel-Buffering", "no")
+			if session != nil {
+				w.Header().Set("Mcp-Session-Id", session.ID)
+			}
+			w.WriteHeader(http.StatusOK)
+
+			flusher, ok := w.(http.Flusher)
+			if ok {
+				flusher.Flush()
+			}
+
+			onStreamToken := func(jsonStr string) {
+				fmt.Fprintf(w, "event: message\ndata: %s\n\n", jsonStr)
+				if ok {
+					flusher.Flush()
+				}
+			}
+
+			res, err := s.ExecuteTool(r.Context(), session, params.Name, params.Arguments, params.Meta, onStreamToken)
+			var resp *JSONRPCResponse
+			if err != nil {
+				resp = &JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Error: &JSONRPCError{
+						Code:    CodeInternalError,
+						Message: err.Error(),
+					},
+				}
+			} else {
+				resp = &JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result:  res,
+				}
+			}
+
+			respData, _ := json.Marshal(resp)
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", respData)
+			if ok {
+				flusher.Flush()
+			}
+			return
+		}
+
 		resp, err := s.ProcessJSONRPC(r.Context(), session, body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -555,6 +686,49 @@ func (s *Server) HandleLegacyMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
+
+	var req JSONRPCRequest
+	if err := json.Unmarshal(body, &req); err == nil && req.Method == "tools/call" {
+		// Respond 202 Accepted immediately to avoid client POST timeout in tools/call
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("Accepted"))
+
+		// Asynchronously execute tool and push events + result to the SSE session
+		go func() {
+			var params CallToolRequestParams
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				session.Send(&JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Error: &JSONRPCError{
+						Code:    CodeInvalidParams,
+						Message: "Invalid params for tools/call",
+					},
+				})
+				return
+			}
+
+			res, err := s.ExecuteTool(context.Background(), session, params.Name, params.Arguments, params.Meta, nil)
+			if err != nil {
+				session.Send(&JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Error: &JSONRPCError{
+						Code:    CodeInternalError,
+						Message: err.Error(),
+					},
+				})
+				return
+			}
+
+			session.Send(&JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  res,
+			})
+		}()
+		return
+	}
 
 	resp, err := s.ProcessJSONRPC(r.Context(), session, body)
 	if err != nil {

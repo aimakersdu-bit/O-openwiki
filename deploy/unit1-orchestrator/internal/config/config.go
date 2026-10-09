@@ -56,7 +56,7 @@ func DefaultConfig() *Config {
 		ReposBaseDir:     filepath.Join(home, ".openwiki", "repos"),
 		DBPath:           "orchestrator.db",
 		MaxConcurrentQA:  5,
-		QATimeoutSec:     120,
+		QATimeoutSec:     600,
 		QADaemonScript:   "scripts/qa-daemon.js",
 		QASocketDir:      os.TempDir(),
 		QAIdleTimeoutSec: 7200,

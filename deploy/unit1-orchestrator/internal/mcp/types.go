@@ -93,9 +93,21 @@ type ListToolsResult struct {
 	Tools []Tool `json:"tools"`
 }
 
+type RequestMeta struct {
+	ProgressToken any `json:"progressToken,omitempty"`
+}
+
 type CallToolRequestParams struct {
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments,omitempty"`
+	Meta      *RequestMeta   `json:"_meta,omitempty"`
+}
+
+type ProgressParams struct {
+	ProgressToken any     `json:"progressToken"`
+	Progress      float64 `json:"progress"`
+	Total         float64 `json:"total,omitempty"`
+	Message       string  `json:"message,omitempty"`
 }
 
 type ContentItem struct {

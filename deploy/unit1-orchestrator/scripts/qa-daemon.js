@@ -280,9 +280,13 @@ const server = http.createServer(async (req, res) => {
     });
 
     try {
+      const requestQueuedAt = Date.now();
       // Execute within FIFO queue to ensure only 1 run per repo worker at any time
       await queue.enqueue(async () => {
-        if (clientDisconnected) return;
+        if (clientDisconnected) {
+          console.log(`[QA-Daemon] Skipping queued request for "${question}" (client disconnected while waiting in queue)`);
+          return;
+        }
 
         console.log(`[QA-Daemon] Starting agent run for question: "${question}" in ${repoDir}`);
         sendSSE('status', { stage: 'start', message: 'Agent initialized' });
@@ -303,7 +307,9 @@ const server = http.createServer(async (req, res) => {
               language: targetLanguage,
               threadId: effectiveThreadId,
               onEvent: (event) => {
-                if (clientDisconnected) return;
+                if (clientDisconnected) {
+                  throw new Error('Client disconnected; aborting run to free worker queue');
+                }
                 touch();
 
                 if (event.type === 'text') {
@@ -343,8 +349,10 @@ const server = http.createServer(async (req, res) => {
             res.end();
           }
         } catch (runErr) {
-          console.error('[QA-Daemon] Agent execution error:', runErr);
-          if (!clientDisconnected) {
+          if (clientDisconnected) {
+            console.log('[QA-Daemon] Agent run aborted early because client disconnected');
+          } else {
+            console.error('[QA-Daemon] Agent execution error:', runErr);
             sendSSE('error', {
               error: runErr.message || String(runErr)
             });

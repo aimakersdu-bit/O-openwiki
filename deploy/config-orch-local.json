@@ -7,6 +7,6 @@
   "repos_base_dir": "/Users/bigc/openwiki/deploy/data/repos",
   "db_path": "/Users/bigc/openwiki/deploy/data/orchestrator.db",
   "max_concurrent_qa": 5,
-  "qa_timeout_sec": 120,
+  "qa_timeout_sec": 600,
   "default_language": "zh-CN"
 }
