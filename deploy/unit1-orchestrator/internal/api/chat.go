@@ -88,8 +88,8 @@ func (s *Server) handleQAHistory(w http.ResponseWriter, r *http.Request) {
 	repoID := r.URL.Query().Get("repo_id")
 	userID := r.URL.Query().Get("user_id")
 
-	if repoID == "" || userID == "" {
-		http.Error(w, "repo_id and user_id are required", http.StatusBadRequest)
+	if repoID == "" {
+		http.Error(w, "repo_id is required", http.StatusBadRequest)
 		return
 	}
 
@@ -97,6 +97,9 @@ func (s *Server) handleQAHistory(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Failed to query QA sessions: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if sessions == nil {
+		sessions = []db.QASession{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -31,8 +31,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     historyContainer.innerHTML = '<p style="color: var(--text-secondary); text-align: center; padding: 2rem;">加载问答审计日志中...</p>';
     try {
-      const sessions = await API.getQASessions(repoId);
-      if (!sessions || sessions.length === 0) {
+      let sessions = await API.getQASessions(repoId);
+      if (!Array.isArray(sessions)) {
+        if (sessions && Array.isArray(sessions.sessions)) {
+          sessions = sessions.sessions;
+        } else {
+          sessions = [];
+        }
+      }
+      if (sessions.length === 0) {
         historyContainer.innerHTML = '<p style="color: var(--text-secondary); text-align: center; padding: 2rem;">该仓库暂无历史问答记录。</p>';
         return;
       }

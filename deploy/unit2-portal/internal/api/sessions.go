@@ -32,12 +32,15 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		url := fmt.Sprintf("%s/api/qa/history?user_id=%s&repo_id=%s", s.config.OrchestratorURL, userIDParam, repoID)
 		resp, err := s.httpClient.Get(url)
-		if err == nil && resp.StatusCode == http.StatusOK {
+		if err == nil {
 			defer resp.Body.Close()
 			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(resp.StatusCode)
 			io.Copy(w, resp.Body)
 			return
 		}
+		http.Error(w, "Failed to connect to Orchestrator: "+err.Error(), http.StatusBadGateway)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
