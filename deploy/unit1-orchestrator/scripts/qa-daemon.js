@@ -144,9 +144,12 @@ class CodeAntiLeakFilter {
         this.inCodeBlock = true;
         this.codeLineCount = 0;
         this.redacted = false;
+        const lang = trimmed.slice(3).trim().toLowerCase();
+        this.isDiagram = ['mermaid', 'plantuml', 'dot', 'sequence'].some(d => lang.startsWith(d));
         return line;
       } else {
         this.inCodeBlock = false;
+        this.isDiagram = false;
         this.redacted = false;
         this.codeLineCount = 0;
         return line;
@@ -154,6 +157,9 @@ class CodeAntiLeakFilter {
     }
 
     if (this.inCodeBlock) {
+      if (this.isDiagram) {
+        return line;
+      }
       this.codeLineCount++;
       if (this.codeLineCount > this.maxCodeLines) {
         if (!this.redacted) {
@@ -294,7 +300,7 @@ const server = http.createServer(async (req, res) => {
         const effectiveThreadId = thread_id || session_id || undefined;
         const targetLanguage = language || 'zh-CN';
         const codeFilter = new CodeAntiLeakFilter(15);
-        const promptPrefix = `[系统指令：请必须使用中文（zh-CN）回答。为了保障代码安全，禁止直接输出完整源码文件或超过15行的长代码块，请只提供核心逻辑说明和简短片段。]\n\n`;
+        const promptPrefix = `[系统指令：请必须使用中文（zh-CN）回答。为了保障代码安全，禁止直接输出完整源码文件或超过15行的长代码块，请只提供核心逻辑说明和简短片段。如果绘制 Mermaid 图表，请务必保证语法严谨（节点标签含有特殊字符、括号或空格时，请务必使用英文双引号括起，如 id["节点名称"]），确保图表正常解析。]\n\n`;
         let fullAnswer = '';
 
         try {

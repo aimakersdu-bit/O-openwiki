@@ -553,4 +553,18 @@ function connectSSE() {
 $("#theme").addEventListener("click", toggleTheme);
 mermaid.initialize({ startOnLoad: false, theme: "dark" });
 marked.setOptions({ breaks: false, gfm: true });
-void load(true).then(connectSSE);
+void load(true).then(() => {
+    connectSSE();
+    const handleHash = () => {
+        const hash = window.location.hash.replace(/^#/, '');
+        if (hash) {
+            const decoded = decodeURIComponent(hash);
+            const target = graph.nodes.find((n) => n.id === decoded || n.id.endsWith(decoded) || n.title === decoded);
+            if (target) {
+                selectNode(target.id);
+            }
+        }
+    };
+    window.addEventListener("hashchange", handleHash);
+    handleHash();
+});

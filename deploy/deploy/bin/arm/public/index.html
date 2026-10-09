@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>代码 Wiki 仪表盘 - 百信 RepoWiki</title>
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/style.css?v=3">
 </head>
 <body>
   <!-- Header Navbar -->
@@ -30,11 +30,46 @@
         <h2>企业代码 Wiki 仪表盘</h2>
         <p class="subtitle">在线查阅各代码仓库的生成 Wiki 或启动 AI 深度问答</p>
       </div>
-      <button id="refreshBtn" class="btn btn-secondary">🔄 刷新列表</button>
+    </div>
+
+    <!-- Search & Filter Toolbar -->
+    <div class="dashboard-toolbar">
+      <div class="toolbar-left">
+        <div class="search-input-wrapper">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="repoSearchInput" class="toolbar-input" placeholder="搜索仓库名称或标识 (如 order-service)..." autocomplete="off" />
+          <button id="clearSearchBtn" class="clear-btn" style="display: none;" title="清除搜索">&times;</button>
+        </div>
+        <div class="filter-select-wrapper">
+          <select id="statusFilter" class="toolbar-select">
+            <option value="all">全部构建状态</option>
+            <option value="ready">✅ 已构建完成</option>
+            <option value="building">⚡ 增量构建中</option>
+            <option value="unbuilt">⏳ 尚未构建 / 失败</option>
+          </select>
+        </div>
+        <div class="page-size-wrapper">
+          <select id="pageSizeSelect" class="toolbar-select">
+            <option value="9">每页 9 条</option>
+            <option value="18">每页 18 条</option>
+            <option value="36">每页 36 条</option>
+            <option value="all">显示全部</option>
+          </select>
+        </div>
+      </div>
+      <div class="toolbar-right">
+        <span id="repoCountStats" class="toolbar-stats">正在统计...</span>
+        <button id="refreshBtn" class="btn btn-secondary btn-sm">🔄 刷新</button>
+      </div>
     </div>
 
     <div id="repoList" class="repo-grid">
       <!-- Repo cards injected by JS -->
+    </div>
+
+    <!-- Pagination Bar -->
+    <div id="paginationBar" class="pagination-bar" style="display: none;">
+      <!-- Pagination controls injected by JS -->
     </div>
   </main>
 
@@ -80,7 +115,8 @@
 
   <script src="js/auth.js"></script>
   <script src="vendor/marked.min.js"></script>
+  <script src="vendor/mermaid.min.js"></script>
   <script src="js/api.js"></script>
-  <script src="js/dashboard.js"></script>
+  <script src="js/dashboard.js?v=2"></script>
 </body>
 </html>
