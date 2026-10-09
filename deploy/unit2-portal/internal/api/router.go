@@ -63,7 +63,13 @@ func (s *Server) routes() {
 
 	// Static web portal assets
 	if s.publicFS != nil {
-		s.mux.Handle("/portal/", http.StripPrefix("/portal/", s.publicFS))
+		staticHandler := http.StripPrefix("/portal/", s.publicFS)
+		s.mux.HandleFunc("/portal/", func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, ".js") || strings.HasSuffix(r.URL.Path, ".css") || strings.HasSuffix(r.URL.Path, ".html") {
+				w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+			}
+			staticHandler.ServeHTTP(w, r)
+		})
 	}
 
 	// Serve static Wiki pages under /wiki/ in standalone dev execution

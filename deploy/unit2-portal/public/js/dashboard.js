@@ -12,6 +12,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   const repoCountStats = document.getElementById('repoCountStats');
   const paginationBar = document.getElementById('paginationBar');
 
+  // Chat Drawer Elements
+  const chatDrawer = document.getElementById('chatDrawer');
+  const closeChatBtn = document.getElementById('closeChatBtn');
+  const newSessionBtn = document.getElementById('newSessionBtn');
+  const toggleHistoryBtn = document.getElementById('toggleHistoryBtn');
+  const sessionHistoryPanel = document.getElementById('sessionHistoryPanel');
+  const closeHistoryBtn = document.getElementById('closeHistoryBtn');
+  const sessionList = document.getElementById('sessionList');
+  const chatRepoTitle = document.getElementById('chatRepoTitle');
+  const chatRepoBadge = document.getElementById('chatRepoBadge');
+  const chatMessages = document.getElementById('chatMessages');
+  const chatInput = document.getElementById('chatInput');
+  const sendChatBtn = document.getElementById('sendChatBtn');
+
+  let activeRepo = null;
+
   // Dashboard Repos State
   let allRepos = [];
   let filteredRepos = [];
