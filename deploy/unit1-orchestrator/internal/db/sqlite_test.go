@@ -234,3 +234,119 @@ func TestGetRepoByNameOrID(t *testing.T) {
 	}
 }
 
+func TestProjectCRUD(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	proj := &Project{
+		ID:          "proj-test-1",
+		Name:        "Retail Finance Platform",
+		Description: "Microservices for retail credit and payment",
+		LocalPath:   "/tmp/projects/proj-test-1",
+		Status:      "active",
+	}
+
+	// 1. Create Project
+	if err := database.CreateProject(proj); err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+
+	// 2. Get Project
+	fetched, err := database.GetProject("proj-test-1")
+	if err != nil {
+		t.Fatalf("GetProject failed: %v", err)
+	}
+	if fetched == nil {
+		t.Fatalf("expected project to be found, got nil")
+	}
+	if fetched.Name != proj.Name {
+		t.Errorf("expected name %s, got %s", proj.Name, fetched.Name)
+	}
+
+	// 3. List Projects
+	projects, err := database.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects failed: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Errorf("expected 1 project in list, got %d", len(projects))
+	}
+
+	// 4. Update Project
+	proj.Name = "Updated Project Name"
+	proj.Status = "building"
+	if err := database.UpdateProject(proj); err != nil {
+		t.Fatalf("UpdateProject failed: %v", err)
+	}
+	updated, err := database.GetProject("proj-test-1")
+	if err != nil || updated.Name != "Updated Project Name" || updated.Status != "building" {
+		t.Fatalf("expected updated project name and status, got %v", updated)
+	}
+
+	// 5. Delete Project
+	if err := database.DeleteProject("proj-test-1"); err != nil {
+		t.Fatalf("DeleteProject failed: %v", err)
+	}
+	deleted, err := database.GetProject("proj-test-1")
+	if err != nil || deleted != nil {
+		t.Fatalf("expected project to be deleted, got %v", deleted)
+	}
+}
+
+func TestProjectReposMapping(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Seed project and 2 repos
+	proj := &Project{
+		ID:        "proj-m-1",
+		Name:      "Proj M",
+		LocalPath: "/tmp/proj-m",
+		Status:    "active",
+	}
+	if err := database.CreateProject(proj); err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+
+	repoA := &Repo{ID: "repo-gw", Name: "Gateway", GitURL: "u1", Branch: "main", LocalPath: "/tmp/gw", Status: "active"}
+	repoB := &Repo{ID: "repo-order", Name: "OrderSrv", GitURL: "u2", Branch: "main", LocalPath: "/tmp/order", Status: "active"}
+	_ = database.CreateRepo(repoA)
+	_ = database.CreateRepo(repoB)
+
+	// 1. Set Project Repos
+	mappings := []ProjectRepo{
+		{ProjectID: "proj-m-1", RepoID: "repo-gw", AliasName: "gateway", Role: "gateway"},
+		{ProjectID: "proj-m-1", RepoID: "repo-order", AliasName: "order-service", Role: "service"},
+	}
+	if err := database.SetProjectRepos("proj-m-1", mappings); err != nil {
+		t.Fatalf("SetProjectRepos failed: %v", err)
+	}
+
+	// 2. Get Project Repos with Details
+	repos, err := database.GetProjectRepos("proj-m-1")
+	if err != nil {
+		t.Fatalf("GetProjectRepos failed: %v", err)
+	}
+	if len(repos) != 2 {
+		t.Fatalf("expected 2 repos mapped, got %d", len(repos))
+	}
+	if repos[0].AliasName != "gateway" && repos[1].AliasName != "gateway" {
+		t.Errorf("expected alias gateway in result")
+	}
+
+	// 3. Update Project Repos (e.g. remove one repo, add new alias)
+	newMappings := []ProjectRepo{
+		{ProjectID: "proj-m-1", RepoID: "repo-order", AliasName: "orders", Role: "service"},
+	}
+	if err := database.SetProjectRepos("proj-m-1", newMappings); err != nil {
+		t.Fatalf("SetProjectRepos update failed: %v", err)
+	}
+	reposUpdated, err := database.GetProjectRepos("proj-m-1")
+	if err != nil {
+		t.Fatalf("GetProjectRepos after update failed: %v", err)
+	}
+	if len(reposUpdated) != 1 || reposUpdated[0].AliasName != "orders" {
+		t.Fatalf("expected 1 repo with alias orders, got %v", reposUpdated)
+	}
+}
+

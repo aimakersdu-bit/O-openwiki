@@ -137,6 +137,34 @@ func DeleteQASession(sessionID, userID string) error {
 	return globalDB.DeleteQASession(sessionID, userID)
 }
 
+func ListProjects() ([]Project, error) {
+	return globalDB.ListProjects()
+}
+
+func GetProject(id string) (*Project, error) {
+	return globalDB.GetProject(id)
+}
+
+func CreateProject(p *Project) error {
+	return globalDB.CreateProject(p)
+}
+
+func UpdateProject(p *Project) error {
+	return globalDB.UpdateProject(p)
+}
+
+func DeleteProject(id string) error {
+	return globalDB.DeleteProject(id)
+}
+
+func SetProjectRepos(projectID string, repos []ProjectRepo) error {
+	return globalDB.SetProjectRepos(projectID, repos)
+}
+
+func GetProjectRepos(projectID string) ([]RepoWithAlias, error) {
+	return globalDB.GetProjectRepos(projectID)
+}
+
 // migrate creates all required tables if they do not exist.
 func (db *DB) migrate() error {
 	tables := []string{
@@ -172,6 +200,34 @@ func (db *DB) migrate() error {
 			answer      TEXT,
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS projects (
+			id          TEXT PRIMARY KEY,
+			name        TEXT NOT NULL,
+			description TEXT,
+			local_path  TEXT NOT NULL,
+			status      TEXT NOT NULL DEFAULT 'active',
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS project_repos (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			repo_id     TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+			alias_name  TEXT NOT NULL,
+			role        TEXT DEFAULT 'service',
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(project_id, repo_id),
+			UNIQUE(project_id, alias_name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS project_qa_sessions (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id  TEXT,
+			project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			user_id     TEXT NOT NULL,
+			question    TEXT NOT NULL,
+			answer      TEXT,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
 	}
 
 	for _, t := range tables {
@@ -187,6 +243,9 @@ func (db *DB) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_builds_repo ON builds(repo_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_qa_repo_user ON qa_sessions(repo_id, user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_qa_session_id ON qa_sessions(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_project_repos_proj ON project_repos(project_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_project_qa_proj ON project_qa_sessions(project_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_project_qa_sess ON project_qa_sessions(session_id)`,
 	}
 
 	for _, idx := range indices {
@@ -551,4 +610,164 @@ func (db *DB) GetQASessionMessages(sessionID, userID string) ([]QASession, error
 func (db *DB) DeleteQASession(sessionID, userID string) error {
 	_, err := db.conn.Exec(`DELETE FROM qa_sessions WHERE (session_id = ? OR printf('legacy_%d', id) = ?) AND user_id = ?`, sessionID, sessionID, userID)
 	return err
+}
+
+// --- Project CRUD ---
+
+// Project represents a multi-repo project workspace.
+type Project struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	LocalPath   string `json:"local_path"`
+	Status      string `json:"status"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+// ProjectRepo represents a repo mapping inside a project.
+type ProjectRepo struct {
+	ID        int64  `json:"id,omitempty"`
+	ProjectID string `json:"project_id"`
+	RepoID    string `json:"repo_id"`
+	AliasName string `json:"alias_name"`
+	Role      string `json:"role"`
+}
+
+// RepoWithAlias joins Repo with project-specific alias and role.
+type RepoWithAlias struct {
+	Repo
+	AliasName string `json:"alias_name"`
+	Role      string `json:"role"`
+}
+
+// ListProjects returns all registered projects.
+func (db *DB) ListProjects() ([]Project, error) {
+	rows, err := db.conn.Query(`SELECT id, name, COALESCE(description,''), local_path, status, created_at, updated_at FROM projects ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var projects []Project
+	for rows.Next() {
+		var p Project
+		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.LocalPath, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		projects = append(projects, p)
+	}
+	return projects, rows.Err()
+}
+
+// GetProject returns a single project by ID.
+func (db *DB) GetProject(id string) (*Project, error) {
+	p := &Project{}
+	err := db.conn.QueryRow(`SELECT id, name, COALESCE(description,''), local_path, status, created_at, updated_at FROM projects WHERE id = ?`, id).
+		Scan(&p.ID, &p.Name, &p.Description, &p.LocalPath, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return p, err
+}
+
+// CreateProject inserts a new project.
+func (db *DB) CreateProject(p *Project) error {
+	_, err := db.conn.Exec(`INSERT INTO projects (id, name, description, local_path, status) VALUES (?, ?, ?, ?, ?)`,
+		p.ID, p.Name, p.Description, p.LocalPath, p.Status)
+	return err
+}
+
+// UpdateProject updates project fields and updated_at timestamp.
+func (db *DB) UpdateProject(p *Project) error {
+	timeStr := time.Now().Local().Format("2006-01-02 15:04:05")
+	_, err := db.conn.Exec(`UPDATE projects SET name = ?, description = ?, local_path = ?, status = ?, updated_at = ? WHERE id = ?`,
+		p.Name, p.Description, p.LocalPath, p.Status, timeStr, p.ID)
+	return err
+}
+
+// DeleteProject removes a project and cascades repo mappings.
+func (db *DB) DeleteProject(id string) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM project_repos WHERE project_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM project_qa_sessions WHERE project_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM projects WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SetProjectRepos replaces all repo mappings for a project.
+func (db *DB) SetProjectRepos(projectID string, repos []ProjectRepo) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM project_repos WHERE project_id = ?`, projectID); err != nil {
+		return err
+	}
+
+	stmt, err := tx.Prepare(`INSERT INTO project_repos (project_id, repo_id, alias_name, role) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, r := range repos {
+		role := r.Role
+		if role == "" {
+			role = "service"
+		}
+		alias := r.AliasName
+		if alias == "" {
+			alias = r.RepoID
+		}
+		if _, err := stmt.Exec(projectID, r.RepoID, alias, role); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// GetProjectRepos returns all repos mapped to a project with their aliases.
+func (db *DB) GetProjectRepos(projectID string) ([]RepoWithAlias, error) {
+	rows, err := db.conn.Query(`
+		SELECT r.id, r.name, r.git_url, r.branch, r.local_path, 
+		       COALESCE(r.wiki_dir,''), COALESCE(r.static_dir,''), r.schedule, r.status, 
+		       r.created_at, r.updated_at, pr.alias_name, COALESCE(pr.role, 'service')
+		FROM project_repos pr
+		JOIN repos r ON pr.repo_id = r.id
+		WHERE pr.project_id = ?
+		ORDER BY pr.alias_name
+	`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []RepoWithAlias
+	for rows.Next() {
+		var item RepoWithAlias
+		if err := rows.Scan(
+			&item.ID, &item.Name, &item.GitURL, &item.Branch, &item.LocalPath,
+			&item.WikiDir, &item.StaticDir, &item.Schedule, &item.Status,
+			&item.CreatedAt, &item.UpdatedAt, &item.AliasName, &item.Role,
+		); err != nil {
+			return nil, err
+		}
+		results = append(results, item)
+	}
+	return results, rows.Err()
 }
