@@ -118,6 +118,38 @@
       <div id="adminPaginationBar" class="pagination-bar" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
       </div>
     </section>
+
+    <!-- Microservice Projects Management Section -->
+    <section class="card" style="margin-top: 1.5rem;">
+      <div class="dashboard-header">
+        <div>
+          <h2>🏢 微服务项目编排管理 (Virtual Workspaces)</h2>
+          <p class="subtitle">将多个微服务仓库聚合为虚拟大仓项目，自动提取跨服务调用链并生成系统全景知识库</p>
+        </div>
+        <div style="display:flex; gap: 0.5rem;">
+          <button id="openNewProjectModalBtn" class="btn btn-primary">➕ 创建微服务项目</button>
+          <button id="refreshProjectsBtn" class="btn btn-secondary">🔄 刷新项目</button>
+        </div>
+      </div>
+
+      <div class="table-responsive">
+        <table class="data-table" id="adminProjectTable">
+          <thead>
+            <tr>
+              <th style="min-width: 140px;">项目 ID / 名称</th>
+              <th style="min-width: 240px;">包含微服务组件与角色</th>
+              <th style="min-width: 180px;">虚拟工作区目录</th>
+              <th class="col-center col-nowrap" style="min-width: 90px;">状态</th>
+              <th class="col-center col-nowrap" style="min-width: 120px;">更新时间</th>
+              <th class="col-center col-nowrap" style="min-width: 220px;">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="6" style="text-align:center; color:var(--text-secondary);">正在加载微服务项目...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
   </main>
 
   <!-- Log Details Modal -->
@@ -172,6 +204,46 @@
           <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1rem;">
             <button type="button" id="cancelEditBtn" class="btn btn-secondary">取消</button>
             <button type="submit" class="btn btn-primary">💾 保存修改</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Project Modal (Create / Edit Microservice Project) -->
+  <div id="projectModal" class="modal-overlay" style="display:none;">
+    <div class="modal-card" style="max-width: 720px;">
+      <div class="modal-header">
+        <h3 id="projectModalTitle">🏢 创建微服务项目</h3>
+        <button id="closeProjectModalBtn" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="projectForm">
+          <input type="hidden" id="projIsEdit" value="0">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+            <div class="form-group">
+              <label for="projId">项目唯一标识 ID (例如 retail-finance)</label>
+              <input type="text" id="projId" placeholder="retail-finance" required>
+            </div>
+            <div class="form-group">
+              <label for="projName">项目显示名称</label>
+              <input type="text" id="projName" placeholder="零售金融微服务平台" required>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="projDesc">项目架构与业务描述</label>
+            <input type="text" id="projDesc" placeholder="包含网关、授信、支用、还款等核心微服务组件">
+          </div>
+          <div class="form-group">
+            <label>编排微服务子仓 (勾选组合进本虚拟项目的仓库并分配角色):</label>
+            <div id="projReposPicker" style="max-height: 220px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem; background: var(--bg-secondary);">
+              <!-- Injected by JS -->
+            </div>
+          </div>
+          <div id="projAlert" class="alert" style="display:none;"></div>
+          <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1rem;">
+            <button type="button" id="cancelProjectBtn" class="btn btn-secondary">取消</button>
+            <button type="submit" class="btn btn-primary">💾 保存微服务项目</button>
           </div>
         </form>
       </div>

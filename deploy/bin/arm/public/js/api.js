@@ -101,6 +101,67 @@ window.API = {
     return await res.json();
   },
 
+  // Fetch projects list via Portal proxy
+  async getProjects() {
+    const res = await fetch('/portal/projects');
+    if (!res.ok) throw new Error('无法获取项目列表 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // Create new project
+  async createProject(projectData) {
+    const res = await fetch('/portal/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(projectData)
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || '创建项目失败');
+    }
+    return await res.json();
+  },
+
+  // Update existing project
+  async updateProject(projectData) {
+    const res = await fetch('/portal/projects', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(projectData)
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || '更新项目失败');
+    }
+    return await res.json();
+  },
+
+  // Delete project
+  async deleteProject(projectId) {
+    const res = await fetch(`/portal/projects?id=${encodeURIComponent(projectId)}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || '删除项目失败');
+    }
+    return await res.json();
+  },
+
+  // Trigger project build
+  async triggerProjectBuild(projectId) {
+    const res = await fetch('/portal/projects/build', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId })
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || '触发项目构建失败');
+    }
+    return await res.json();
+  },
+
 
   // Format timestamp into local YYYY-MM-DD HH:mm:ss
   formatDate(dateStr) {

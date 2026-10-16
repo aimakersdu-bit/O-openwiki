@@ -433,4 +433,235 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   refreshAdminBtn.addEventListener('click', loadAdminRepos);
   loadAdminRepos();
+
+  // ==========================================
+  // Microservice Projects Management Logic
+  // ==========================================
+  const adminProjectTableBody = document.querySelector('#adminProjectTable tbody');
+  const openNewProjectModalBtn = document.getElementById('openNewProjectModalBtn');
+  const refreshProjectsBtn = document.getElementById('refreshProjectsBtn');
+  const projectModal = document.getElementById('projectModal');
+  const closeProjectModalBtn = document.getElementById('closeProjectModalBtn');
+  const cancelProjectBtn = document.getElementById('cancelProjectBtn');
+  const projectForm = document.getElementById('projectForm');
+  const projAlert = document.getElementById('projAlert');
+  const projReposPicker = document.getElementById('projReposPicker');
+
+  let cachedProjects = [];
+
+  function showProjAlert(msg, type) {
+    projAlert.textContent = msg;
+    projAlert.className = `alert alert-${type}`;
+    projAlert.style.display = 'block';
+  }
+
+  function renderReposPicker(selectedRepos = []) {
+    const selectedMap = new Map();
+    selectedRepos.forEach(r => selectedMap.set(r.id, r));
+
+    if (!cachedRepos || cachedRepos.length === 0) {
+      projReposPicker.innerHTML = '<div style="color:var(--text-secondary); padding:0.5rem;">尚未注册任何代码仓库，请先在上方注册仓库。</div>';
+      return;
+    }
+
+    let html = '<div style="display:flex; flex-direction:column; gap:0.5rem;">';
+    cachedRepos.forEach(repo => {
+      const isChecked = selectedMap.has(repo.id);
+      const existing = selectedMap.get(repo.id) || {};
+      const aliasVal = existing.alias_name || repo.id;
+      const roleVal = existing.role || 'service';
+
+      html += `
+        <div class="repo-picker-item" style="display:flex; align-items:center; gap:0.75rem; padding:0.4rem; border-radius:4px; background:var(--bg-primary); border:1px solid var(--border-color);">
+          <input type="checkbox" class="proj-repo-check" data-id="${repo.id}" id="check_${repo.id}" ${isChecked ? 'checked' : ''} style="cursor:pointer;" />
+          <label for="check_${repo.id}" style="font-weight:600; min-width:140px; cursor:pointer;">${API.escapeHTML(repo.name)} <span style="font-size:0.8rem; color:var(--text-secondary);">(${repo.id})</span></label>
+          <div style="display:flex; align-items:center; gap:0.3rem;">
+            <span style="font-size:0.8rem; color:var(--text-secondary);">别名:</span>
+            <input type="text" class="proj-repo-alias" data-id="${repo.id}" value="${API.escapeHTML(aliasVal)}" style="padding:0.2rem 0.4rem; font-size:0.8rem; width:120px; border:1px solid var(--border-color); border-radius:4px; background:var(--bg-secondary); color:var(--text-primary);" />
+          </div>
+          <div style="display:flex; align-items:center; gap:0.3rem;">
+            <span style="font-size:0.8rem; color:var(--text-secondary);">角色:</span>
+            <select class="proj-repo-role" data-id="${repo.id}" style="padding:0.2rem 0.4rem; font-size:0.8rem; border:1px solid var(--border-color); border-radius:4px; background:var(--bg-secondary); color:var(--text-primary);">
+              <option value="gateway" ${roleVal === 'gateway' ? 'selected' : ''}>网关 (Gateway)</option>
+              <option value="service" ${roleVal === 'service' ? 'selected' : ''}>核心微服务 (Service)</option>
+              <option value="sdk" ${roleVal === 'sdk' ? 'selected' : ''}>公共二方SDK (SDK)</option>
+              <option value="job" ${roleVal === 'job' ? 'selected' : ''}>定时任务 (Job)</option>
+              <option value="frontend" ${roleVal === 'frontend' ? 'selected' : ''}>前端应用 (Frontend)</option>
+            </select>
+          </div>
+        </div>
+      `;
+    });
+    html += '</div>';
+    projReposPicker.innerHTML = html;
+  }
+
+  // Open Create Project Modal
+  openNewProjectModalBtn.addEventListener('click', () => {
+    document.getElementById('projectModalTitle').textContent = '🏢 创建微服务项目';
+    document.getElementById('projIsEdit').value = '0';
+    document.getElementById('projId').value = '';
+    document.getElementById('projId').disabled = false;
+    document.getElementById('projName').value = '';
+    document.getElementById('projDesc').value = '';
+    projAlert.style.display = 'none';
+    renderReposPicker([]);
+    projectModal.style.display = 'flex';
+  });
+
+  closeProjectModalBtn.addEventListener('click', () => {
+    projectModal.style.display = 'none';
+  });
+  cancelProjectBtn.addEventListener('click', () => {
+    projectModal.style.display = 'none';
+  });
+
+  // Project Form Submit (Create or Update)
+  projectForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    projAlert.style.display = 'none';
+
+    const isEdit = document.getElementById('projIsEdit').value === '1';
+    const projId = document.getElementById('projId').value.trim();
+    const projName = document.getElementById('projName').value.trim();
+    const projDesc = document.getElementById('projDesc').value.trim();
+
+    // Collect selected repos
+    const selectedRepos = [];
+    document.querySelectorAll('.proj-repo-check:checked').forEach(cb => {
+      const repoId = cb.getAttribute('data-id');
+      const aliasInput = document.querySelector(`.proj-repo-alias[data-id="${repoId}"]`);
+      const roleSelect = document.querySelector(`.proj-repo-role[data-id="${repoId}"]`);
+      selectedRepos.push({
+        repo_id: repoId,
+        alias_name: (aliasInput ? aliasInput.value.trim() : '') || repoId,
+        role: roleSelect ? roleSelect.value : 'service'
+      });
+    });
+
+    const payload = {
+      id: projId,
+      name: projName,
+      description: projDesc,
+      repos: selectedRepos
+    };
+
+    try {
+      if (isEdit) {
+        await API.updateProject(payload);
+        showAlert(`微服务项目 [${projName}] 配置已更新成功！`, 'success');
+      } else {
+        await API.createProject(payload);
+        showAlert(`微服务项目 [${projName}] 创建成功，虚拟大仓已初始化！`, 'success');
+      }
+      projectModal.style.display = 'none';
+      loadAdminProjects();
+    } catch (err) {
+      showProjAlert(`操作失败: ${err.message}`, 'error');
+    }
+  });
+
+  // Render Projects Table
+  function renderProjectTable(projects = []) {
+    if (!projects || projects.length === 0) {
+      adminProjectTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; color: var(--text-secondary); padding: 2rem;">暂无微服务项目，点击右上角“创建微服务项目”开始编排。</td></tr>';
+      return;
+    }
+
+    adminProjectTableBody.innerHTML = projects.map(proj => {
+      const reposBadges = (proj.repos || []).map(r => `
+        <span class="badge" style="background:var(--bg-secondary); border:1px solid var(--border-color); margin-right:4px; margin-bottom:4px; display:inline-block; font-size:0.75rem;">
+          <strong>${API.escapeHTML(r.alias_name)}</strong>
+          <span style="opacity:0.7;">(${r.role})</span>
+        </span>
+      `).join('') || '<span style="color:var(--text-secondary);">尚未绑定仓库</span>';
+
+      const statusBadge = proj.status === 'building'
+        ? '<span style="color:var(--accent-color);">⚡ 聚合构建中...</span>'
+        : '<span style="color:var(--success-color);">✅ 就绪</span>';
+
+      return `
+        <tr>
+          <td>
+            <strong>${API.escapeHTML(proj.name)}</strong>
+            <div style="font-size:0.75rem; color:var(--text-secondary);">${API.escapeHTML(proj.id)}</div>
+            ${proj.description ? `<div style="font-size:0.75rem; color:var(--text-secondary); margin-top:2px;">${API.escapeHTML(proj.description)}</div>` : ''}
+          </td>
+          <td>${reposBadges}</td>
+          <td style="font-family:monospace; font-size:0.8rem; word-break:break-all;">${API.escapeHTML(proj.local_path || '-')}</td>
+          <td class="col-center col-nowrap">${statusBadge}</td>
+          <td class="col-center col-nowrap" style="font-size:0.8rem;">${API.formatDate(proj.updated_at)}</td>
+          <td class="col-center col-nowrap">
+            <button class="btn btn-primary btn-sm trigger-project-build-btn" data-id="${proj.id}" data-name="${API.escapeHTML(proj.name)}">🛠️ 聚合构建</button>
+            <button class="btn btn-secondary btn-sm edit-project-btn" data-id="${proj.id}">✏️ 编辑</button>
+            <button class="btn btn-danger btn-sm delete-project-btn" data-id="${proj.id}">🗑️ 删除</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    // Attach listeners
+    document.querySelectorAll('.trigger-project-build-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const projId = e.currentTarget.getAttribute('data-id');
+        const projName = e.currentTarget.getAttribute('data-name');
+        try {
+          await API.triggerProjectBuild(projId);
+          showAlert(`微服务项目 [${projName}] 聚合构建已触发，正在扫描跨仓拓扑并生成系统概览！`, 'success');
+          loadAdminProjects();
+        } catch (err) {
+          showAlert(`触发项目构建失败: ${err.message}`, 'error');
+        }
+      });
+    });
+
+    document.querySelectorAll('.edit-project-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const projId = e.currentTarget.getAttribute('data-id');
+        const proj = cachedProjects.find(p => p.id === projId);
+        if (!proj) return;
+
+        document.getElementById('projectModalTitle').textContent = `✏️ 编辑微服务项目 [${proj.name}]`;
+        document.getElementById('projIsEdit').value = '1';
+        document.getElementById('projId').value = proj.id;
+        document.getElementById('projId').disabled = true;
+        document.getElementById('projName').value = proj.name;
+        document.getElementById('projDesc').value = proj.description || '';
+        projAlert.style.display = 'none';
+
+        renderReposPicker(proj.repos || []);
+        projectModal.style.display = 'flex';
+      });
+    });
+
+    document.querySelectorAll('.delete-project-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const projId = e.currentTarget.getAttribute('data-id');
+        if (confirm(`确认要删除微服务项目 [${projId}] 吗？底层仓库不会被删除，仅解除项目聚合！`)) {
+          try {
+            await API.deleteProject(projId);
+            showAlert(`微服务项目 [${projId}] 已删除！`, 'success');
+            loadAdminProjects();
+          } catch (err) {
+            showAlert(`删除项目失败: ${err.message}`, 'error');
+          }
+        }
+      });
+    });
+  }
+
+  // Load Projects
+  async function loadAdminProjects() {
+    try {
+      const projects = await API.getProjects();
+      cachedProjects = projects || [];
+      renderProjectTable(cachedProjects);
+    } catch (err) {
+      adminProjectTableBody.innerHTML = `<tr><td colspan="6" style="color:var(--error-color);">加载微服务项目失败: ${err.message}</td></tr>`;
+    }
+  }
+
+  refreshProjectsBtn.addEventListener('click', loadAdminProjects);
+  loadAdminProjects();
 });
+
