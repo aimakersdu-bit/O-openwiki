@@ -76,6 +76,7 @@ cat << 'EOF' > "$OUTPUT_DIR/config.json"
   "static_output_dir": "/data/openwiki/static",
   "vendor_assets_dir": "/app/assets/vendor",
   "repos_base_dir": "/data/openwiki/repos",
+  "projects_base_dir": "/data/openwiki/projects",
   "db_path": "/data/openwiki/db/orchestrator.db",
   "max_concurrent_qa": 5,
   "qa_timeout_sec": 120,
