@@ -9,13 +9,14 @@ import (
 )
 
 type ChatRequest struct {
-	RepoID    string `json:"repo_id"`
+	ProjectID string `json:"project_id,omitempty"`
+	RepoID    string `json:"repo_id,omitempty"`
 	UserID    string `json:"user_id"`
 	SessionID string `json:"session_id"`
 	Question  string `json:"question"`
 }
 
-// handleChat handles SSE streaming for OpenWiki QA questions.
+// handleChat handles SSE streaming for OpenWiki QA questions (both repo-level and project-level).
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -28,8 +29,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(req.RepoID) == "" || strings.TrimSpace(req.Question) == "" {
-		http.Error(w, "repo_id and question are required", http.StatusBadRequest)
+	req.Question = strings.TrimSpace(req.Question)
+	req.RepoID = strings.TrimSpace(req.RepoID)
+	req.ProjectID = strings.TrimSpace(req.ProjectID)
+
+	if req.Question == "" || (req.RepoID == "" && req.ProjectID == "") {
+		http.Error(w, "question and either repo_id or project_id are required", http.StatusBadRequest)
 		return
 	}
 
@@ -37,6 +42,33 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		req.UserID = "anonymous"
 	}
 
+	// Prepare SSE response headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	// Branch 1: Project-level QA
+	if req.ProjectID != "" {
+		proj, err := db.GetProject(req.ProjectID)
+		if err != nil {
+			http.Error(w, "Project error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if proj == nil {
+			http.Error(w, "Project not found", http.StatusNotFound)
+			return
+		}
+
+		if s.qaManager != nil {
+			if err := s.qaManager.StreamProjectChat(r.Context(), proj, req.UserID, req.SessionID, req.Question, w); err != nil {
+				logPrintf("Chat streaming error for project %s: %v", req.ProjectID, err)
+			}
+		}
+		return
+	}
+
+	// Branch 2: Single repo-level QA
 	repo, err := db.GetRepo(req.RepoID)
 	if err != nil {
 		http.Error(w, "Repo error: "+err.Error(), http.StatusInternalServerError)
@@ -46,12 +78,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Repo not found", http.StatusNotFound)
 		return
 	}
-
-	// Prepare SSE response headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
 
 	// Execute chat via QA Manager (or fallback to pool)
 	if s.qaManager != nil {

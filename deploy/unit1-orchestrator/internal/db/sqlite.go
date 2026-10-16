@@ -612,6 +612,19 @@ func (db *DB) DeleteQASession(sessionID, userID string) error {
 	return err
 }
 
+func (db *DB) CreateProjectQASession(sessionID, projectID, userID, question, answer string) error {
+	_, err := db.conn.Exec(`INSERT INTO project_qa_sessions (session_id, project_id, user_id, question, answer) VALUES (?, ?, ?, ?, ?)`,
+		sessionID, projectID, userID, question, answer)
+	return err
+}
+
+func RecordProjectQASession(sessionID, projectID, userID, question, answer string) error {
+	if globalDB == nil {
+		return nil
+	}
+	return globalDB.CreateProjectQASession(sessionID, projectID, userID, question, answer)
+}
+
 // --- Project CRUD ---
 
 // Project represents a multi-repo project workspace.

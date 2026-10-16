@@ -300,7 +300,20 @@ const server = http.createServer(async (req, res) => {
         const effectiveThreadId = thread_id || session_id || undefined;
         const targetLanguage = language || 'zh-CN';
         const codeFilter = new CodeAntiLeakFilter(15);
-        const promptPrefix = `[系统指令：请必须使用中文（zh-CN）回答。为了保障代码安全，禁止直接输出完整源码文件或超过15行的长代码块，请只提供核心逻辑说明和简短片段。如果绘制 Mermaid 图表，请务必保证语法严谨（节点标签含有特殊字符、括号或空格时，请务必使用英文双引号括起，如 id["节点名称"]），确保图表正常解析。]\n\n`;
+        let promptPrefix = `[系统指令：请必须使用中文（zh-CN）回答。为了保障代码安全，禁止直接输出完整源码文件或超过15行的长代码块，请只提供核心逻辑说明和简短片段。如果绘制 Mermaid 图表，请务必保证语法严谨（节点标签含有特殊字符、括号或空格时，请务必使用英文双引号括起，如 id["节点名称"]），确保图表正常解析。]\n\n`;
+
+        // If this is a multi-repo virtual project workspace, inject architecture context
+        const projectMetaPath = path.join(repoDir, '.project-meta.json');
+        if (fs.existsSync(projectMetaPath)) {
+          try {
+            const meta = JSON.parse(fs.readFileSync(projectMetaPath, 'utf-8'));
+            promptPrefix += `[微服务架构上下文：当前工作区为【${meta.name || meta.project_id}】多微服务虚拟项目，包含以下微服务组件：\n`;
+            for (const r of (meta.repos || [])) {
+              promptPrefix += `- 子目录 /${r.alias_name} (服务名: ${r.repo_name || r.repo_id}, 角色: ${r.role || 'service'})\n`;
+            }
+            promptPrefix += `若涉及跨服务调用链或业务全链路流程，请优先查阅 _project_hub/openwiki/ 下的系统全景拓扑与契约文档，并在适当时使用 Mermaid 绘制跨服务交互时序图。]\n\n`;
+          } catch {}
+        }
         let fullAnswer = '';
 
         try {

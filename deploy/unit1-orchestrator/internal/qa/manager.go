@@ -194,36 +194,42 @@ func (m *Manager) getOrStartWorker(ctx context.Context, repo *db.Repo) (*WorkerP
 	}
 
 	// Wait for UDS to become available (cold boot of large ESM modules can take 6-8s)
-	readyTimeout := time.After(20 * time.Second)
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-
-	var conn net.Conn
-	var dialErr error
-	ready := false
-
-	for !ready {
-		select {
-		case <-ctx.Done():
-			_ = cmd.Process.Kill()
-			_ = os.Remove(socketPath)
-			return nil, ctx.Err()
-		case <-readyTimeout:
-			_ = cmd.Process.Kill()
-			_ = os.Remove(socketPath)
-			return nil, fmt.Errorf("timeout waiting for qa daemon UDS %s to become ready (stderr: %s)", socketPath, stderrBuf.String())
-		case <-ticker.C:
-			conn, dialErr = net.DialTimeout("unix", socketPath, 100*time.Millisecond)
-			if dialErr == nil {
-				_ = conn.Close()
-				ready = true
-			}
-		}
+	if err := waitForSocket(ctx, cmd, socketPath, &stderrBuf); err != nil {
+		return nil, err
 	}
 
 	m.workers[repo.ID] = wp
 	log.Printf("[QA-Manager] Spawned QA Daemon for repo %s (PID: %d, Socket: %s)", repo.ID, cmd.Process.Pid, socketPath)
 	return wp, nil
+}
+
+func waitForSocket(ctx context.Context, cmd *exec.Cmd, socketPath string, stderrBuf fmt.Stringer) error {
+	readyTimeout := time.After(20 * time.Second)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			_ = cmd.Process.Kill()
+			_ = os.Remove(socketPath)
+			return ctx.Err()
+		case <-readyTimeout:
+			_ = cmd.Process.Kill()
+			_ = os.Remove(socketPath)
+			errDetails := ""
+			if stderrBuf != nil {
+				errDetails = fmt.Sprintf(" (stderr: %s)", stderrBuf.String())
+			}
+			return fmt.Errorf("timeout waiting for qa daemon UDS %s to become ready%s", socketPath, errDetails)
+		case <-ticker.C:
+			conn, dialErr := net.DialTimeout("unix", socketPath, 100*time.Millisecond)
+			if dialErr == nil {
+				_ = conn.Close()
+				return nil
+			}
+		}
+	}
 }
 
 func (m *Manager) isWorkerAlive(wp *WorkerProcess) bool {
@@ -396,6 +402,209 @@ func (m *Manager) StreamChat(ctx context.Context, repo *db.Repo, userID string, 
 	// Record QA session in SQLite database
 	if err := db.RecordQASession(sessionID, repo.ID, userID, question, answerText); err != nil {
 		log.Printf("[QA-Manager] Warning: failed to record QA session: %v", err)
+	}
+
+	return nil
+}
+
+// getOrStartProjectWorker returns an active, healthy worker for a virtual project workspace.
+func (m *Manager) getOrStartProjectWorker(ctx context.Context, proj *db.Project) (*WorkerProcess, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	workerKey := "proj:" + proj.ID
+
+	if wp, ok := m.workers[workerKey]; ok {
+		if m.isWorkerAlive(wp) {
+			return wp, nil
+		}
+		m.cleanupWorker(wp)
+		delete(m.workers, workerKey)
+	}
+
+	if proj.LocalPath != "" {
+		if _, err := os.Stat(proj.LocalPath); os.IsNotExist(err) {
+			_ = os.MkdirAll(proj.LocalPath, 0o755)
+		}
+	}
+
+	socketPath := filepath.Join(m.socketDir, fmt.Sprintf("openwiki-qa-proj-%s.sock", proj.ID))
+	_ = os.Remove(socketPath)
+
+	scriptPath := findDaemonScript(m.daemonScript)
+	nodeBin := findNodeBinary()
+
+	args := []string{
+		scriptPath,
+		fmt.Sprintf("--socket=%s", socketPath),
+		fmt.Sprintf("--ttl=%d", m.idleTimeout),
+		fmt.Sprintf("--repo-dir=%s", proj.LocalPath),
+	}
+
+	cmd := exec.Command(nodeBin, args...)
+	if proj.LocalPath != "" {
+		cmd.Dir = proj.LocalPath
+	}
+
+	env := os.Environ()
+	hasPath := false
+	for i, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			env[i] = e + ":/usr/local/bin:/opt/homebrew/bin"
+			hasPath = true
+			break
+		}
+	}
+	if !hasPath {
+		env = append(env, "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin")
+	}
+	if m.distDir != "" {
+		env = append(env, fmt.Sprintf("OPENWIKI_DIST_DIR=%s", m.distDir))
+	}
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+	cmd.Stdout = os.Stdout
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start project qa daemon for %s: %w (stderr: %s)", proj.ID, err, stderrBuf.String())
+	}
+
+	wp := &WorkerProcess{
+		RepoID:     workerKey,
+		SocketPath: socketPath,
+		Cmd:        cmd,
+		CreatedAt:  time.Now(),
+	}
+	m.workers[workerKey] = wp
+
+	if err := waitForSocket(ctx, cmd, socketPath, &stderrBuf); err != nil {
+		m.cleanupWorker(wp)
+		delete(m.workers, workerKey)
+		return nil, fmt.Errorf("project qa daemon socket not ready: %w", err)
+	}
+
+	log.Printf("[QA-Manager] Spawned QA Daemon for project %s (PID: %d, Socket: %s)", proj.ID, cmd.Process.Pid, socketPath)
+	return wp, nil
+}
+
+// StreamProjectChat forwards chat question to the project workspace dedicated worker daemon.
+func (m *Manager) StreamProjectChat(ctx context.Context, proj *db.Project, userID string, sessionID string, question string, outWriter io.Writer) error {
+	var wp *WorkerProcess
+	var err error
+
+	for attempt := 0; attempt < 2; attempt++ {
+		wp, err = m.getOrStartProjectWorker(ctx, proj)
+		if err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err != nil {
+		errMsg := fmt.Sprintf("failed to acquire project worker daemon: %v", err)
+		if outWriter != nil {
+			fmt.Fprintf(outWriter, "event: error\ndata: [Error: %s]\n\n", errMsg)
+		}
+		_ = db.RecordProjectQASession(sessionID, proj.ID, userID, question, "Error: "+errMsg)
+		return fmt.Errorf("%s", errMsg)
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", wp.SocketPath)
+			},
+		},
+	}
+
+	threadID := sessionID
+	if threadID != "" {
+		threadID = fmt.Sprintf("openwiki-proj-%s-%s", proj.ID, sessionID)
+	}
+
+	payloadBytes, _ := json.Marshal(ChatPayload{
+		Question:  question,
+		UserID:    userID,
+		SessionID: sessionID,
+		ThreadID:  threadID,
+		Language:  "zh-CN",
+	})
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/chat", bytes.NewReader(payloadBytes))
+	if err != nil {
+		return fmt.Errorf("create chat request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		workerKey := "proj:" + proj.ID
+		m.mu.Lock()
+		m.cleanupWorker(wp)
+		delete(m.workers, workerKey)
+		m.mu.Unlock()
+
+		errMsg := fmt.Sprintf("project worker communication error: %v", err)
+		if outWriter != nil {
+			fmt.Fprintf(outWriter, "event: error\ndata: [Error: %s]\n\n", errMsg)
+		}
+		_ = db.RecordProjectQASession(sessionID, proj.ID, userID, question, "Error: "+errMsg)
+		return fmt.Errorf("%s", errMsg)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		errMsg := fmt.Sprintf("project worker returned HTTP %d: %s", resp.StatusCode, string(body))
+		if outWriter != nil {
+			fmt.Fprintf(outWriter, "event: error\ndata: [Error: %s]\n\n", errMsg)
+		}
+		_ = db.RecordProjectQASession(sessionID, proj.ID, userID, question, "Error: "+errMsg)
+		return fmt.Errorf("%s", errMsg)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	var fullAnswer strings.Builder
+	flusher, hasFlusher := outWriter.(interface{ Flush() })
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if strings.HasPrefix(line, "data: ") {
+			dataContent := strings.TrimPrefix(line, "data: ")
+			var deltaPayload struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal([]byte(dataContent), &deltaPayload); err == nil && deltaPayload.Text != "" {
+				fullAnswer.WriteString(deltaPayload.Text)
+			}
+		}
+
+		if outWriter != nil {
+			fmt.Fprintf(outWriter, "%s\n", line)
+			if hasFlusher {
+				flusher.Flush()
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		return fmt.Errorf("error reading stream from project worker: %w", err)
+	}
+
+	if outWriter != nil {
+		fmt.Fprintf(outWriter, "\n")
+		if hasFlusher {
+			flusher.Flush()
+		}
+	}
+
+	answerText := fullAnswer.String()
+	if answerText == "" {
+		answerText = "[Completed]"
+	}
+
+	if err := db.RecordProjectQASession(sessionID, proj.ID, userID, question, answerText); err != nil {
+		log.Printf("[QA-Manager] Warning: failed to record project QA session: %v", err)
 	}
 
 	return nil
