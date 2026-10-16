@@ -45,6 +45,8 @@ func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, ma
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("/api/repos", s.handleRepos)
+	s.mux.HandleFunc("/api/projects", s.handleProjects)
+	s.mux.HandleFunc("/api/projects/build", s.handleProjectBuild)
 	s.mux.HandleFunc("/api/chat", s.handleChat)
 	s.mux.HandleFunc("/api/qa/history", s.handleQAHistory)
 	s.mux.HandleFunc("/api/qa/sessions", s.handleUserQASessions)

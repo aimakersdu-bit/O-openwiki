@@ -18,6 +18,7 @@ type Config struct {
 	StaticOutputDir string `json:"static_output_dir"`  // e.g. "/var/www/openwiki-static"
 	VendorAssetsDir string `json:"vendor_assets_dir"`  // path to pre-downloaded vendor/ assets
 	ReposBaseDir    string `json:"repos_base_dir"`     // base directory for cloned repositories
+	ProjectsBaseDir string `json:"projects_base_dir"`  // base directory for virtual project workspaces
 	DBPath          string `json:"db_path"`             // path to SQLite database file
 
 	// OpenWiki provider settings
@@ -54,6 +55,7 @@ func DefaultConfig() *Config {
 		StaticOutputDir:  filepath.Join(home, ".openwiki", "static"),
 		VendorAssetsDir:  "assets/vendor",
 		ReposBaseDir:     filepath.Join(home, ".openwiki", "repos"),
+		ProjectsBaseDir:  filepath.Join(home, ".openwiki", "projects"),
 		DBPath:           "orchestrator.db",
 		MaxConcurrentQA:  5,
 		QATimeoutSec:     600,
