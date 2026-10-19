@@ -27,9 +27,9 @@ mkdir -p "$OUTPUT_DIR"
 # 2. 配置 Go 编译环境 (amd64)
 echo ""
 echo "=== [2/3] 配置 Go 编译环境 (amd64) ==="
-export GOARCH="amd64"
-export GOOS="${GOOS:-linux}"
-export CGO_ENABLED="${CGO_ENABLED:-0}"
+export GOARCH="${GOARCH:-amd64}"
+export GOOS="${GOOS:-$(go env GOOS)}"
+export CGO_ENABLED="${CGO_ENABLED:-1}"
 
 echo "构建目标架构: OS=$GOOS, ARCH=$GOARCH, CGO_ENABLED=$CGO_ENABLED"
 
