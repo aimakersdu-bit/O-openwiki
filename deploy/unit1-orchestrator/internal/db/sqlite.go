@@ -577,18 +577,28 @@ func (db *DB) ListUserQASessions(repoID, userID string, limit int) ([]QASessionS
 	return summaries, rows.Err()
 }
 
-// GetQASessionMessages returns all Q&A messages for a specific session_id in chronological order.
+// GetQASessionMessages returns all Q&A messages for a specific session_id in chronological order across repos and projects.
 func (db *DB) GetQASessionMessages(sessionID, userID string) ([]QASession, error) {
 	var rows *sql.Rows
 	var err error
 	if userID != "" {
-		query := `SELECT id, COALESCE(session_id,''), repo_id, user_id, question, COALESCE(answer,''), created_at
-			FROM qa_sessions WHERE (session_id = ? OR (session_id IS NULL AND printf('legacy_%d', id) = ?)) AND user_id = ? ORDER BY id ASC`
-		rows, err = db.conn.Query(query, sessionID, sessionID, userID)
+		query := `
+			SELECT id, COALESCE(session_id,''), repo_id, user_id, question, COALESCE(answer,''), created_at
+			FROM qa_sessions WHERE (session_id = ? OR (session_id IS NULL AND printf('legacy_%d', id) = ?)) AND user_id = ?
+			UNION ALL
+			SELECT id, COALESCE(session_id,''), project_id, user_id, question, COALESCE(answer,''), created_at
+			FROM project_qa_sessions WHERE (session_id = ? OR (session_id IS NULL AND printf('legacy_%d', id) = ?)) AND user_id = ?
+			ORDER BY id ASC`
+		rows, err = db.conn.Query(query, sessionID, sessionID, userID, sessionID, sessionID, userID)
 	} else {
-		query := `SELECT id, COALESCE(session_id,''), repo_id, user_id, question, COALESCE(answer,''), created_at
-			FROM qa_sessions WHERE session_id = ? OR (session_id IS NULL AND printf('legacy_%d', id) = ?) ORDER BY id ASC`
-		rows, err = db.conn.Query(query, sessionID, sessionID)
+		query := `
+			SELECT id, COALESCE(session_id,''), repo_id, user_id, question, COALESCE(answer,''), created_at
+			FROM qa_sessions WHERE session_id = ? OR (session_id IS NULL AND printf('legacy_%d', id) = ?)
+			UNION ALL
+			SELECT id, COALESCE(session_id,''), project_id, user_id, question, COALESCE(answer,''), created_at
+			FROM project_qa_sessions WHERE session_id = ? OR (session_id IS NULL AND printf('legacy_%d', id) = ?)
+			ORDER BY id ASC`
+		rows, err = db.conn.Query(query, sessionID, sessionID, sessionID, sessionID)
 	}
 	if err != nil {
 		return nil, err
@@ -608,13 +618,21 @@ func (db *DB) GetQASessionMessages(sessionID, userID string) ([]QASession, error
 
 // DeleteQASession deletes a session and its messages.
 func (db *DB) DeleteQASession(sessionID, userID string) error {
-	_, err := db.conn.Exec(`DELETE FROM qa_sessions WHERE (session_id = ? OR printf('legacy_%d', id) = ?) AND user_id = ?`, sessionID, sessionID, userID)
-	return err
+	_, err1 := db.conn.Exec(`DELETE FROM qa_sessions WHERE (session_id = ? OR printf('legacy_%d', id) = ?) AND (user_id = ? OR ? = '')`, sessionID, sessionID, userID, userID)
+	_, err2 := db.conn.Exec(`DELETE FROM project_qa_sessions WHERE (session_id = ? OR printf('legacy_%d', id) = ?) AND (user_id = ? OR ? = '')`, sessionID, sessionID, userID, userID)
+	if err1 != nil {
+		return err1
+	}
+	return err2
 }
 
 func (db *DB) CreateProjectQASession(sessionID, projectID, userID, question, answer string) error {
-	_, err := db.conn.Exec(`INSERT INTO project_qa_sessions (session_id, project_id, user_id, question, answer) VALUES (?, ?, ?, ?, ?)`,
-		sessionID, projectID, userID, question, answer)
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("sess_%d", time.Now().UnixNano())
+	}
+	timeStr := time.Now().Local().Format("2006-01-02 15:04:05")
+	_, err := db.conn.Exec(`INSERT INTO project_qa_sessions (session_id, project_id, user_id, question, answer, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, sessionID, projectID, userID, question, answer, timeStr)
 	return err
 }
 
@@ -623,6 +641,113 @@ func RecordProjectQASession(sessionID, projectID, userID, question, answer strin
 		return nil
 	}
 	return globalDB.CreateProjectQASession(sessionID, projectID, userID, question, answer)
+}
+
+// ListProjectQASessions returns Q&A history for a user in a project, or all users if userID is empty.
+func (db *DB) ListProjectQASessions(projectID, userID string, limit int) ([]QASession, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var rows *sql.Rows
+	var err error
+	if userID != "" {
+		rows, err = db.conn.Query(`SELECT id, COALESCE(session_id,''), project_id, user_id, question, COALESCE(answer,''), created_at
+			FROM project_qa_sessions WHERE project_id = ? AND user_id = ? ORDER BY id DESC LIMIT ?`,
+			projectID, userID, limit)
+	} else {
+		rows, err = db.conn.Query(`SELECT id, COALESCE(session_id,''), project_id, user_id, question, COALESCE(answer,''), created_at
+			FROM project_qa_sessions WHERE project_id = ? ORDER BY id DESC LIMIT ?`,
+			projectID, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []QASession
+	for rows.Next() {
+		var s QASession
+		if err := rows.Scan(&s.ID, &s.SessionID, &s.RepoID, &s.UserID, &s.Question, &s.Answer, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, s)
+	}
+	return sessions, rows.Err()
+}
+
+func ListProjectQASessions(projectID, userID string, limit int) ([]QASession, error) {
+	if globalDB == nil {
+		return nil, nil
+	}
+	return globalDB.ListProjectQASessions(projectID, userID, limit)
+}
+
+// ListUserProjectQASessions returns session summaries for a user in a project, or all users if userID is empty.
+func (db *DB) ListUserProjectQASessions(projectID, userID string, limit int) ([]QASessionSummary, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var rows *sql.Rows
+	var err error
+	if userID != "" {
+		query := `
+			SELECT 
+				COALESCE(session_id, printf('legacy_%d', id)) as sess_id,
+				project_id,
+				user_id,
+				MIN(question) as first_question,
+				MIN(created_at) as first_created,
+				MAX(created_at) as last_created,
+				COUNT(id) as msg_count
+			FROM project_qa_sessions 
+			WHERE project_id = ? AND user_id = ? 
+			GROUP BY sess_id
+			ORDER BY last_created DESC 
+			LIMIT ?
+		`
+		rows, err = db.conn.Query(query, projectID, userID, limit)
+	} else {
+		query := `
+			SELECT 
+				COALESCE(session_id, printf('legacy_%d', id)) as sess_id,
+				project_id,
+				user_id,
+				MIN(question) as first_question,
+				MIN(created_at) as first_created,
+				MAX(created_at) as last_created,
+				COUNT(id) as msg_count
+			FROM project_qa_sessions 
+			WHERE project_id = ? 
+			GROUP BY sess_id
+			ORDER BY last_created DESC 
+			LIMIT ?
+		`
+		rows, err = db.conn.Query(query, projectID, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var summaries []QASessionSummary
+	for rows.Next() {
+		var s QASessionSummary
+		if err := rows.Scan(&s.SessionID, &s.RepoID, &s.UserID, &s.Title, &s.CreatedAt, &s.UpdatedAt, &s.MessageCount); err != nil {
+			return nil, err
+		}
+		if len([]rune(s.Title)) > 30 {
+			s.Title = string([]rune(s.Title)[:30]) + "..."
+		}
+		summaries = append(summaries, s)
+	}
+	return summaries, rows.Err()
+}
+
+func ListUserProjectQASessions(projectID, userID string, limit int) ([]QASessionSummary, error) {
+	if globalDB == nil {
+		return nil, nil
+	}
+	return globalDB.ListUserProjectQASessions(projectID, userID, limit)
 }
 
 // --- Project CRUD ---

@@ -24,13 +24,19 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	// Option 1: Return current user session details
 	// Option 2: Query orchestrator QA history if requested
 	repoID := r.URL.Query().Get("repo_id")
-	if repoID != "" {
+	projectID := r.URL.Query().Get("project_id")
+	if repoID != "" || projectID != "" {
 		// Forward query to orchestrator QA logs if needed
 		userIDParam := session.UserID
 		if session.Role == "admin" {
 			userIDParam = "" // Admin can view all users' QA audit logs
 		}
-		url := fmt.Sprintf("%s/api/qa/history?user_id=%s&repo_id=%s", s.config.OrchestratorURL, userIDParam, repoID)
+		var url string
+		if projectID != "" {
+			url = fmt.Sprintf("%s/api/qa/history?user_id=%s&project_id=%s", s.config.OrchestratorURL, userIDParam, projectID)
+		} else {
+			url = fmt.Sprintf("%s/api/qa/history?user_id=%s&repo_id=%s", s.config.OrchestratorURL, userIDParam, repoID)
+		}
 		resp, err := s.httpClient.Get(url)
 		if err == nil {
 			defer resp.Body.Close()
@@ -59,15 +65,21 @@ func (s *Server) handleQASessions(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodGet {
 		repoID := r.URL.Query().Get("repo_id")
-		if repoID == "" {
-			http.Error(w, "repo_id required", http.StatusBadRequest)
+		projectID := r.URL.Query().Get("project_id")
+		if repoID == "" && projectID == "" {
+			http.Error(w, "repo_id or project_id required", http.StatusBadRequest)
 			return
 		}
 		userIDParam := session.UserID
 		if session.Role == "admin" {
 			userIDParam = "" // Admin can view all users' QA audit logs
 		}
-		url := fmt.Sprintf("%s/api/qa/sessions?user_id=%s&repo_id=%s", s.config.OrchestratorURL, userIDParam, repoID)
+		var url string
+		if projectID != "" {
+			url = fmt.Sprintf("%s/api/qa/sessions?user_id=%s&project_id=%s", s.config.OrchestratorURL, userIDParam, projectID)
+		} else {
+			url = fmt.Sprintf("%s/api/qa/sessions?user_id=%s&repo_id=%s", s.config.OrchestratorURL, userIDParam, repoID)
+		}
 		resp, err := s.httpClient.Get(url)
 		if err != nil {
 			http.Error(w, "Failed to connect to orchestrator: "+err.Error(), http.StatusBadGateway)

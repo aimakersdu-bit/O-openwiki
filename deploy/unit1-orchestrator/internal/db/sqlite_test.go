@@ -350,3 +350,61 @@ func TestProjectReposMapping(t *testing.T) {
 	}
 }
 
+func TestProjectQASessionCRUD(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	proj := &Project{ID: "proj-qa", Name: "QA Project", LocalPath: "/tmp/proj-qa", Status: "active"}
+	if err := database.CreateProject(proj); err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+
+	// 1. Create Project QA Session
+	err := database.CreateProjectQASession("proj-sess-1", "proj-qa", "alice", "How does service A call service B?", "Via FeignClient /orders")
+	if err != nil {
+		t.Fatalf("CreateProjectQASession failed: %v", err)
+	}
+
+	// 2. List Project QA Sessions
+	sessions, err := database.ListProjectQASessions("proj-qa", "alice", 10)
+	if err != nil {
+		t.Fatalf("ListProjectQASessions failed: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].Question != "How does service A call service B?" {
+		t.Errorf("expected matching question, got %s", sessions[0].Question)
+	}
+
+	// 3. List User Project QA Sessions (Summary)
+	summaries, err := database.ListUserProjectQASessions("proj-qa", "alice", 10)
+	if err != nil {
+		t.Fatalf("ListUserProjectQASessions failed: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(summaries))
+	}
+	if summaries[0].SessionID != "proj-sess-1" {
+		t.Errorf("expected session_id proj-sess-1, got %s", summaries[0].SessionID)
+	}
+
+	// 4. Get Session Messages (unified across projects & repos)
+	msgs, err := database.GetQASessionMessages("proj-sess-1", "alice")
+	if err != nil {
+		t.Fatalf("GetQASessionMessages failed: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+
+	// 5. Delete Session
+	if err := database.DeleteQASession("proj-sess-1", "alice"); err != nil {
+		t.Fatalf("DeleteQASession failed: %v", err)
+	}
+	remaining, _ := database.ListProjectQASessions("proj-qa", "alice", 10)
+	if len(remaining) != 0 {
+		t.Errorf("expected 0 sessions after deletion, got %d", len(remaining))
+	}
+}
+

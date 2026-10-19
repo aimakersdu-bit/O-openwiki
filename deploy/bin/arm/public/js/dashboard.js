@@ -711,7 +711,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!activeRepo || !sessionList) return;
     sessionList.innerHTML = '<div style="color: var(--text-secondary); font-size: 0.8rem; padding: 0.5rem;">加载会话历史中...</div>';
     try {
-      const sessions = await API.getUserQASessions(activeRepo.id);
+      const sessions = await API.getUserQASessions(activeRepo.id, !!activeRepo.isProject);
       if (!sessions || sessions.length === 0) {
         sessionList.innerHTML = '<div style="color: var(--text-secondary); font-size: 0.8rem; padding: 0.5rem;">暂无历史会话记录</div>';
         return;

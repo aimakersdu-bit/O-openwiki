@@ -104,7 +104,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-// handleQAHistory returns historical Q&A sessions for a given user and repo.
+// handleQAHistory returns historical Q&A sessions for a given user and repo or project.
 func (s *Server) handleQAHistory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -112,14 +112,21 @@ func (s *Server) handleQAHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repoID := r.URL.Query().Get("repo_id")
+	projectID := r.URL.Query().Get("project_id")
 	userID := r.URL.Query().Get("user_id")
 
-	if repoID == "" {
-		http.Error(w, "repo_id is required", http.StatusBadRequest)
+	if repoID == "" && projectID == "" {
+		http.Error(w, "repo_id or project_id is required", http.StatusBadRequest)
 		return
 	}
 
-	sessions, err := db.ListQASessions(repoID, userID, 50)
+	var sessions []db.QASession
+	var err error
+	if projectID != "" {
+		sessions, err = db.ListProjectQASessions(projectID, userID, 50)
+	} else {
+		sessions, err = db.ListQASessions(repoID, userID, 50)
+	}
 	if err != nil {
 		http.Error(w, "Failed to query QA sessions: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -132,7 +139,7 @@ func (s *Server) handleQAHistory(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(sessions)
 }
 
-// handleUserQASessions returns session summaries for a given user and repo.
+// handleUserQASessions returns session summaries for a given user and repo or project.
 func (s *Server) handleUserQASessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
 		s.handleDeleteQASession(w, r)
@@ -144,17 +151,27 @@ func (s *Server) handleUserQASessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repoID := r.URL.Query().Get("repo_id")
+	projectID := r.URL.Query().Get("project_id")
 	userID := r.URL.Query().Get("user_id")
 
-	if repoID == "" {
-		http.Error(w, "repo_id is required", http.StatusBadRequest)
+	if repoID == "" && projectID == "" {
+		http.Error(w, "repo_id or project_id is required", http.StatusBadRequest)
 		return
 	}
 
-	sessions, err := db.ListUserQASessions(repoID, userID, 50)
+	var sessions []db.QASessionSummary
+	var err error
+	if projectID != "" {
+		sessions, err = db.ListUserProjectQASessions(projectID, userID, 50)
+	} else {
+		sessions, err = db.ListUserQASessions(repoID, userID, 50)
+	}
 	if err != nil {
 		http.Error(w, "Failed to query user QA sessions: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if sessions == nil {
+		sessions = []db.QASessionSummary{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

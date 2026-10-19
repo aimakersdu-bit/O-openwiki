@@ -69,15 +69,17 @@ window.API = {
   },
 
   // Fetch QA Chat Log History (for Audit Page history.html)
-  async getQASessions(repoID) {
-    const res = await fetch(`/portal/sessions?repo_id=${encodeURIComponent(repoID)}`);
+  async getQASessions(id, isProject = false) {
+    const param = isProject ? `project_id=${encodeURIComponent(id)}` : `repo_id=${encodeURIComponent(id)}`;
+    const res = await fetch(`/portal/sessions?${param}`);
     if (!res.ok) throw new Error('无法获取问答历史 (' + res.status + ')');
     return await res.json();
   },
 
-  // Fetch user QA sessions for a repo
-  async getUserQASessions(repoID) {
-    const res = await fetch(`/portal/qa/sessions?repo_id=${encodeURIComponent(repoID)}`);
+  // Fetch user QA sessions for a repo or project
+  async getUserQASessions(id, isProject = false) {
+    const param = isProject ? `project_id=${encodeURIComponent(id)}` : `repo_id=${encodeURIComponent(id)}`;
+    const res = await fetch(`/portal/qa/sessions?${param}`);
     if (!res.ok) throw new Error('无法获取历史会话列表 (' + res.status + ')');
     return await res.json();
   },
