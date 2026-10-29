@@ -25,9 +25,123 @@
 
   <!-- Main Container -->
   <main class="container">
+    <!-- Batch Scheduler & Observability Section -->
+    <section class="card" id="batchSection" style="margin-bottom: 1.5rem; border-left: 4px solid var(--primary-color, #3b82f6);">
+      <div class="dashboard-header" style="flex-wrap: wrap; gap: 0.75rem;">
+        <div>
+          <h2>🚀 全行基线批量调度与算力保护</h2>
+          <p class="subtitle">对接近3年发版基线仓库清单，支持动态并发热缩放、夜间窗口保护与微服务虚拟Monorepo自动聚合</p>
+        </div>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <button id="openBatchImportModalBtn" class="btn btn-primary">📥 批量导入基线清单</button>
+          <button id="refreshBatchStatusBtn" class="btn btn-secondary">🔄 刷新调度状态</button>
+        </div>
+      </div>
+
+      <!-- Batch Overview Banner -->
+      <div id="batchOverviewCard" style="background: var(--bg-secondary, #1e293b); padding: 1.25rem; border-radius: 8px; margin-top: 1rem; border: 1px solid var(--border-color, #334155);">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem;">
+          <div>
+            <div style="font-size: 0.85rem; color: var(--text-secondary, #94a3b8); margin-bottom: 0.25rem;">当前批跑状态</div>
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+              <span id="batchStatusBadge" class="badge" style="background: #3b82f6; color: #fff; font-size: 0.9rem; padding: 0.25rem 0.6rem; border-radius: 4px;">无正在运行的批跑</span>
+              <span id="batchWindowBadge" class="badge" style="background: #10b981; color: #fff; font-size: 0.85rem; padding: 0.2rem 0.5rem; border-radius: 4px; display:none;">🌙 夜间窗口生效中</span>
+            </div>
+          </div>
+          <div>
+            <div style="font-size: 0.85rem; color: var(--text-secondary, #94a3b8); margin-bottom: 0.25rem;">动态预估剩余耗时 (ETA)</div>
+            <div id="batchETABadge" style="font-size: 1.25rem; font-weight: bold; color: #f59e0b;">-</div>
+          </div>
+          <div>
+            <div style="font-size: 0.85rem; color: var(--text-secondary, #94a3b8); margin-bottom: 0.25rem;">任务完成度</div>
+            <div id="batchProgressText" style="font-size: 1.1rem; font-weight: bold; color: var(--text-primary, #f8fafc);">0 / 0 (0%)</div>
+          </div>
+          <div style="display: flex; gap: 0.5rem;" id="batchControlButtons">
+            <button id="pauseBatchBtn" class="btn btn-secondary btn-sm" style="display:none;">⏸️ 暂停调度</button>
+            <button id="resumeBatchBtn" class="btn btn-primary btn-sm" style="display:none;">▶️ 恢复调度</button>
+            <button id="cancelBatchBtn" class="btn btn-danger btn-sm" style="display:none;">⏹️ 中止批跑</button>
+          </div>
+        </div>
+
+        <!-- Progress Bar -->
+        <div style="width: 100%; background: #334155; height: 10px; border-radius: 5px; overflow: hidden; margin-bottom: 1rem;">
+          <div id="batchProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #3b82f6, #10b981); transition: width 0.4s ease;"></div>
+        </div>
+
+        <!-- Dynamic Concurrency Heat Adjustment Slider -->
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; border-top: 1px solid var(--border-color, #334155); padding-top: 1rem;">
+          <div style="display: flex; align-items: center; gap: 1rem; flex: 1; min-width: 280px;">
+            <label for="concurrencySlider" style="font-weight: 500; font-size: 0.9rem; color: var(--text-primary, #f8fafc); white-space: nowrap;">
+              ⚡ 动态并发限流控制: <span id="concurrencyVal" style="color: #3b82f6; font-size: 1.1rem; font-weight: bold;">2</span>
+            </label>
+            <input type="range" id="concurrencySlider" min="1" max="8" value="2" style="flex: 1; cursor: pointer;" />
+            <button id="applyConcurrencyBtn" class="btn btn-primary btn-sm">实时应用</button>
+          </div>
+          <div id="slotIndicators" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Daily Token Usage & Feishu Export Section -->
+    <section class="card" id="tokenSection" style="margin-bottom: 1.5rem; border-left: 4px solid #10b981;">
+      <div class="dashboard-header" style="flex-wrap: wrap; gap: 0.75rem;">
+        <div>
+          <h2>📊 每日 LLM Token 统计报表</h2>
+          <p class="subtitle">采集 LangChain 真实 Prompt/Completion Tokens，统计 Git Diff 零改动跳过节省的 Token，并支持一键粘贴至飞书</p>
+        </div>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <button id="copyFeishuTSVBtn" class="btn btn-primary">📋 一键复制飞书表格数据 (TSV)</button>
+          <a id="downloadCSVBtn" href="/portal/telemetry/tokens/export?format=csv" class="btn btn-secondary">📥 下载 CSV</a>
+        </div>
+      </div>
+
+      <!-- Quick Metrics Grid -->
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 1rem;">
+        <div style="background: var(--bg-secondary, #1e293b); padding: 1rem; border-radius: 6px; border: 1px solid var(--border-color, #334155);">
+          <div style="font-size: 0.85rem; color: var(--text-secondary, #94a3b8);">今日 Prompt Tokens</div>
+          <div id="statPromptTokens" style="font-size: 1.3rem; font-weight: bold; color: #38bdf8; margin-top: 0.25rem;">0</div>
+        </div>
+        <div style="background: var(--bg-secondary, #1e293b); padding: 1rem; border-radius: 6px; border: 1px solid var(--border-color, #334155);">
+          <div style="font-size: 0.85rem; color: var(--text-secondary, #94a3b8);">今日 Completion Tokens</div>
+          <div id="statCompletionTokens" style="font-size: 1.3rem; font-weight: bold; color: #a855f7; margin-top: 0.25rem;">0</div>
+        </div>
+        <div style="background: var(--bg-secondary, #1e293b); padding: 1rem; border-radius: 6px; border: 1px solid var(--border-color, #334155);">
+          <div style="font-size: 0.85rem; color: var(--text-secondary, #94a3b8);">今日总消耗 Tokens</div>
+          <div id="statTotalTokens" style="font-size: 1.3rem; font-weight: bold; color: #f59e0b; margin-top: 0.25rem;">0</div>
+        </div>
+        <div style="background: var(--bg-secondary, #1e293b); padding: 1rem; border-radius: 6px; border: 1px solid var(--border-color, #334155);">
+          <div style="font-size: 0.85rem; color: var(--text-secondary, #94a3b8);">Git Diff 跳过节省 Tokens</div>
+          <div id="statSavedTokens" style="font-size: 1.3rem; font-weight: bold; color: #10b981; margin-top: 0.25rem;">0</div>
+        </div>
+      </div>
+
+      <!-- Daily Tokens History Table -->
+      <div class="table-responsive" style="margin-top: 1rem;">
+        <table class="data-table" id="dailyTokenTable">
+          <thead>
+            <tr>
+              <th style="min-width: 100px;">日期</th>
+              <th style="min-width: 120px;">Prompt 消耗</th>
+              <th style="min-width: 120px;">Completion 消耗</th>
+              <th style="min-width: 120px;">总消耗 Tokens</th>
+              <th style="min-width: 140px;">跳过节省 Tokens</th>
+              <th class="col-center" style="min-width: 90px;">构建仓库数</th>
+              <th class="col-center" style="min-width: 90px;">跳过仓库数</th>
+              <th style="min-width: 150px;">更新时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="8" style="text-align:center; color:var(--text-secondary);">暂无 Token 消耗数据</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <!-- Register New Repo Card -->
     <section class="card">
-      <h2>注册代码仓库</h2>
+      <h2>注册单个代码仓库</h2>
       <p class="subtitle">配置 Git 仓库地址与调度规则，系统将自动增量拉取并编译 RepoWiki 静态文件</p>
       <form id="registerRepoForm">
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
@@ -244,6 +358,60 @@
           <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1rem;">
             <button type="button" id="cancelProjectBtn" class="btn btn-secondary">取消</button>
             <button type="submit" class="btn btn-primary">💾 保存微服务项目</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Batch Import Modal (Import 3-Year Production Release Baseline) -->
+  <div id="batchImportModal" class="modal-overlay" style="display:none;">
+    <div class="modal-card" style="max-width: 760px;">
+      <div class="modal-header">
+        <h3>📥 批量导入生产发版基线清单 (陈立芝清单)</h3>
+        <button id="closeBatchImportModalBtn" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="batchImportForm">
+          <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem;">
+            <div class="form-group">
+              <label for="batchName">批跑任务名称</label>
+              <input type="text" id="batchName" value="2026全行生产发版基线批量调度" required>
+            </div>
+            <div class="form-group">
+              <label for="batchInitialConcurrency">初始并发数 (1-8)</label>
+              <input type="number" id="batchInitialConcurrency" min="1" max="8" value="2" required>
+            </div>
+          </div>
+
+          <div class="form-group" style="display:flex; gap: 1.5rem; align-items: center; margin: 0.5rem 0;">
+            <label style="display:flex; align-items: center; gap: 0.4rem; cursor: pointer;">
+              <input type="checkbox" id="batchNightMode" checked>
+              <span>🌙 启用夜间算力窗口 (仅在 22:00 ~ 07:00 运行构建)</span>
+            </label>
+            <label style="display:flex; align-items: center; gap: 0.4rem; cursor: pointer;">
+              <input type="checkbox" id="batchAutoStart" checked>
+              <span>▶️ 导入后立即开始后台调度</span>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label for="batchDataInput">
+              粘贴 CSV 或 JSON 数据 
+              <span style="font-weight:normal; color:var(--text-secondary); font-size:0.85rem;">
+                (支持 CSV 表头: <code>id,name,git_url,branch,tier,business_domain,last_release_at</code> 或 JSON 数组)
+              </span>
+            </label>
+            <textarea id="batchDataInput" rows="10" placeholder="id,name,git_url,branch,tier,business_domain,last_release_at
+trade-gateway,交易边缘网关,https://github.com/bank/trade-gateway.git,master,A,消费金融,2025-11-20
+order-service,信贷订单服务,https://github.com/bank/order-service.git,master,A,消费金融,2025-10-15
+credit-audit,信贷风控审批,https://github.com/bank/credit-audit.git,master,B,信贷中台,2025-08-01" style="width: 100%; font-family: monospace; font-size: 0.85rem; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); resize: vertical;" required></textarea>
+          </div>
+
+          <div id="batchAlert" class="alert" style="display:none;"></div>
+          <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1rem;">
+            <button type="button" id="cancelBatchImportBtn" class="btn btn-secondary">取消</button>
+            <button type="submit" class="btn btn-primary">🚀 开始批量导入与调度</button>
           </div>
         </form>
       </div>

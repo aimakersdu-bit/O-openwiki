@@ -663,5 +663,382 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   refreshProjectsBtn.addEventListener('click', loadAdminProjects);
   loadAdminProjects();
+
+  // ==========================================
+  // Batch Scheduler & Token Telemetry Logic
+  // ==========================================
+  let activeBatchId = localStorage.getItem('openwiki_active_batch_id') || '';
+  let batchPollTimer = null;
+
+  // Batch Import Modal elements
+  const openBatchImportModalBtn = document.getElementById('openBatchImportModalBtn');
+  const closeBatchImportModalBtn = document.getElementById('closeBatchImportModalBtn');
+  const cancelBatchImportBtn = document.getElementById('cancelBatchImportBtn');
+  const batchImportModal = document.getElementById('batchImportModal');
+  const batchImportForm = document.getElementById('batchImportForm');
+  const batchDataInput = document.getElementById('batchDataInput');
+  const batchAlert = document.getElementById('batchAlert');
+  const refreshBatchStatusBtn = document.getElementById('refreshBatchStatusBtn');
+
+  // Batch Status elements
+  const batchStatusBadge = document.getElementById('batchStatusBadge');
+  const batchWindowBadge = document.getElementById('batchWindowBadge');
+  const batchETABadge = document.getElementById('batchETABadge');
+  const batchProgressText = document.getElementById('batchProgressText');
+  const batchProgressBar = document.getElementById('batchProgressBar');
+  const pauseBatchBtn = document.getElementById('pauseBatchBtn');
+  const resumeBatchBtn = document.getElementById('resumeBatchBtn');
+  const cancelBatchBtn = document.getElementById('cancelBatchBtn');
+  const concurrencySlider = document.getElementById('concurrencySlider');
+  const concurrencyVal = document.getElementById('concurrencyVal');
+  const applyConcurrencyBtn = document.getElementById('applyConcurrencyBtn');
+  const slotIndicators = document.getElementById('slotIndicators');
+
+  // Token Telemetry elements
+  const copyFeishuTSVBtn = document.getElementById('copyFeishuTSVBtn');
+  const statPromptTokens = document.getElementById('statPromptTokens');
+  const statCompletionTokens = document.getElementById('statCompletionTokens');
+  const statTotalTokens = document.getElementById('statTotalTokens');
+  const statSavedTokens = document.getElementById('statSavedTokens');
+  const dailyTokenTableBody = document.querySelector('#dailyTokenTable tbody');
+
+  // Modal open/close
+  if (openBatchImportModalBtn) {
+    openBatchImportModalBtn.addEventListener('click', () => {
+      batchAlert.style.display = 'none';
+      batchImportModal.style.display = 'flex';
+    });
+  }
+  if (closeBatchImportModalBtn) {
+    closeBatchImportModalBtn.addEventListener('click', () => {
+      batchImportModal.style.display = 'none';
+    });
+  }
+  if (cancelBatchImportBtn) {
+    cancelBatchImportBtn.addEventListener('click', () => {
+      batchImportModal.style.display = 'none';
+    });
+  }
+
+  // Concurrency slider sync
+  if (concurrencySlider) {
+    concurrencySlider.addEventListener('input', () => {
+      concurrencyVal.textContent = concurrencySlider.value;
+    });
+  }
+
+  // Apply Concurrency Button
+  if (applyConcurrencyBtn) {
+    applyConcurrencyBtn.addEventListener('click', async () => {
+      const c = Number(concurrencySlider.value);
+      try {
+        await API.updateBatchConcurrency(activeBatchId, c);
+        showAlert(`并发已动态调整为 ${c} 并实时生效！`, 'success');
+        refreshBatchStatus();
+      } catch (err) {
+        showAlert(`调整并发失败: ${err.message}`, 'error');
+      }
+    });
+  }
+
+  // Batch Control Buttons
+  if (pauseBatchBtn) {
+    pauseBatchBtn.addEventListener('click', async () => {
+      if (!activeBatchId) return;
+      try {
+        await API.controlBatch(activeBatchId, 'pause');
+        showAlert('批跑已成功暂停！', 'success');
+        refreshBatchStatus();
+      } catch (err) {
+        showAlert(`暂停批跑失败: ${err.message}`, 'error');
+      }
+    });
+  }
+
+  if (resumeBatchBtn) {
+    resumeBatchBtn.addEventListener('click', async () => {
+      if (!activeBatchId) return;
+      try {
+        await API.controlBatch(activeBatchId, 'resume');
+        showAlert('批跑已恢复执行！', 'success');
+        refreshBatchStatus();
+      } catch (err) {
+        showAlert(`恢复批跑失败: ${err.message}`, 'error');
+      }
+    });
+  }
+
+  if (cancelBatchBtn) {
+    cancelBatchBtn.addEventListener('click', async () => {
+      if (!activeBatchId) return;
+      if (confirm(`确认要中止批跑 [${activeBatchId}] 吗？`)) {
+        try {
+          await API.controlBatch(activeBatchId, 'cancel');
+          showAlert('批跑已中止！', 'success');
+          refreshBatchStatus();
+        } catch (err) {
+          showAlert(`中止批跑失败: ${err.message}`, 'error');
+        }
+      }
+    });
+  }
+
+  // Helper to parse CSV or JSON baseline repos input
+  function parseBatchInput(text) {
+    text = (text || '').trim();
+    if (text.startsWith('[') && text.endsWith(']')) {
+      return JSON.parse(text);
+    }
+    const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+    if (lines.length === 0) return [];
+
+    let startIndex = 0;
+    const header = lines[0].toLowerCase();
+    if (header.includes('git_url') || header.includes('id') || header.includes('name')) {
+      startIndex = 1;
+    }
+
+    const repos = [];
+    for (let i = startIndex; i < lines.length; i++) {
+      const parts = lines[i].split(/[,\t]/).map(p => p.trim());
+      if (parts.length >= 2) {
+        repos.push({
+          id: parts[0],
+          name: parts[1] || parts[0],
+          git_url: parts[2] || '',
+          branch: parts[3] || 'master',
+          tier: parts[4] || 'A',
+          business_domain: parts[5] || '',
+          last_release_at: parts[6] || ''
+        });
+      }
+    }
+    return repos;
+  }
+
+  // Batch Import Form Submit
+  if (batchImportForm) {
+    batchImportForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      batchAlert.style.display = 'none';
+
+      let repos = [];
+      try {
+        repos = parseBatchInput(batchDataInput.value);
+      } catch (err) {
+        batchAlert.className = 'alert alert-danger';
+        batchAlert.textContent = `解析数据失败: ${err.message}`;
+        batchAlert.style.display = 'block';
+        return;
+      }
+
+      if (repos.length === 0) {
+        batchAlert.className = 'alert alert-danger';
+        batchAlert.textContent = '未解析到任何有效仓库数据，请检查输入格式！';
+        batchAlert.style.display = 'block';
+        return;
+      }
+
+      const payload = {
+        batch_name: document.getElementById('batchName').value.trim() || '生产基线批量调度',
+        concurrency: Number(document.getElementById('batchInitialConcurrency').value) || 2,
+        night_mode_only: document.getElementById('batchNightMode').checked,
+        auto_start: document.getElementById('batchAutoStart').checked,
+        repos: repos
+      };
+
+      try {
+        const res = await API.batchImportRepos(payload);
+        activeBatchId = res.batch_id;
+        localStorage.setItem('openwiki_active_batch_id', activeBatchId);
+
+        showAlert(`批量导入成功！已导入 ${res.total_imported} 个仓库并生成微服务虚拟Monorepo，批跑 [${res.batch_id}] 已启动！`, 'success');
+        batchImportModal.style.display = 'none';
+        batchImportForm.reset();
+
+        refreshBatchStatus();
+        loadAdminRepos();
+        loadAdminProjects();
+        loadDailyTokens();
+      } catch (err) {
+        batchAlert.className = 'alert alert-danger';
+        batchAlert.textContent = err.message;
+        batchAlert.style.display = 'block';
+      }
+    });
+  }
+
+  // Refresh and Render Batch Status
+  async function refreshBatchStatus() {
+    if (!activeBatchId) {
+      batchStatusBadge.textContent = '无正在运行的批跑';
+      batchStatusBadge.style.background = '#64748b';
+      batchETABadge.textContent = '-';
+      batchProgressText.textContent = '0 / 0 (0%)';
+      batchProgressBar.style.width = '0%';
+      pauseBatchBtn.style.display = 'none';
+      resumeBatchBtn.style.display = 'none';
+      cancelBatchBtn.style.display = 'none';
+      slotIndicators.innerHTML = '';
+      return;
+    }
+
+    try {
+      const data = await API.getBatchStatus(activeBatchId);
+      const run = data.batch_run;
+
+      // Status Badge
+      const statusMap = {
+        'pending': { text: '排队就绪', bg: '#3b82f6' },
+        'running': { text: '正在调度构建', bg: '#10b981' },
+        'paused': { text: '已暂停', bg: '#f59e0b' },
+        'completed': { text: '批跑已全部完成', bg: '#059669' },
+        'failed': { text: '已中止/失败', bg: '#ef4444' }
+      };
+      const info = statusMap[run.status] || { text: run.status, bg: '#64748b' };
+      batchStatusBadge.textContent = `${info.text} (${run.name})`;
+      batchStatusBadge.style.background = info.bg;
+
+      // Night Window Badge
+      if (run.night_mode_only) {
+        batchWindowBadge.style.display = 'inline-block';
+        if (data.is_window_open) {
+          batchWindowBadge.textContent = '🌙 夜间窗口执行中 (22:00-07:00)';
+          batchWindowBadge.style.background = '#10b981';
+        } else {
+          batchWindowBadge.textContent = '⏳ 等待夜间窗口 (22:00-07:00)';
+          batchWindowBadge.style.background = '#f59e0b';
+        }
+      } else {
+        batchWindowBadge.style.display = 'none';
+      }
+
+      // Progress & ETA
+      const total = run.total_count || 1;
+      const processed = run.processed_count || 0;
+      const pct = Math.round((processed / total) * 100);
+      batchProgressText.textContent = `${processed} / ${total} (${pct}%) [成功:${run.success_count} 跳过:${run.skipped_count} 失败:${run.failed_count}]`;
+      batchProgressBar.style.width = `${pct}%`;
+
+      if (run.status === 'completed') {
+        batchETABadge.textContent = '已完成 🎉';
+        batchETABadge.style.color = '#10b981';
+      } else {
+        batchETABadge.textContent = data.formatted_eta || '计算中...';
+        batchETABadge.style.color = '#f59e0b';
+      }
+
+      // Concurrency Slider Sync
+      if (run.max_concurrency) {
+        concurrencySlider.value = run.max_concurrency;
+        concurrencyVal.textContent = run.max_concurrency;
+      }
+
+      // Buttons
+      if (run.status === 'running') {
+        pauseBatchBtn.style.display = 'inline-block';
+        resumeBatchBtn.style.display = 'none';
+        cancelBatchBtn.style.display = 'inline-block';
+      } else if (run.status === 'paused') {
+        pauseBatchBtn.style.display = 'none';
+        resumeBatchBtn.style.display = 'inline-block';
+        cancelBatchBtn.style.display = 'inline-block';
+      } else {
+        pauseBatchBtn.style.display = 'none';
+        resumeBatchBtn.style.display = 'none';
+        cancelBatchBtn.style.display = 'none';
+      }
+
+      // Slot Indicators
+      let slotHTML = '';
+      const activeMap = {};
+      (data.active_slots || []).forEach(s => {
+        activeMap[s.slot_id] = s;
+      });
+
+      const totalSlots = Number(concurrencySlider.value) || 2;
+      for (let i = 0; i < totalSlots; i++) {
+        const slot = activeMap[i];
+        if (slot) {
+          slotHTML += `
+            <div style="background: rgba(59, 130, 246, 0.2); border: 1px solid #3b82f6; color: #93c5fd; padding: 0.35rem 0.65rem; border-radius: 4px; font-size: 0.8rem; display: flex; align-items: center; gap: 0.4rem;">
+              <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#3b82f6; animation:pulse 1.5s infinite;"></span>
+              <strong>[Slot ${i}]</strong> ${API.escapeHTML(slot.repo_id)} (${slot.stage} ${slot.elapsed_sec}s)
+            </div>`;
+        } else {
+          slotHTML += `
+            <div style="background: rgba(148, 163, 184, 0.1); border: 1px solid #475569; color: #94a3b8; padding: 0.35rem 0.65rem; border-radius: 4px; font-size: 0.8rem;">
+              <strong>[Slot ${i}]</strong> 空闲
+            </div>`;
+        }
+      }
+      slotIndicators.innerHTML = slotHTML;
+
+    } catch (err) {
+      console.warn('refreshBatchStatus error:', err);
+    }
+  }
+
+  if (refreshBatchStatusBtn) {
+    refreshBatchStatusBtn.addEventListener('click', refreshBatchStatus);
+  }
+
+  // Load Daily Token Telemetry
+  async function loadDailyTokens() {
+    try {
+      const data = await API.getDailyTokens(14);
+      if (!data || data.length === 0) {
+        dailyTokenTableBody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--text-secondary);">暂无 Token 消耗数据</td></tr>`;
+        return;
+      }
+
+      // Today / Latest Metrics
+      const latest = data[0];
+      statPromptTokens.textContent = Number(latest.prompt_tokens || 0).toLocaleString();
+      statCompletionTokens.textContent = Number(latest.completion_tokens || 0).toLocaleString();
+      statTotalTokens.textContent = Number(latest.total_tokens || 0).toLocaleString();
+      statSavedTokens.textContent = Number(latest.saved_tokens || 0).toLocaleString();
+
+      let rowsHTML = '';
+      data.forEach(item => {
+        rowsHTML += `
+          <tr>
+            <td><strong>${API.escapeHTML(item.date)}</strong></td>
+            <td style="color:#38bdf8;">${Number(item.prompt_tokens || 0).toLocaleString()}</td>
+            <td style="color:#a855f7;">${Number(item.completion_tokens || 0).toLocaleString()}</td>
+            <td style="color:#f59e0b; font-weight:bold;">${Number(item.total_tokens || 0).toLocaleString()}</td>
+            <td style="color:#10b981; font-weight:500;">+${Number(item.saved_tokens || 0).toLocaleString()}</td>
+            <td class="col-center">${item.build_count || 0}</td>
+            <td class="col-center" style="color:#10b981;">${item.skipped_count || 0}</td>
+            <td style="font-size:0.8rem; color:var(--text-secondary);">${API.escapeHTML(item.updated_at || '-')}</td>
+          </tr>`;
+      });
+      dailyTokenTableBody.innerHTML = rowsHTML;
+
+    } catch (err) {
+      dailyTokenTableBody.innerHTML = `<tr><td colspan="8" style="color:var(--error-color);">加载 Token 统计失败: ${err.message}</td></tr>`;
+    }
+  }
+
+  // Copy Feishu TSV to Clipboard
+  if (copyFeishuTSVBtn) {
+    copyFeishuTSVBtn.addEventListener('click', async () => {
+      try {
+        const tsv = await API.getTokensExportTSV();
+        await navigator.clipboard.writeText(tsv);
+        alert('📋 飞书多维表格数据已成功复制到剪贴板！\n\n请直接打开飞书表格或多维表格，在空白处按 Ctrl+V (或 Cmd+V) 即可完整导入！');
+      } catch (err) {
+        alert('复制失败，请尝试直接点击【下载 CSV】: ' + err.message);
+      }
+    });
+  }
+
+  // Initial load & Polling
+  refreshBatchStatus();
+  loadDailyTokens();
+  batchPollTimer = setInterval(() => {
+    refreshBatchStatus();
+    loadDailyTokens();
+  }, 4000);
 });
 

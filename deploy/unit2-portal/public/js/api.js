@@ -210,5 +210,63 @@ window.API = {
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/\n/g, '<br>');
+  },
+
+  // Batch Import Repos
+  async batchImportRepos(data) {
+    const res = await fetch('/portal/repos/batch-import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || '批量导入失败');
+    }
+    return await res.json();
+  },
+
+  // Update Dynamic Concurrency
+  async updateBatchConcurrency(batchId, concurrency) {
+    const res = await fetch('/portal/batch/concurrency', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batch_id: batchId, concurrency: Number(concurrency) })
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || '调整并发失败');
+    }
+    return await res.json();
+  },
+
+  // Get Detailed Batch Status & ETA
+  async getBatchStatus(batchId) {
+    const res = await fetch(`/portal/batch/status?batch_id=${encodeURIComponent(batchId)}`);
+    if (!res.ok) throw new Error('无法获取批跑进度 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // Batch Control (pause / resume / cancel)
+  async controlBatch(batchId, action) {
+    const res = await fetch(`/portal/batch/${action}?batch_id=${encodeURIComponent(batchId)}`, {
+      method: 'POST'
+    });
+    if (!res.ok) throw new Error(`操作 ${action} 失败 (${res.status})`);
+    return await res.json();
+  },
+
+  // Fetch Daily Token Stats
+  async getDailyTokens(limit = 14) {
+    const res = await fetch(`/portal/telemetry/tokens/daily?limit=${limit}`);
+    if (!res.ok) throw new Error('无法获取Token消耗统计 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // Export Daily Tokens TSV (for Feishu)
+  async getTokensExportTSV() {
+    const res = await fetch('/portal/telemetry/tokens/export?format=tsv');
+    if (!res.ok) throw new Error('获取飞书导出数据失败 (' + res.status + ')');
+    return await res.text();
   }
 };
