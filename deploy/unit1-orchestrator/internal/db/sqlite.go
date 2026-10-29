@@ -236,8 +236,60 @@ func (db *DB) migrate() error {
 		}
 	}
 
-	// Try adding session_id column if table existed without it
+	// Try adding columns/tables for migrations
 	db.conn.Exec(`ALTER TABLE qa_sessions ADD COLUMN session_id TEXT`)
+	db.conn.Exec(`ALTER TABLE repos ADD COLUMN tier TEXT DEFAULT 'B'`)
+	db.conn.Exec(`ALTER TABLE repos ADD COLUMN business_domain TEXT DEFAULT ''`)
+	db.conn.Exec(`ALTER TABLE repos ADD COLUMN last_release_at DATETIME`)
+
+	batchTables := []string{
+		`CREATE TABLE IF NOT EXISTS batch_runs (
+			id              TEXT PRIMARY KEY,
+			name            TEXT NOT NULL,
+			total_count     INTEGER DEFAULT 0,
+			processed_count INTEGER DEFAULT 0,
+			success_count   INTEGER DEFAULT 0,
+			skipped_count   INTEGER DEFAULT 0,
+			failed_count    INTEGER DEFAULT 0,
+			status          TEXT NOT NULL DEFAULT 'pending',
+			max_concurrency INTEGER DEFAULT 2,
+			night_mode_only BOOLEAN DEFAULT 0,
+			started_at      DATETIME,
+			finished_at     DATETIME,
+			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS batch_tasks (
+			id                INTEGER PRIMARY KEY AUTOINCREMENT,
+			batch_id          TEXT NOT NULL REFERENCES batch_runs(id) ON DELETE CASCADE,
+			repo_id           TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+			status            TEXT NOT NULL DEFAULT 'pending',
+			duration_sec      INTEGER DEFAULT 0,
+			prompt_tokens     INTEGER DEFAULT 0,
+			completion_tokens INTEGER DEFAULT 0,
+			total_tokens      INTEGER DEFAULT 0,
+			summary           TEXT,
+			error             TEXT,
+			started_at        DATETIME,
+			finished_at       DATETIME,
+			UNIQUE(batch_id, repo_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS daily_token_usage (
+			date              TEXT PRIMARY KEY,
+			prompt_tokens     INTEGER DEFAULT 0,
+			completion_tokens INTEGER DEFAULT 0,
+			total_tokens      INTEGER DEFAULT 0,
+			saved_tokens      INTEGER DEFAULT 0,
+			build_count       INTEGER DEFAULT 0,
+			skipped_count     INTEGER DEFAULT 0,
+			updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+	}
+
+	for _, bt := range batchTables {
+		if _, err := db.conn.Exec(bt); err != nil {
+			return fmt.Errorf("exec batch table creation: %w", err)
+		}
+	}
 
 	indices := []string{
 		`CREATE INDEX IF NOT EXISTS idx_builds_repo ON builds(repo_id)`,
@@ -246,6 +298,8 @@ func (db *DB) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_project_repos_proj ON project_repos(project_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_project_qa_proj ON project_qa_sessions(project_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_project_qa_sess ON project_qa_sessions(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_batch_tasks_batch ON batch_tasks(batch_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_batch_tasks_status ON batch_tasks(batch_id, status)`,
 	}
 
 	for _, idx := range indices {
@@ -261,23 +315,27 @@ func (db *DB) migrate() error {
 
 // Repo represents a registered repository.
 type Repo struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	GitURL    string `json:"git_url"`
-	Branch    string `json:"branch"`
-	LocalPath string `json:"local_path"`
-	WikiDir   string `json:"wiki_dir"`
-	StaticDir string `json:"static_dir"`
-	Schedule  string `json:"schedule"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	GitURL         string `json:"git_url"`
+	Branch         string `json:"branch"`
+	LocalPath      string `json:"local_path"`
+	WikiDir        string `json:"wiki_dir"`
+	StaticDir      string `json:"static_dir"`
+	Schedule       string `json:"schedule"`
+	Status         string `json:"status"`
+	Tier           string `json:"tier"`            // A, B, C 等级
+	BusinessDomain string `json:"business_domain"` // 所属微服务业务域
+	LastReleaseAt  string `json:"last_release_at"` // 最近发版时间
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 // ListRepos returns all registered repositories.
 func (db *DB) ListRepos() ([]Repo, error) {
 	rows, err := db.conn.Query(`SELECT id, name, git_url, branch, local_path, 
 		COALESCE(wiki_dir,''), COALESCE(static_dir,''), schedule, status, 
+		COALESCE(tier,'B'), COALESCE(business_domain,''), COALESCE(last_release_at,''),
 		created_at, updated_at FROM repos ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -289,6 +347,7 @@ func (db *DB) ListRepos() ([]Repo, error) {
 		var r Repo
 		if err := rows.Scan(&r.ID, &r.Name, &r.GitURL, &r.Branch, &r.LocalPath,
 			&r.WikiDir, &r.StaticDir, &r.Schedule, &r.Status,
+			&r.Tier, &r.BusinessDomain, &r.LastReleaseAt,
 			&r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -302,9 +361,11 @@ func (db *DB) GetRepo(id string) (*Repo, error) {
 	r := &Repo{}
 	err := db.conn.QueryRow(`SELECT id, name, git_url, branch, local_path, 
 		COALESCE(wiki_dir,''), COALESCE(static_dir,''), schedule, status, 
+		COALESCE(tier,'B'), COALESCE(business_domain,''), COALESCE(last_release_at,''),
 		created_at, updated_at FROM repos WHERE id = ?`, id).
 		Scan(&r.ID, &r.Name, &r.GitURL, &r.Branch, &r.LocalPath,
 			&r.WikiDir, &r.StaticDir, &r.Schedule, &r.Status,
+			&r.Tier, &r.BusinessDomain, &r.LastReleaseAt,
 			&r.CreatedAt, &r.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -327,9 +388,11 @@ func (db *DB) GetRepoByNameOrID(identifier string) (*Repo, error) {
 	r = &Repo{}
 	err = db.conn.QueryRow(`SELECT id, name, git_url, branch, local_path, 
 		COALESCE(wiki_dir,''), COALESCE(static_dir,''), schedule, status, 
+		COALESCE(tier,'B'), COALESCE(business_domain,''), COALESCE(last_release_at,''),
 		created_at, updated_at FROM repos WHERE name = ? LIMIT 1`, identifier).
 		Scan(&r.ID, &r.Name, &r.GitURL, &r.Branch, &r.LocalPath,
 			&r.WikiDir, &r.StaticDir, &r.Schedule, &r.Status,
+			&r.Tier, &r.BusinessDomain, &r.LastReleaseAt,
 			&r.CreatedAt, &r.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -339,17 +402,26 @@ func (db *DB) GetRepoByNameOrID(identifier string) (*Repo, error) {
 
 // CreateRepo inserts a new repository.
 func (db *DB) CreateRepo(r *Repo) error {
-	_, err := db.conn.Exec(`INSERT INTO repos (id, name, git_url, branch, local_path, wiki_dir, static_dir, schedule, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.Name, r.GitURL, r.Branch, r.LocalPath, r.WikiDir, r.StaticDir, r.Schedule, r.Status)
+	tier := r.Tier
+	if tier == "" {
+		tier = "B"
+	}
+	_, err := db.conn.Exec(`INSERT INTO repos (id, name, git_url, branch, local_path, wiki_dir, static_dir, schedule, status, tier, business_domain, last_release_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Name, r.GitURL, r.Branch, r.LocalPath, r.WikiDir, r.StaticDir, r.Schedule, r.Status,
+		tier, r.BusinessDomain, r.LastReleaseAt)
 	return err
 }
 
 // UpdateRepo updates repository fields and updated_at timestamp.
 func (db *DB) UpdateRepo(r *Repo) error {
 	timeStr := time.Now().Local().Format("2006-01-02 15:04:05")
-	_, err := db.conn.Exec(`UPDATE repos SET name = ?, git_url = ?, branch = ?, local_path = ?, wiki_dir = ?, static_dir = ?, schedule = ?, status = ?, updated_at = ? WHERE id = ?`,
-		r.Name, r.GitURL, r.Branch, r.LocalPath, r.WikiDir, r.StaticDir, r.Schedule, r.Status, timeStr, r.ID)
+	tier := r.Tier
+	if tier == "" {
+		tier = "B"
+	}
+	_, err := db.conn.Exec(`UPDATE repos SET name = ?, git_url = ?, branch = ?, local_path = ?, wiki_dir = ?, static_dir = ?, schedule = ?, status = ?, tier = ?, business_domain = ?, last_release_at = ?, updated_at = ? WHERE id = ?`,
+		r.Name, r.GitURL, r.Branch, r.LocalPath, r.WikiDir, r.StaticDir, r.Schedule, r.Status, tier, r.BusinessDomain, r.LastReleaseAt, timeStr, r.ID)
 	return err
 }
 
@@ -908,4 +980,168 @@ func (db *DB) GetProjectRepos(projectID string) ([]RepoWithAlias, error) {
 		results = append(results, item)
 	}
 	return results, rows.Err()
+}
+
+// --- Batch & Daily Token Usage ---
+
+type BatchRun struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	TotalCount     int    `json:"total_count"`
+	ProcessedCount int    `json:"processed_count"`
+	SuccessCount   int    `json:"success_count"`
+	SkippedCount   int    `json:"skipped_count"`
+	FailedCount    int    `json:"failed_count"`
+	Status         string `json:"status"`
+	MaxConcurrency int    `json:"max_concurrency"`
+	NightModeOnly  bool   `json:"night_mode_only"`
+	StartedAt      string `json:"started_at,omitempty"`
+	FinishedAt     string `json:"finished_at,omitempty"`
+	CreatedAt      string `json:"created_at"`
+}
+
+type BatchTask struct {
+	ID               int64  `json:"id"`
+	BatchID          string `json:"batch_id"`
+	RepoID           string `json:"repo_id"`
+	Status           string `json:"status"`
+	DurationSec      int    `json:"duration_sec"`
+	PromptTokens     int64  `json:"prompt_tokens"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	TotalTokens      int64  `json:"total_tokens"`
+	Summary          string `json:"summary,omitempty"`
+	Error            string `json:"error,omitempty"`
+	StartedAt        string `json:"started_at,omitempty"`
+	FinishedAt       string `json:"finished_at,omitempty"`
+}
+
+type DailyTokenUsage struct {
+	Date             string `json:"date"`
+	PromptTokens     int64  `json:"prompt_tokens"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	TotalTokens      int64  `json:"total_tokens"`
+	SavedTokens      int64  `json:"saved_tokens"`
+	BuildCount       int    `json:"build_count"`
+	SkippedCount     int    `json:"skipped_count"`
+	UpdatedAt        string `json:"updated_at"`
+}
+
+func (db *DB) CreateBatchRun(r *BatchRun) error {
+	if r.MaxConcurrency <= 0 {
+		r.MaxConcurrency = 2
+	}
+	_, err := db.conn.Exec(`INSERT INTO batch_runs (id, name, total_count, status, max_concurrency, night_mode_only, started_at)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`, r.ID, r.Name, r.TotalCount, r.Status, r.MaxConcurrency, r.NightModeOnly)
+	return err
+}
+
+func (db *DB) UpdateBatchConcurrency(batchID string, concurrency int) error {
+	_, err := db.conn.Exec(`UPDATE batch_runs SET max_concurrency = ? WHERE id = ?`, concurrency, batchID)
+	return err
+}
+
+func (db *DB) GetBatchRun(id string) (*BatchRun, error) {
+	row := db.conn.QueryRow(`SELECT id, name, total_count, processed_count, success_count, skipped_count, failed_count, 
+		status, max_concurrency, night_mode_only, COALESCE(started_at,''), COALESCE(finished_at,''), created_at 
+		FROM batch_runs WHERE id = ?`, id)
+	var r BatchRun
+	err := row.Scan(&r.ID, &r.Name, &r.TotalCount, &r.ProcessedCount, &r.SuccessCount, &r.SkippedCount, &r.FailedCount,
+		&r.Status, &r.MaxConcurrency, &r.NightModeOnly, &r.StartedAt, &r.FinishedAt, &r.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+func (db *DB) CreateBatchTask(t *BatchTask) error {
+	_, err := db.conn.Exec(`INSERT INTO batch_tasks (batch_id, repo_id, status, prompt_tokens, completion_tokens, total_tokens) VALUES (?, ?, ?, ?, ?, ?)`,
+		t.BatchID, t.RepoID, t.Status, t.PromptTokens, t.CompletionTokens, t.TotalTokens)
+	return err
+}
+
+func (db *DB) UpdateBatchTaskStatus(batchID, repoID, status, summary string, durationSec int, tokens ...int64) error {
+	var promptTokens, completionTokens, totalTokens int64
+	if len(tokens) >= 3 {
+		promptTokens = tokens[0]
+		completionTokens = tokens[1]
+		totalTokens = tokens[2]
+	}
+
+	_, err := db.conn.Exec(`UPDATE batch_tasks SET status = ?, summary = ?, duration_sec = ?, 
+		prompt_tokens = ?, completion_tokens = ?, total_tokens = ?, finished_at = CURRENT_TIMESTAMP
+		WHERE batch_id = ? AND repo_id = ?`, status, summary, durationSec, promptTokens, completionTokens, totalTokens, batchID, repoID)
+	if err != nil {
+		return err
+	}
+
+	// 重新聚合更新 batch_runs 的计数与状态
+	_, err = db.conn.Exec(`UPDATE batch_runs SET 
+		processed_count = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status IN ('completed','skipped','failed')),
+		success_count   = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'completed'),
+		skipped_count   = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'skipped'),
+		failed_count    = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'failed')
+		WHERE id = ?`, batchID, batchID, batchID, batchID, batchID)
+	return err
+}
+
+func (db *DB) ListBatchTasks(batchID string) ([]BatchTask, error) {
+	rows, err := db.conn.Query(`SELECT id, batch_id, repo_id, status, duration_sec, prompt_tokens, completion_tokens, total_tokens, 
+		COALESCE(summary,''), COALESCE(error,''), COALESCE(started_at,''), COALESCE(finished_at,'')
+		FROM batch_tasks WHERE batch_id = ? ORDER BY id ASC`, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []BatchTask
+	for rows.Next() {
+		var t BatchTask
+		if err := rows.Scan(&t.ID, &t.BatchID, &t.RepoID, &t.Status, &t.DurationSec,
+			&t.PromptTokens, &t.CompletionTokens, &t.TotalTokens,
+			&t.Summary, &t.Error, &t.StartedAt, &t.FinishedAt); err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, nil
+}
+
+func (db *DB) RecordDailyTokenUsage(u *DailyTokenUsage) error {
+	_, err := db.conn.Exec(`INSERT INTO daily_token_usage (date, prompt_tokens, completion_tokens, total_tokens, saved_tokens, build_count, skipped_count, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(date) DO UPDATE SET
+			prompt_tokens = prompt_tokens + excluded.prompt_tokens,
+			completion_tokens = completion_tokens + excluded.completion_tokens,
+			total_tokens = total_tokens + excluded.total_tokens,
+			saved_tokens = saved_tokens + excluded.saved_tokens,
+			build_count = build_count + excluded.build_count,
+			skipped_count = skipped_count + excluded.skipped_count,
+			updated_at = CURRENT_TIMESTAMP`,
+		u.Date, u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.SavedTokens, u.BuildCount, u.SkippedCount)
+	return err
+}
+
+func (db *DB) ListDailyTokenUsage(limit int) ([]DailyTokenUsage, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	rows, err := db.conn.Query(`SELECT date, prompt_tokens, completion_tokens, total_tokens, saved_tokens, build_count, skipped_count, updated_at
+		FROM daily_token_usage ORDER BY date DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []DailyTokenUsage
+	for rows.Next() {
+		var u DailyTokenUsage
+		if err := rows.Scan(&u.Date, &u.PromptTokens, &u.CompletionTokens, &u.TotalTokens, &u.SavedTokens, &u.BuildCount, &u.SkippedCount, &u.UpdatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, u)
+	}
+	return list, nil
 }
