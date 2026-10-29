@@ -54,6 +54,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/build/status", s.handleBuildStatus)
 	s.mux.HandleFunc("/api/build/trigger", s.handleBuildTrigger)
 
+	// Batch Scheduler & Rate Limiter Endpoints
+	s.mux.HandleFunc("/api/repos/batch-import", s.handleBatchImport)
+	s.mux.HandleFunc("/api/batch/concurrency", s.handleBatchConcurrency)
+	s.mux.HandleFunc("/api/batch/status", s.handleBatchStatus)
+	s.mux.HandleFunc("/api/batch/pause", s.handleBatchControl)
+	s.mux.HandleFunc("/api/batch/resume", s.handleBatchControl)
+	s.mux.HandleFunc("/api/batch/cancel", s.handleBatchControl)
+
+	// Daily Token Telemetry & Feishu/Lark Multi-dimensional Table Export
+	s.mux.HandleFunc("/api/telemetry/tokens/daily", s.handleDailyTokens)
+	s.mux.HandleFunc("/api/telemetry/tokens/export", s.handleTokensExport)
+
 	// MCP Protocol Endpoints (MCP 2025 Streamable HTTP & Legacy Remote SSE fallback)
 	if s.mcpServer != nil {
 		s.mux.HandleFunc("/mcp", s.mcpServer.HandleStreamableHTTP)

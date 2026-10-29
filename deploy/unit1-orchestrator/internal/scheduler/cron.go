@@ -50,6 +50,11 @@ func (s *Scheduler) GetBuilder() *Builder {
 	return s.builder
 }
 
+// GetDB returns the underlying DB instance.
+func (s *Scheduler) GetDB() *db.DB {
+	return s.db
+}
+
 // GetBatchScheduler returns the BatchScheduler instance.
 func (s *Scheduler) GetBatchScheduler() *BatchScheduler {
 	return s.batchSched
