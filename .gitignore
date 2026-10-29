@@ -26,3 +26,5 @@ results/
 summaries/
 __pycache__/
 *.pyc
+deploy/bin/
+deploy/data/
