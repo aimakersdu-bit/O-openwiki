@@ -57,6 +57,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/portal/build/trigger", s.handleBuildTrigger)
 	s.mux.HandleFunc("/portal/audit", s.handleAudit)
 
+	// Batch Scheduler & Telemetry APIs
+	s.mux.HandleFunc("/portal/repos/batch-import", s.handlePortalBatchImport)
+	s.mux.HandleFunc("/portal/batch/concurrency", s.handlePortalBatchConcurrency)
+	s.mux.HandleFunc("/portal/batch/status", s.handlePortalBatchStatus)
+	s.mux.HandleFunc("/portal/batch/pause", s.handlePortalBatchControl)
+	s.mux.HandleFunc("/portal/batch/resume", s.handlePortalBatchControl)
+	s.mux.HandleFunc("/portal/batch/cancel", s.handlePortalBatchControl)
+	s.mux.HandleFunc("/portal/telemetry/tokens/daily", s.handlePortalDailyTokens)
+	s.mux.HandleFunc("/portal/telemetry/tokens/export", s.handlePortalTokensExport)
+
 	// Health check
 	s.mux.HandleFunc("/portal/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
