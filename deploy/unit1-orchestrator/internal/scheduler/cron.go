@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -17,6 +18,9 @@ type Scheduler struct {
 	cron          *cron.Cron
 	db            *db.DB
 	builder       *Builder
+	pipeline      *BuildPipeline
+	limiter       *DynamicRateLimiter
+	batchSched    *BatchScheduler
 	mu            sync.Mutex
 	entries       map[string]cron.EntryID // repo_id -> cron entry ID
 	runningBuilds map[string]int64        // repo_id -> active buildID
@@ -24,10 +28,18 @@ type Scheduler struct {
 
 // NewScheduler creates a new Scheduler using the global database.
 func NewScheduler(builder *Builder) *Scheduler {
+	database := db.GetDB()
+	limiter := NewDynamicRateLimiter(2)
+	pipeline := NewBuildPipeline(database, builder, limiter)
+	batchSched := NewBatchScheduler(database, pipeline, limiter)
+
 	return &Scheduler{
 		cron:          cron.New(),
-		db:            db.GetDB(),
+		db:            database,
 		builder:       builder,
+		pipeline:      pipeline,
+		limiter:       limiter,
+		batchSched:    batchSched,
 		entries:       make(map[string]cron.EntryID),
 		runningBuilds: make(map[string]int64),
 	}
@@ -38,12 +50,34 @@ func (s *Scheduler) GetBuilder() *Builder {
 	return s.builder
 }
 
+// GetBatchScheduler returns the BatchScheduler instance.
+func (s *Scheduler) GetBatchScheduler() *BatchScheduler {
+	return s.batchSched
+}
+
+// GetRateLimiter returns the DynamicRateLimiter instance.
+func (s *Scheduler) GetRateLimiter() *DynamicRateLimiter {
+	return s.limiter
+}
+
+// GetPipeline returns the BuildPipeline instance.
+func (s *Scheduler) GetPipeline() *BuildPipeline {
+	return s.pipeline
+}
+
 // New creates a new Scheduler with explicit database and builder.
 func New(database *db.DB, builder *Builder) *Scheduler {
+	limiter := NewDynamicRateLimiter(2)
+	pipeline := NewBuildPipeline(database, builder, limiter)
+	batchSched := NewBatchScheduler(database, pipeline, limiter)
+
 	return &Scheduler{
 		cron:          cron.New(),
 		db:            database,
 		builder:       builder,
+		pipeline:      pipeline,
+		limiter:       limiter,
+		batchSched:    batchSched,
 		entries:       make(map[string]cron.EntryID),
 		runningBuilds: make(map[string]int64),
 	}
@@ -98,6 +132,10 @@ func (s *Scheduler) TriggerBuild(repoID string) error {
 
 // addJob registers a cron entry for the given repo.
 func (s *Scheduler) addJob(repo db.Repo) error {
+	if repo.Schedule == "" || repo.Schedule == "manual" {
+		log.Printf("[scheduler] repo %s has manual/empty schedule, skipping cron registration", repo.ID)
+		return nil
+	}
 	r := repo // capture for closure
 	entryID, err := s.cron.AddFunc(repo.Schedule, func() {
 		s.runBuild(r, false)
@@ -140,6 +178,18 @@ func (s *Scheduler) UpdateRepoJob(repo *db.Repo) error {
 // 3. openwiki code --update --print
 // 4. Export static files & vendor assets to Nginx output directory
 func (s *Scheduler) runBuild(repo db.Repo, force bool) {
+	if s.pipeline != nil && s.limiter != nil {
+		ctx := context.Background()
+		slot, err := s.limiter.AcquireSlot(ctx)
+		if err != nil {
+			log.Printf("[scheduler][%s] Failed to acquire rate limiter slot: %v", repo.ID, err)
+			return
+		}
+		defer s.limiter.ReleaseSlot(slot)
+
+		_, _ = s.pipeline.Execute(ctx, &repo, force, slot, nil)
+		return
+	}
 	s.mu.Lock()
 	if activeID, running := s.runningBuilds[repo.ID]; running {
 		s.mu.Unlock()

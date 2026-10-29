@@ -1030,13 +1030,23 @@ func (db *DB) CreateBatchRun(r *BatchRun) error {
 	if r.MaxConcurrency <= 0 {
 		r.MaxConcurrency = 2
 	}
-	_, err := db.conn.Exec(`INSERT INTO batch_runs (id, name, total_count, status, max_concurrency, night_mode_only, started_at)
-		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`, r.ID, r.Name, r.TotalCount, r.Status, r.MaxConcurrency, r.NightModeOnly)
+	_, err := db.conn.Exec(`INSERT INTO batch_runs (id, name, total_count, processed_count, success_count, skipped_count, failed_count, status, max_concurrency, night_mode_only, started_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`, r.ID, r.Name, r.TotalCount, r.ProcessedCount, r.SuccessCount, r.SkippedCount, r.FailedCount, r.Status, r.MaxConcurrency, r.NightModeOnly)
 	return err
 }
 
 func (db *DB) UpdateBatchConcurrency(batchID string, concurrency int) error {
 	_, err := db.conn.Exec(`UPDATE batch_runs SET max_concurrency = ? WHERE id = ?`, concurrency, batchID)
+	return err
+}
+
+func (db *DB) UpdateBatchRunStatus(batchID, status string) error {
+	var err error
+	if status == "completed" || status == "failed" {
+		_, err = db.conn.Exec(`UPDATE batch_runs SET status = ?, finished_at = CURRENT_TIMESTAMP WHERE id = ?`, status, batchID)
+	} else {
+		_, err = db.conn.Exec(`UPDATE batch_runs SET status = ? WHERE id = ?`, status, batchID)
+	}
 	return err
 }
 
@@ -1057,8 +1067,8 @@ func (db *DB) GetBatchRun(id string) (*BatchRun, error) {
 }
 
 func (db *DB) CreateBatchTask(t *BatchTask) error {
-	_, err := db.conn.Exec(`INSERT INTO batch_tasks (batch_id, repo_id, status, prompt_tokens, completion_tokens, total_tokens) VALUES (?, ?, ?, ?, ?, ?)`,
-		t.BatchID, t.RepoID, t.Status, t.PromptTokens, t.CompletionTokens, t.TotalTokens)
+	_, err := db.conn.Exec(`INSERT INTO batch_tasks (batch_id, repo_id, status, duration_sec, prompt_tokens, completion_tokens, total_tokens) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		t.BatchID, t.RepoID, t.Status, t.DurationSec, t.PromptTokens, t.CompletionTokens, t.TotalTokens)
 	return err
 }
 
