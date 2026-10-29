@@ -139,6 +139,73 @@ import { inStage, inStageSync, tagErrorStage } from "../telemetry/index.js";
 import type { RunTelemetryContext } from "../telemetry/index.js";
 import { OpenWikiIgnore } from "./openwiki-ignore.js";
 
+export interface TokenUsageStats {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export function formatUsageTelemetry(stats: TokenUsageStats): string {
+  return `OPENWIKI_USAGE ${JSON.stringify({
+    prompt_tokens: stats.promptTokens,
+    completion_tokens: stats.completionTokens,
+    total_tokens: stats.totalTokens,
+  })}`;
+}
+
+export function extractTokenUsageFromChunk(chunk: unknown): TokenUsageStats | null {
+  if (!chunk || typeof chunk !== "object") {
+    return null;
+  }
+  const candidates: unknown[] = [];
+  if (Array.isArray(chunk)) {
+    for (const item of chunk) {
+      if (Array.isArray(item)) {
+        candidates.push(...item);
+      } else {
+        candidates.push(item);
+      }
+    }
+  } else {
+    candidates.push(chunk);
+    if ("messages" in (chunk as Record<string, unknown>)) {
+      const msgs = (chunk as Record<string, unknown>).messages;
+      if (Array.isArray(msgs)) {
+        candidates.push(...msgs);
+      }
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const c = candidate as Record<string, unknown>;
+
+    if (c.usage_metadata && typeof c.usage_metadata === "object") {
+      const u = c.usage_metadata as Record<string, unknown>;
+      const input = Number(u.input_tokens ?? u.prompt_tokens ?? 0);
+      const output = Number(u.output_tokens ?? u.completion_tokens ?? 0);
+      const total = Number(u.total_tokens ?? (input + output));
+      if (total > 0 || input > 0 || output > 0) {
+        return { promptTokens: input, completionTokens: output, totalTokens: total };
+      }
+    }
+
+    if (c.response_metadata && typeof c.response_metadata === "object") {
+      const r = c.response_metadata as Record<string, unknown>;
+      const u = (r.usage || r.tokenUsage || r.estimatedTokenUsage) as Record<string, unknown> | undefined;
+      if (u && typeof u === "object") {
+        const input = Number(u.prompt_tokens ?? u.input_tokens ?? 0);
+        const output = Number(u.completion_tokens ?? u.output_tokens ?? 0);
+        const total = Number(u.total_tokens ?? (input + output));
+        if (total > 0 || input > 0 || output > 0) {
+          return { promptTokens: input, completionTokens: output, totalTokens: total };
+        }
+      }
+    }
+  }
+  return null;
+}
+
 export async function runOpenWikiAgent(
   command: OpenWikiCommand,
   cwd = openWikiLocalWikiDir,
@@ -528,9 +595,21 @@ async function runOpenWikiAgentCore(
   });
 
   let unhandledChunkCount = 0;
+  const accumulatedUsage: TokenUsageStats = {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+  };
 
   try {
     for await (const chunk of stream) {
+      const usage = extractTokenUsageFromChunk(chunk);
+      if (usage) {
+        accumulatedUsage.promptTokens += usage.promptTokens;
+        accumulatedUsage.completionTokens += usage.completionTokens;
+        accumulatedUsage.totalTokens += usage.totalTokens;
+      }
+
       const event = parseAgentStreamChunk(chunk);
 
       if (event) {
@@ -626,6 +705,10 @@ async function runOpenWikiAgentCore(
         ? "metadata=skipped command=chat"
         : "metadata=skipped openwiki=unchanged",
     );
+  }
+
+  if (accumulatedUsage.totalTokens > 0) {
+    console.log(formatUsageTelemetry(accumulatedUsage));
   }
 
   return {
