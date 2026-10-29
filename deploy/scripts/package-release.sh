@@ -44,6 +44,7 @@ tar -czf "$PACKAGE_FILE" \
   entrypoint.sh \
   healthcheck.sh \
   MANUAL.md \
+  scripts/ \
   bin/
 
 echo ""
