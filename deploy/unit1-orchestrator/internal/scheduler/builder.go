@@ -343,6 +343,23 @@ func (b *Builder) exportGraph(wikiDir, staticDir string, log *strings.Builder) e
 	return os.WriteFile(filepath.Join(apiDir, "graph"), graphJSON, 0644)
 }
 
+
+// patchClientJS post-processes the visualizer client.js for static SPA export:
+//  1. Rewrites fetch("/api/graph") and EventSource("/events") to relative URLs
+//  2. Patches rewriteLinks to resolve absolute /openwiki/*.md links to graph node IDs
+func patchClientJS(content string) string {
+	content = strings.Replace(content, `fetch("/api/graph")`, `fetch(new URL("api/graph", window.location.href).href)`, 1)
+	content = strings.Replace(content, `new EventSource("/events")`, `new EventSource(new URL("events", window.location.href).href)`, 1)
+	// Patch rewriteLinks: absolute paths like /openwiki/architecture/foo.md should
+	// resolve directly to node IDs (architecture/foo) without going through normalize().
+	oldTarget := `const target = normalize(dir, clean).replace(/\.md$/, "");`
+	newTarget := `const isAbs = clean.startsWith("/");` +
+		`const cleanPath = clean.replace(/^\/?(?:openwiki\/)?/, "");` +
+		`const target = isAbs ? cleanPath.replace(/\.md$/, "") : normalize(dir, cleanPath).replace(/\.md$/, "");`
+	content = strings.Replace(content, oldTarget, newTarget, 1)
+	return content
+}
+
 // copyVisualizerAssets copies the compiled client.js, client-lib.js from openwiki dist.
 func (b *Builder) copyVisualizerAssets(staticDir string, log *strings.Builder) error {
 	if err := os.MkdirAll(staticDir, 0755); err != nil {
@@ -376,18 +393,11 @@ func (b *Builder) copyVisualizerAssets(staticDir string, log *strings.Builder) e
 		}
 	}
 
-	// Post-process static client.js to resolve relative graph endpoint for exported static SPA
+	// Post-process static client.js for exported static SPA
 	clientDst := filepath.Join(staticDir, "client.js")
 	if data, err := os.ReadFile(clientDst); err == nil {
-		content := string(data)
-		content = strings.Replace(content, `fetch("/api/graph")`, `fetch(new URL("api/graph", window.location.href).href)`, 1)
-		content = strings.Replace(content, `new EventSource("/events")`, `new EventSource(new URL("events", window.location.href).href)`, 1)
-		// Patch rewriteLinks to resolve absolute /openwiki/ markdown links to graph node IDs
-		content = strings.Replace(content,
-			`const target = normalize(dir, clean).replace(/\.md$/, "");`,
-			`const isAbs = clean.startsWith("/"); const cleanPath = clean.replace(/^\\/?(?:openwiki\\/)?/, ""); const target = isAbs ? cleanPath.replace(/\.md$/, "") : normalize(dir, cleanPath).replace(/\.md$/, "");`,
-			1)
-		os.WriteFile(clientDst, []byte(content), 0644)
+		patched := patchClientJS(string(data))
+		os.WriteFile(clientDst, []byte(patched), 0644)
 	}
 
 	// Always copy index.html template to static output directory
