@@ -10,12 +10,50 @@ import (
 
 	"github.com/go-ldap/ldap/v3"
 	"github.com/openwiki/portal/internal/config"
+	"github.com/openwiki/portal/internal/db"
 )
 
 type UserInfo struct {
-	UserID      string `json:"user_id"`
-	DisplayName string `json:"display_name"`
-	Role        string `json:"role"` // "admin" or "user"
+	UserID            string   `json:"user_id"`
+	DisplayName       string   `json:"display_name"`
+	Role              string   `json:"role"` // "super_admin", "group_leader", "user"
+	AuthorizedDomains []string `json:"authorized_domains,omitempty"`
+}
+
+func finalizeUserInfo(cfg *config.Config, userID, displayName string) *UserInfo {
+	role := "user"
+	for _, adminUser := range cfg.Auth.AdminUsers {
+		if strings.EqualFold(strings.TrimSpace(adminUser), userID) {
+			role = "super_admin"
+			break
+		}
+	}
+
+	var domains []string
+	if db.DB != nil {
+		// Check if user has an assigned role in database (e.g. group_leader or super_admin)
+		if u, err := db.GetUser(userID); err == nil && u != nil {
+			if role != "super_admin" && u.Role != "" {
+				role = u.Role
+			}
+		}
+
+		// Sync profile to database
+		_ = db.UpsertUser(&db.User{
+			Username:    userID,
+			DisplayName: displayName,
+			Role:        role,
+		})
+
+		domains, _ = db.GetUserDomains(userID)
+	}
+
+	return &UserInfo{
+		UserID:            userID,
+		DisplayName:       displayName,
+		Role:              role,
+		AuthorizedDomains: domains,
+	}
 }
 
 // Authenticate validates user credentials against LDAP / AD server matching code-usage-service-go reference implementation.
@@ -27,22 +65,10 @@ func Authenticate(cfg *config.Config, username, password string) (*UserInfo, err
 		return nil, fmt.Errorf("username and password are required")
 	}
 
-	role := "user"
-	for _, adminUser := range cfg.Auth.AdminUsers {
-		if strings.EqualFold(strings.TrimSpace(adminUser), username) {
-			role = "admin"
-			break
-		}
-	}
-
 	// Dev / Mock fallback if LDAP is disabled or URL is set to mock / none / disabled / empty
 	cleanURL := strings.ToLower(strings.TrimSpace(cfg.LDAP.URL))
 	if !cfg.LDAP.Enabled || cleanURL == "mock" || cleanURL == "none" || cleanURL == "disabled" || cleanURL == "" || strings.HasPrefix(cleanURL, "mock") {
-		return &UserInfo{
-			UserID:      username,
-			DisplayName: "Dev User (" + username + ")",
-			Role:        role,
-		}, nil
+		return finalizeUserInfo(cfg, username, "Dev User ("+username+")"), nil
 	}
 
 	ldapURL := cfg.LDAP.URL
@@ -98,11 +124,7 @@ func Authenticate(cfg *config.Config, username, password string) (*UserInfo, err
 		resolvedUsername := firstAttribute(entry, cfg.LDAP.UsernameAttribute, username)
 		displayName := firstAttribute(entry, cfg.LDAP.DisplayNameAttribute, resolvedUsername)
 
-		return &UserInfo{
-			UserID:      resolvedUsername,
-			DisplayName: displayName,
-			Role:        role,
-		}, nil
+		return finalizeUserInfo(cfg, resolvedUsername, displayName), nil
 	}
 
 	// Mode 2: Direct User DN Bind
@@ -119,11 +141,7 @@ func Authenticate(cfg *config.Config, username, password string) (*UserInfo, err
 		return nil, fmt.Errorf("LDAP user authentication failed: %w", err)
 	}
 
-	return &UserInfo{
-		UserID:      username,
-		DisplayName: username,
-		Role:        role,
-	}, nil
+	return finalizeUserInfo(cfg, username, username), nil
 }
 
 func searchUserCandidate(conn *ldap.Conn, cfg *config.Config, baseDN string, username string) (*ldap.Entry, error) {
