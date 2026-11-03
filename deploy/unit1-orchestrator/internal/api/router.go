@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/openwiki/orchestrator/internal/config"
@@ -59,6 +60,20 @@ func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, ma
 		}
 		s.llmProxy = llmproxy.NewLLMProxy(cfg.OpenAIUpstreamURL, cfg.OpenwikiAPIKey, nil, throttleCallback)
 	}
+
+	if s.llmProxy != nil && sched != nil {
+		if sched.GetBuilder() != nil {
+			port := "3000"
+			if cfg != nil && cfg.ListenAddr != "" {
+				port = strings.TrimPrefix(cfg.ListenAddr, ":")
+			}
+			sched.GetBuilder().SetLLMBaseURL(fmt.Sprintf("http://127.0.0.1:%s/internal/llm/v1", port))
+		}
+		if sched.GetPipeline() != nil {
+			sched.GetPipeline().SetLLMProxy(s.llmProxy)
+		}
+	}
+
 	s.routes()
 	return s
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 
@@ -73,6 +74,36 @@ func (bs *BatchScheduler) SetConcurrency(batchID string, concurrency int) error 
 	}
 	log.Printf("[batch_scheduler] Concurrency adjusted to %d for batch %s", concurrency, batchID)
 	return nil
+}
+
+// ApplyDayNightConcurrency checks the current hour and sets the concurrency according to system_settings.
+// Day: 07:00 - 22:00 (default day_max_concurrency: 2)
+// Night: 22:00 - 07:00 (default night_max_concurrency: 4)
+func (bs *BatchScheduler) ApplyDayNightConcurrency(now time.Time) int {
+	isNight := IsNightWindow(now, bs.windowStartHour, bs.windowEndHour)
+	settingKey := "day_max_concurrency"
+	defaultVal := 2
+	if isNight {
+		settingKey = "night_max_concurrency"
+		defaultVal = 4
+	}
+
+	targetConc := defaultVal
+	if bs.db != nil {
+		valStr, err := bs.db.GetSetting(settingKey, strconv.Itoa(defaultVal))
+		if err == nil {
+			if n, err := strconv.Atoi(valStr); err == nil && n > 0 {
+				targetConc = n
+			}
+		}
+	}
+
+	cur := bs.limiter.GetConcurrency()
+	if cur != targetConc {
+		bs.limiter.SetConcurrency(targetConc)
+		log.Printf("[batch_scheduler] Auto-switched concurrency to %d (night=%v)", targetConc, isNight)
+	}
+	return targetConc
 }
 
 // PauseBatch temporarily suspends new tasks from acquiring execution slots.
@@ -225,6 +256,9 @@ func (bs *BatchScheduler) runBatchLoop(ctx context.Context, batchID string) {
 			log.Printf("[batch_scheduler][%s] Batch stopped or removed", batchID)
 			return
 		}
+
+		// Auto-switch concurrency based on day/night window and system_settings
+		bs.ApplyDayNightConcurrency(time.Now())
 
 		// Night window throttling check
 		if run.NightModeOnly && !IsNightWindow(time.Now(), bs.windowStartHour, bs.windowEndHour) {

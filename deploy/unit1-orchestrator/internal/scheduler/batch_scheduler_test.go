@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/openwiki/orchestrator/internal/db"
+	"github.com/openwiki/orchestrator/internal/llmproxy"
 	"github.com/openwiki/orchestrator/internal/scheduler"
 )
 
@@ -151,5 +153,91 @@ func TestBatchSchedulerETAEstimation(t *testing.T) {
 	}
 	if status.FormattedETA != "1分钟30秒" {
 		t.Fatalf("Expected FormattedETA '1分钟30秒', got %q", status.FormattedETA)
+	}
+}
+
+func TestDayNightConcurrencyAutoSwitch(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_day_night.db")
+	_ = db.InitDB(dbPath)
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open db failed: %v", err)
+	}
+	defer database.Close()
+
+	builder := scheduler.NewBuilder("openwiki", tmpDir, tmpDir, tmpDir)
+	limiter := scheduler.NewDynamicRateLimiter(1)
+	pipeline := scheduler.NewBuildPipeline(database, builder, limiter)
+	sched := scheduler.NewBatchScheduler(database, pipeline, limiter)
+
+	// 1. Initial settings in DB: day_max_concurrency=2, night_max_concurrency=4
+	// Test at daytime: 14:00
+	dayTime := time.Date(2026, 11, 3, 14, 0, 0, 0, time.Local)
+	c1 := sched.ApplyDayNightConcurrency(dayTime)
+	if c1 != 2 || limiter.GetConcurrency() != 2 {
+		t.Fatalf("expected day concurrency 2, got %d (limiter %d)", c1, limiter.GetConcurrency())
+	}
+
+	// 2. Test at nighttime: 23:30
+	nightTime := time.Date(2026, 11, 3, 23, 30, 0, 0, time.Local)
+	c2 := sched.ApplyDayNightConcurrency(nightTime)
+	if c2 != 4 || limiter.GetConcurrency() != 4 {
+		t.Fatalf("expected night concurrency 4, got %d (limiter %d)", c2, limiter.GetConcurrency())
+	}
+
+	// 3. Dynamically update DB settings: day_max_concurrency=5, night_max_concurrency=8
+	_ = database.SetSetting("day_max_concurrency", "5")
+	_ = database.SetSetting("night_max_concurrency", "8")
+
+	// Apply night time again -> should switch to 8
+	c3 := sched.ApplyDayNightConcurrency(nightTime)
+	if c3 != 8 || limiter.GetConcurrency() != 8 {
+		t.Fatalf("expected night concurrency 8, got %d (limiter %d)", c3, limiter.GetConcurrency())
+	}
+
+	// Apply day time -> should switch to 5
+	c4 := sched.ApplyDayNightConcurrency(dayTime)
+	if c4 != 5 || limiter.GetConcurrency() != 5 {
+		t.Fatalf("expected day concurrency 5, got %d (limiter %d)", c4, limiter.GetConcurrency())
+	}
+}
+
+func TestPipelineWithLLMProxyUsage(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_pipeline_proxy.db")
+	_ = db.InitDB(dbPath)
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open db failed: %v", err)
+	}
+	defer database.Close()
+
+	repo := &db.Repo{
+		ID:             "test-proxy-repo",
+		Name:           "Proxy Test",
+		GitURL:         "local",
+		Branch:         "master",
+		LocalPath:      tmpDir,
+		Status:         "active",
+		BusinessDomain: "零售金融",
+	}
+	_ = database.CreateRepo(repo)
+
+	builder := scheduler.NewBuilder("echo", tmpDir, tmpDir, tmpDir)
+	limiter := scheduler.NewDynamicRateLimiter(2)
+	pipeline := scheduler.NewBuildPipeline(database, builder, limiter)
+
+	// Create and attach mock proxy
+	proxy := llmproxy.NewLLMProxy("http://mock-upstream", "key", nil, nil)
+	pipeline.SetLLMProxy(proxy)
+
+	// Inject usage for build 1
+	proxy.AddTokens("1", 500, 200, 700)
+
+	// Verify PopBuildUsage
+	u, ok := proxy.PopBuildUsage("1")
+	if !ok || u.TotalTokens != 700 || u.PromptTokens != 500 || u.CompletionTokens != 200 {
+		t.Fatalf("expected tokens 500/200/700, got %+v", u)
 	}
 }

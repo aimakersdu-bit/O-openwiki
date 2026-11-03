@@ -19,6 +19,7 @@ type Builder struct {
 	VendorAssetsDir string // path to pre-downloaded vendor/ assets
 	StaticOutputDir string // base output dir (e.g. /var/www/openwiki-static)
 	DefaultLanguage string // default language tag for init/update (e.g. "zh-CN")
+	LLMBaseURL      string // optional base URL for internal LLM proxy
 }
 
 // NewBuilder creates a new Builder instance.
@@ -40,6 +41,11 @@ func NewBuilder(cli, vendorDir, distDir, outputDir string, defaultLang ...string
 		StaticOutputDir: outputDir,
 		DefaultLanguage: lang,
 	}
+}
+
+// SetLLMBaseURL sets the base URL for internal LLM gateway forwarding.
+func (b *Builder) SetLLMBaseURL(url string) {
+	b.LLMBaseURL = url
 }
 
 // BuildResult holds the outcome of a build.
@@ -70,6 +76,11 @@ func (b *Builder) logStep(repoID, msg string, logBuf *strings.Builder, onProgres
 
 // createOpenWikiCmd constructs an exec.Cmd with enriched PATH and OPENWIKI_HOME environment.
 func (b *Builder) createOpenWikiCmd(repoPath string, args ...string) *exec.Cmd {
+	return b.createOpenWikiCmdWithBuildID(0, repoPath, args...)
+}
+
+// createOpenWikiCmdWithBuildID constructs an exec.Cmd with LLM proxy environment variables and build attribution.
+func (b *Builder) createOpenWikiCmdWithBuildID(buildID int64, repoPath string, args ...string) *exec.Cmd {
 	cli := b.OpenwikiCLI
 	if cli == "" {
 		cli = "openwiki"
@@ -152,17 +163,27 @@ func (b *Builder) createOpenWikiCmd(repoPath string, args ...string) *exec.Cmd {
 		}
 	}
 
+	// LLM Proxy Environment Injection
+	if b.LLMBaseURL != "" {
+		env = append(env, fmt.Sprintf("OPENAI_BASE_URL=%s", b.LLMBaseURL))
+		env = append(env, fmt.Sprintf("OPENAI_COMPATIBLE_BASE_URL=%s", b.LLMBaseURL))
+	}
+	if buildID > 0 {
+		env = append(env, fmt.Sprintf("OPENAI_API_KEY=ow-build-%d", buildID))
+	}
+
 	cmd.Env = env
 
 	return cmd
 }
 
-// BuildRepo runs the full build pipeline for a single repository:
-//  1. openwiki code --update --print --language zh-CN (incremental wiki generation)
-//  2. Export graph.json via buildGraph()
-//  3. Copy visualizer frontend assets (PAGE HTML + client.js + client-lib.js)
-//  4. Copy pre-downloaded vendor/ libraries for intranet offline use
+// BuildRepo runs the full build pipeline for a single repository.
 func (b *Builder) BuildRepo(repoID, repoPath, wikiDir string, onProgress ...func(string)) *BuildResult {
+	return b.BuildRepoWithBuildID(0, repoID, repoPath, wikiDir, onProgress...)
+}
+
+// BuildRepoWithBuildID runs the full build pipeline for a single repository with build attribution.
+func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir string, onProgress ...func(string)) *BuildResult {
 	var logBuf strings.Builder
 	result := &BuildResult{}
 
@@ -190,7 +211,7 @@ func (b *Builder) BuildRepo(repoID, repoPath, wikiDir string, onProgress ...func
 	openwikiDir := filepath.Join(repoPath, ".openwiki")
 	if _, err := os.Stat(openwikiDir); os.IsNotExist(err) {
 		b.logStep(repoID, fmt.Sprintf("=== Step 0: openwiki init --language %s ===", lang), &logBuf, onProgress...)
-		cmdInit := b.createOpenWikiCmd(repoPath, "init", "--language", lang)
+		cmdInit := b.createOpenWikiCmdWithBuildID(buildID, repoPath, "init", "--language", lang)
 		var stdoutInit, stderrInit bytes.Buffer
 		cmdInit.Stdout = &stdoutInit
 		cmdInit.Stderr = &stderrInit
@@ -207,7 +228,7 @@ func (b *Builder) BuildRepo(repoID, repoPath, wikiDir string, onProgress ...func
 
 	// Step 1: Run openwiki code --update --print --language <lang>
 	b.logStep(repoID, fmt.Sprintf("=== Step 1: openwiki code --update --print --language %s ===", lang), &logBuf, onProgress...)
-	cmd := b.createOpenWikiCmd(repoPath, "code", "--update", "--print", "--language", lang)
+	cmd := b.createOpenWikiCmdWithBuildID(buildID, repoPath, "code", "--update", "--print", "--language", lang)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

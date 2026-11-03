@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/openwiki/orchestrator/internal/db"
+	"github.com/openwiki/orchestrator/internal/llmproxy"
 )
 
 var usageRegex = regexp.MustCompile(`OPENWIKI_USAGE\s*(\{.*?\})`)
@@ -60,16 +61,17 @@ func FormatETA(seconds int) string {
 
 // PipelineResult represents the outcome of executing a build pipeline.
 type PipelineResult struct {
-	Success          bool   `json:"success"`
-	Status           string `json:"status"` // "completed", "skipped", "failed"
-	Log              string `json:"log"`
-	Error            string `json:"error"`
-	PromptTokens     int64  `json:"prompt_tokens"`
-	CompletionTokens int64  `json:"completion_tokens"`
-	TotalTokens      int64  `json:"total_tokens"`
-	SavedTokens      int64  `json:"saved_tokens"`
-	DurationSec      int    `json:"duration_sec"`
-	GitHead          string `json:"git_head"`
+	Success            bool   `json:"success"`
+	Status             string `json:"status"` // "completed", "skipped", "failed"
+	Log                string `json:"log"`
+	Error              string `json:"error"`
+	PromptTokens       int64  `json:"prompt_tokens"`
+	CompletionTokens   int64  `json:"completion_tokens"`
+	TotalTokens        int64  `json:"total_tokens"`
+	SavedTokens        int64  `json:"saved_tokens"`
+	RateLimitedRetries int    `json:"rate_limited_retries"`
+	DurationSec        int    `json:"duration_sec"`
+	GitHead            string `json:"git_head"`
 }
 
 // PipelineProgressCallback is notified of pipeline status progression.
@@ -81,6 +83,7 @@ type BuildPipeline struct {
 	db            *db.DB
 	builder       *Builder
 	rateLimiter   *DynamicRateLimiter
+	llmProxy      *llmproxy.LLMProxy
 	mu            sync.Mutex
 	runningBuilds map[string]int64 // repo_id -> build_id
 }
@@ -93,6 +96,11 @@ func NewBuildPipeline(database *db.DB, builder *Builder, rateLimiter *DynamicRat
 		rateLimiter:   rateLimiter,
 		runningBuilds: make(map[string]int64),
 	}
+}
+
+// SetLLMProxy sets the proxy instance for intercepting build token usage.
+func (p *BuildPipeline) SetLLMProxy(proxy *llmproxy.LLMProxy) {
+	p.llmProxy = proxy
 }
 
 // Execute runs the build pipeline for a repository.
@@ -241,7 +249,7 @@ func (p *BuildPipeline) Execute(ctx context.Context, repo *db.Repo, force bool, 
 		onProgress("building", 0.5, logBuf.String())
 	}
 
-	buildRes := p.builder.BuildRepo(repo.ID, repo.LocalPath, repo.WikiDir, func(currentLog string) {
+	buildRes := p.builder.BuildRepoWithBuildID(buildID, repo.ID, repo.LocalPath, repo.WikiDir, func(currentLog string) {
 		fullLog := logBuf.String() + "\n" + currentLog
 		_ = p.db.UpdateBuildLog(buildID, fullLog, "")
 		if onProgress != nil {
@@ -260,9 +268,23 @@ func (p *BuildPipeline) Execute(ctx context.Context, repo *db.Repo, force bool, 
 	}
 
 	fullLog := logBuf.String() + "\n" + buildRes.Log
-	p.finishBuild(buildID, finalStatus, fullLog, buildRes.Error)
 
-	promptTokens, completionTokens, totalTokens := ParseTokenUsage(fullLog)
+	var promptTokens, completionTokens, totalTokens int64
+	var retries int
+	if p.llmProxy != nil {
+		if usage, ok := p.llmProxy.PopBuildUsage(fmt.Sprintf("%d", buildID)); ok && usage.TotalTokens > 0 {
+			promptTokens = int64(usage.PromptTokens)
+			completionTokens = int64(usage.CompletionTokens)
+			totalTokens = int64(usage.TotalTokens)
+			retries = usage.RateLimitedRetries
+		}
+	}
+	if totalTokens == 0 {
+		promptTokens, completionTokens, totalTokens = ParseTokenUsage(fullLog)
+	}
+
+	_ = p.db.FinishBuildWithTokens(buildID, finalStatus, fullLog, buildRes.Error, promptTokens, completionTokens, totalTokens, 0, retries)
+
 	today := time.Now().Format("2006-01-02")
 	_ = p.db.RecordDailyTokenUsage(&db.DailyTokenUsage{
 		Date:             today,
@@ -281,15 +303,16 @@ func (p *BuildPipeline) Execute(ctx context.Context, repo *db.Repo, force bool, 
 	}
 
 	return &PipelineResult{
-		Success:          buildRes.Success,
-		Status:           finalStatus,
-		Log:              fullLog,
-		Error:            buildRes.Error,
-		PromptTokens:     promptTokens,
-		CompletionTokens: completionTokens,
-		TotalTokens:      totalTokens,
-		DurationSec:      durationSec,
-		GitHead:          buildRes.GitHead,
+		Success:            buildRes.Success,
+		Status:             finalStatus,
+		Log:                fullLog,
+		Error:              buildRes.Error,
+		PromptTokens:       promptTokens,
+		CompletionTokens:   completionTokens,
+		TotalTokens:        totalTokens,
+		RateLimitedRetries: retries,
+		DurationSec:        durationSec,
+		GitHead:            buildRes.GitHead,
 	}, nil
 }
 
