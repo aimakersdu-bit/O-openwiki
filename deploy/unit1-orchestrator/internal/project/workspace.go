@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/openwiki/orchestrator/internal/db"
@@ -161,4 +162,126 @@ func (m *WorkspaceManager) PrepareWorkspace(project *db.Project, repos []db.Repo
 	}
 
 	return wsDir, nil
+}
+
+// RepoLinkItem describes a child repository's logical symlink and physical disk location.
+type RepoLinkItem struct {
+	RepoID       string  `json:"repo_id"`
+	RepoName     string  `json:"repo_name"`
+	AliasName    string  `json:"alias_name"`
+	LogicalPath  string  `json:"logical_path"`
+	TargetLink   string  `json:"target_link"`
+	PhysicalPath string  `json:"physical_path"`
+	VolumeID     string  `json:"volume_id"`
+	Status       string  `json:"status"` // "ok", "broken", "unlinked", "not_a_symlink"
+	SizeBytes    int64   `json:"size_bytes"`
+	SizeMB       float64 `json:"size_mb"`
+}
+
+// WorkspaceLinkPreview summarizes multi-disk symlink distribution and health status.
+type WorkspaceLinkPreview struct {
+	ProjectID    string         `json:"project_id"`
+	ProjectName  string         `json:"project_name"`
+	LocalPath    string         `json:"local_path"`
+	TotalRepos   int            `json:"total_repos"`
+	HealthyCount int            `json:"healthy_count"`
+	BrokenCount  int            `json:"broken_count"`
+	VolumeCounts map[string]int `json:"volume_counts"`
+	Items        []RepoLinkItem `json:"items"`
+}
+
+// CheckWorkspaceHealth inspects each child repository symlink in the project workspace.
+func (m *WorkspaceManager) CheckWorkspaceHealth(project *db.Project, repos []db.RepoWithAlias) (*WorkspaceLinkPreview, error) {
+	wsDir := project.LocalPath
+	if wsDir == "" {
+		wsDir = filepath.Join(m.BaseProjectsDir, project.ID)
+	}
+
+	preview := &WorkspaceLinkPreview{
+		ProjectID:    project.ID,
+		ProjectName:  project.Name,
+		LocalPath:    wsDir,
+		TotalRepos:   len(repos),
+		VolumeCounts: make(map[string]int),
+		Items:        make([]RepoLinkItem, 0, len(repos)),
+	}
+
+	for _, r := range repos {
+		alias := r.AliasName
+		if alias == "" {
+			alias = r.ID
+		}
+		logicalPath := filepath.Join(wsDir, alias)
+		status := "ok"
+		targetLink := r.LocalPath
+
+		lstat, err := os.Lstat(logicalPath)
+		if err != nil {
+			status = "unlinked"
+		} else if lstat.Mode()&os.ModeSymlink == 0 {
+			status = "not_a_symlink"
+		} else {
+			if linkTarget, readErr := os.Readlink(logicalPath); readErr == nil {
+				targetLink = linkTarget
+			}
+			if _, statErr := os.Stat(logicalPath); statErr != nil {
+				status = "broken"
+			}
+		}
+
+		physicalPath, evalErr := filepath.EvalSymlinks(targetLink)
+		if evalErr != nil {
+			physicalPath = targetLink
+		}
+
+		volID := r.VolumeID
+		if volID == "" {
+			// Extract vol from physical path if present, e.g. /data/vol2/repos/...
+			parts := strings.Split(physicalPath, string(filepath.Separator))
+			for _, p := range parts {
+				if strings.HasPrefix(p, "vol") {
+					volID = p
+					break
+				}
+			}
+			if volID == "" {
+				volID = "disk0"
+			}
+		}
+
+		if status == "ok" {
+			preview.HealthyCount++
+		} else {
+			preview.BrokenCount++
+		}
+		preview.VolumeCounts[volID]++
+
+		preview.Items = append(preview.Items, RepoLinkItem{
+			RepoID:       r.ID,
+			RepoName:     r.Name,
+			AliasName:    alias,
+			LogicalPath:  logicalPath,
+			TargetLink:   targetLink,
+			PhysicalPath: physicalPath,
+			VolumeID:     volID,
+			Status:       status,
+			SizeBytes:    r.SizeBytes,
+			SizeMB:       float64(r.SizeBytes) / (1024 * 1024),
+		})
+	}
+
+	return preview, nil
+}
+
+// PreviewWorkspaceLinks calculates link targets and storage distribution without requiring existing links.
+func (m *WorkspaceManager) PreviewWorkspaceLinks(project *db.Project, repos []db.RepoWithAlias) (*WorkspaceLinkPreview, error) {
+	return m.CheckWorkspaceHealth(project, repos)
+}
+
+// RepairWorkspaceLinks recreates the symlink forest and returns refreshed health status.
+func (m *WorkspaceManager) RepairWorkspaceLinks(project *db.Project, repos []db.RepoWithAlias) (*WorkspaceLinkPreview, error) {
+	if _, err := m.PrepareWorkspace(project, repos); err != nil {
+		return nil, fmt.Errorf("prepare workspace: %w", err)
+	}
+	return m.CheckWorkspaceHealth(project, repos)
 }

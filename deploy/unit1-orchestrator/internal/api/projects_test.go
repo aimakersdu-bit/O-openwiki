@@ -122,3 +122,94 @@ func TestProjectsAPI(t *testing.T) {
 		t.Fatalf("expected 200 OK for delete, got %d: %s", wDel.Code, wDel.Body.String())
 	}
 }
+
+func TestProjectLinksPreviewHealthAndRepair(t *testing.T) {
+	server, cleanup := setupTestProjectServer(t)
+	defer cleanup()
+
+	tmpDir := filepath.Dir(server.config.ProjectsBaseDir)
+	repoDir := filepath.Join(tmpDir, "repos", "repo-alpha")
+	_ = os.MkdirAll(repoDir, 0755)
+
+	_ = db.SaveRepo(&db.Repo{
+		ID:        "repo-alpha",
+		Name:      "Alpha Service",
+		GitURL:    "https://example.com/alpha.git",
+		Branch:    "main",
+		LocalPath: repoDir,
+		Status:    "active",
+		VolumeID:  "vol1",
+		SizeBytes: 1024 * 1024 * 15,
+	})
+
+	// Create project with repo-alpha
+	projReq := CreateProjectRequest{
+		ID:             "proj-links-test",
+		Name:           "Link Test Platform",
+		BusinessDomain: "零售",
+		Repos: []ProjectRepoInput{
+			{RepoID: "repo-alpha", AliasName: "alpha-svc", Role: "core"},
+		},
+	}
+	body, _ := json.Marshal(projReq)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("failed to create project: %d: %s", w.Code, w.Body.String())
+	}
+
+	// 1. Check health
+	reqHealth := httptest.NewRequest(http.MethodGet, "/api/projects/proj-links-test/links/health", nil)
+	wHealth := httptest.NewRecorder()
+	server.ServeHTTP(wHealth, reqHealth)
+	if wHealth.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for health, got %d: %s", wHealth.Code, wHealth.Body.String())
+	}
+
+	var healthRes struct {
+		HealthyCount int            `json:"healthy_count"`
+		BrokenCount  int            `json:"broken_count"`
+		VolumeCounts map[string]int `json:"volume_counts"`
+	}
+	json.NewDecoder(wHealth.Body).Decode(&healthRes)
+	if healthRes.HealthyCount != 1 || healthRes.BrokenCount != 0 {
+		t.Fatalf("expected 1 healthy symlink, got %d healthy, %d broken", healthRes.HealthyCount, healthRes.BrokenCount)
+	}
+	if healthRes.VolumeCounts["vol1"] != 1 {
+		t.Fatalf("expected volume vol1 count 1, got %v", healthRes.VolumeCounts)
+	}
+
+	// 2. Break link intentionally by removing symlink
+	wsPath := filepath.Join(server.config.ProjectsBaseDir, "proj-links-test", "alpha-svc")
+	_ = os.Remove(wsPath)
+
+	reqBroken := httptest.NewRequest(http.MethodGet, "/api/projects/proj-links-test/links/health", nil)
+	wBroken := httptest.NewRecorder()
+	server.ServeHTTP(wBroken, reqBroken)
+	var brokenRes struct {
+		HealthyCount int `json:"healthy_count"`
+		BrokenCount  int `json:"broken_count"`
+	}
+	json.NewDecoder(wBroken.Body).Decode(&brokenRes)
+	if brokenRes.BrokenCount != 1 {
+		t.Fatalf("expected 1 broken/unlinked repo, got %d", brokenRes.BrokenCount)
+	}
+
+	// 3. Repair links
+	reqRepair := httptest.NewRequest(http.MethodPost, "/api/projects/proj-links-test/links/repair", nil)
+	wRepair := httptest.NewRecorder()
+	server.ServeHTTP(wRepair, reqRepair)
+	if wRepair.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for repair, got %d: %s", wRepair.Code, wRepair.Body.String())
+	}
+
+	var repairRes struct {
+		HealthyCount int `json:"healthy_count"`
+		BrokenCount  int `json:"broken_count"`
+	}
+	json.NewDecoder(wRepair.Body).Decode(&repairRes)
+	if repairRes.HealthyCount != 1 || repairRes.BrokenCount != 0 {
+		t.Fatalf("expected 1 healthy symlink after repair, got %d healthy, %d broken", repairRes.HealthyCount, repairRes.BrokenCount)
+	}
+}

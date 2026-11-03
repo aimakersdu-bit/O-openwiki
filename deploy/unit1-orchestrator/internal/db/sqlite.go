@@ -1034,7 +1034,9 @@ func (db *DB) GetProjectRepos(projectID string) ([]RepoWithAlias, error) {
 	rows, err := db.conn.Query(`
 		SELECT r.id, r.name, r.git_url, r.branch, r.local_path, 
 		       COALESCE(r.wiki_dir,''), COALESCE(r.static_dir,''), r.schedule, r.status, 
-		       r.created_at, r.updated_at, pr.alias_name, COALESCE(pr.role, 'service')
+		       r.created_at, r.updated_at, pr.alias_name, COALESCE(pr.role, 'service'),
+		       COALESCE(r.tier,'B'), COALESCE(r.business_domain,''), COALESCE(r.last_release_at,''),
+		       COALESCE(r.volume_id,'disk0'), COALESCE(r.size_bytes,0)
 		FROM project_repos pr
 		JOIN repos r ON pr.repo_id = r.id
 		WHERE pr.project_id = ?
@@ -1052,6 +1054,8 @@ func (db *DB) GetProjectRepos(projectID string) ([]RepoWithAlias, error) {
 			&item.ID, &item.Name, &item.GitURL, &item.Branch, &item.LocalPath,
 			&item.WikiDir, &item.StaticDir, &item.Schedule, &item.Status,
 			&item.CreatedAt, &item.UpdatedAt, &item.AliasName, &item.Role,
+			&item.Tier, &item.BusinessDomain, &item.LastReleaseAt,
+			&item.VolumeID, &item.SizeBytes,
 		); err != nil {
 			return nil, err
 		}

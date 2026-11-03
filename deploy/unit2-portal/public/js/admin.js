@@ -1,12 +1,29 @@
 document.addEventListener('DOMContentLoaded', async () => {
   // Check auth and render user in navbar
   const currentUser = await Auth.checkAuth(true);
-  if (currentUser && currentUser.role !== 'admin') {
-    alert('权限不足：仓库配置与管理界面仅允许系统管理员访问！');
+  const isSuperAdmin = currentUser && (currentUser.role === 'admin' || currentUser.role === 'super_admin');
+  const isGroupLeader = currentUser && currentUser.role === 'group_leader';
+
+  if (!isSuperAdmin && !isGroupLeader) {
+    alert('权限不足：仓库配置与微服务项目管理界面仅允许组长或管理员访问！');
     window.location.href = '/portal/index.html';
     return;
   }
   Auth.renderNavbarUser(currentUser);
+
+  if (!isSuperAdmin) {
+    document.querySelectorAll('.super-admin-only').forEach(el => el.style.display = 'none');
+    const batchSec = document.getElementById('batchSection');
+    if (batchSec) batchSec.style.display = 'none';
+    const regSec = document.getElementById('registerRepoForm')?.closest('section');
+    if (regSec) regSec.style.display = 'none';
+    const repoManageSec = document.getElementById('adminRepoTable')?.closest('section');
+    if (repoManageSec) repoManageSec.style.display = 'none';
+    const projTitle = document.getElementById('projectSectionTitle');
+    if (projTitle) projTitle.textContent = '🏢 我的业务域 - 虚拟项目编排与软链运维';
+    const projSubtitle = document.getElementById('projectSectionSubtitle');
+    if (projSubtitle) projSubtitle.textContent = `您当前为开发组长，已授权管理业务域：${(currentUser.authorized_domains || []).join('、') || '暂无授权'}`;
+  }
 
   const registerForm = document.getElementById('registerRepoForm');
   const adminAlert = document.getElementById('adminAlert');
@@ -459,13 +476,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     const selectedMap = new Map();
     selectedRepos.forEach(r => selectedMap.set(r.id, r));
 
-    if (!cachedRepos || cachedRepos.length === 0) {
-      projReposPicker.innerHTML = '<div style="color:var(--text-secondary); padding:0.5rem;">尚未注册任何代码仓库，请先在上方注册仓库。</div>';
+    // For Group Leader, filter repos to only those in their authorized domains
+    let visibleRepos = cachedRepos || [];
+    if (isGroupLeader && currentUser && currentUser.authorized_domains) {
+      const allowedDomains = new Set(currentUser.authorized_domains);
+      visibleRepos = visibleRepos.filter(r => !r.business_domain || allowedDomains.has(r.business_domain));
+    }
+
+    if (!visibleRepos || visibleRepos.length === 0) {
+      projReposPicker.innerHTML = '<div style="color:var(--text-secondary); padding:0.5rem;">当前业务域下暂无可选的代码仓库。</div>';
       return;
     }
 
     let html = '<div style="display:flex; flex-direction:column; gap:0.5rem;">';
-    cachedRepos.forEach(repo => {
+    visibleRepos.forEach(repo => {
       const isChecked = selectedMap.has(repo.id);
       const existing = selectedMap.get(repo.id) || {};
       const aliasVal = existing.alias_name || repo.id;
@@ -474,7 +498,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       html += `
         <div class="repo-picker-item" style="display:flex; align-items:center; gap:0.75rem; padding:0.4rem; border-radius:4px; background:var(--bg-primary); border:1px solid var(--border-color);">
           <input type="checkbox" class="proj-repo-check" data-id="${repo.id}" id="check_${repo.id}" ${isChecked ? 'checked' : ''} style="cursor:pointer;" />
-          <label for="check_${repo.id}" style="font-weight:600; min-width:140px; cursor:pointer;">${API.escapeHTML(repo.name)} <span style="font-size:0.8rem; color:var(--text-secondary);">(${repo.id})</span></label>
+          <label for="check_${repo.id}" style="font-weight:600; min-width:140px; cursor:pointer;">
+            ${API.escapeHTML(repo.name)} <span style="font-size:0.8rem; color:var(--text-secondary);">(${repo.id})</span>
+            ${repo.business_domain ? `<span class="badge" style="background:#1e293b; border:1px solid #475569; font-size:0.7rem; margin-left:4px;">${API.escapeHTML(repo.business_domain)}</span>` : ''}
+          </label>
           <div style="display:flex; align-items:center; gap:0.3rem;">
             <span style="font-size:0.8rem; color:var(--text-secondary);">别名:</span>
             <input type="text" class="proj-repo-alias" data-id="${repo.id}" value="${API.escapeHTML(aliasVal)}" style="padding:0.2rem 0.4rem; font-size:0.8rem; width:120px; border:1px solid var(--border-color); border-radius:4px; background:var(--bg-secondary); color:var(--text-primary);" />
@@ -496,6 +523,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     projReposPicker.innerHTML = html;
   }
 
+  function populateDomainSelect(selectedDomain = '') {
+    const domainSelect = document.getElementById('projBusinessDomain');
+    if (!domainSelect) return;
+
+    let domains = [];
+    if (isGroupLeader && currentUser && currentUser.authorized_domains) {
+      domains = currentUser.authorized_domains;
+    } else {
+      // Collect unique domains from cached repos
+      const set = new Set();
+      (cachedRepos || []).forEach(r => { if (r.business_domain) set.add(r.business_domain); });
+      if (selectedDomain) set.add(selectedDomain);
+      domains = Array.from(set);
+    }
+
+    if (domains.length === 0) {
+      domainSelect.innerHTML = '<option value="">(未指定业务域)</option>';
+      return;
+    }
+
+    domainSelect.innerHTML = domains.map(d => `
+      <option value="${API.escapeHTML(d)}" ${d === selectedDomain ? 'selected' : ''}>${API.escapeHTML(d)}</option>
+    `).join('');
+  }
+
   // Open Create Project Modal
   openNewProjectModalBtn.addEventListener('click', () => {
     document.getElementById('projectModalTitle').textContent = '🏢 创建微服务项目';
@@ -504,6 +556,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('projId').disabled = false;
     document.getElementById('projName').value = '';
     document.getElementById('projDesc').value = '';
+    populateDomainSelect('');
     projAlert.style.display = 'none';
     renderReposPicker([]);
     projectModal.style.display = 'flex';
@@ -525,6 +578,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const projId = document.getElementById('projId').value.trim();
     const projName = document.getElementById('projName').value.trim();
     const projDesc = document.getElementById('projDesc').value.trim();
+    const projDomain = document.getElementById('projBusinessDomain').value.trim();
 
     // Collect selected repos
     const selectedRepos = [];
@@ -543,6 +597,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       id: projId,
       name: projName,
       description: projDesc,
+      business_domain: projDomain,
       repos: selectedRepos
     };
 
@@ -564,7 +619,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Render Projects Table
   function renderProjectTable(projects = []) {
     if (!projects || projects.length === 0) {
-      adminProjectTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; color: var(--text-secondary); padding: 2rem;">暂无微服务项目，点击右上角“创建微服务项目”开始编排。</td></tr>';
+      adminProjectTableBody.innerHTML = '<tr><td colspan="7" style="text-align:center; color: var(--text-secondary); padding: 2rem;">暂无微服务项目，点击右上角“创建微服务项目”开始编排。</td></tr>';
       return;
     }
 
@@ -587,12 +642,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             <div style="font-size:0.75rem; color:var(--text-secondary);">${API.escapeHTML(proj.id)}</div>
             ${proj.description ? `<div style="font-size:0.75rem; color:var(--text-secondary); margin-top:2px;">${API.escapeHTML(proj.description)}</div>` : ''}
           </td>
+          <td><span class="badge" style="background:#1e293b; border:1px solid #475569;">${API.escapeHTML(proj.business_domain || '-')}</span></td>
           <td>${reposBadges}</td>
           <td style="font-family:monospace; font-size:0.8rem; word-break:break-all;">${API.escapeHTML(proj.local_path || '-')}</td>
           <td class="col-center col-nowrap">${statusBadge}</td>
           <td class="col-center col-nowrap" style="font-size:0.8rem;">${API.formatDate(proj.updated_at)}</td>
           <td class="col-center col-nowrap">
             <button class="btn btn-primary btn-sm trigger-project-build-btn" data-id="${proj.id}" data-name="${API.escapeHTML(proj.name)}">🛠️ 聚合构建</button>
+            <button class="btn btn-secondary btn-sm inspect-links-btn" data-id="${proj.id}" data-name="${API.escapeHTML(proj.name)}">🔗 软链巡检</button>
             <button class="btn btn-secondary btn-sm edit-project-btn" data-id="${proj.id}">✏️ 编辑</button>
             <button class="btn btn-danger btn-sm delete-project-btn" data-id="${proj.id}">🗑️ 删除</button>
           </td>
@@ -615,6 +672,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     });
 
+    document.querySelectorAll('.inspect-links-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const projId = e.currentTarget.getAttribute('data-id');
+        const projName = e.currentTarget.getAttribute('data-name');
+        openLinksModal(projId, projName);
+      });
+    });
+
     document.querySelectorAll('.edit-project-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         const projId = e.currentTarget.getAttribute('data-id');
@@ -627,6 +692,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('projId').disabled = true;
         document.getElementById('projName').value = proj.name;
         document.getElementById('projDesc').value = proj.description || '';
+        populateDomainSelect(proj.business_domain || '');
         projAlert.style.display = 'none';
 
         renderReposPicker(proj.repos || []);
@@ -648,6 +714,89 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       });
     });
+  }
+
+  // Cross-Disk Symlinks Modal & Repair (Task 16)
+  const linksModal = document.getElementById('linksModal');
+  const closeLinksModalBtn = document.getElementById('closeLinksModalBtn');
+  if (closeLinksModalBtn) {
+    closeLinksModalBtn.addEventListener('click', () => {
+      linksModal.style.display = 'none';
+    });
+  }
+
+  async function openLinksModal(projId, projName) {
+    const title = document.getElementById('linksModalTitle');
+    const localPathEl = document.getElementById('linksModalLocalPath');
+    const healthSummaryEl = document.getElementById('linksModalHealthSummary');
+    const volCountsEl = document.getElementById('linksModalVolumeCounts');
+    const tableBody = document.querySelector('#linksDetailTable tbody');
+    const repairBtn = document.getElementById('repairLinksBtn');
+
+    title.textContent = `🔗 虚拟大仓 [${projName}] 跨盘软链巡检与分布图`;
+    tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center;">正在扫描跨盘软链与物理卷状态...</td></tr>';
+    linksModal.style.display = 'flex';
+
+    repairBtn.onclick = async () => {
+      repairBtn.disabled = true;
+      repairBtn.textContent = '⏳ 正在重新创建与修复软链...';
+      try {
+        await API.repairProjectLinks(projId);
+        showAlert(`项目 [${projName}] 跨盘软链已成功修复并刷新！`, 'success');
+        openLinksModal(projId, projName);
+      } catch (err) {
+        alert('修复失败: ' + err.message);
+      } finally {
+        repairBtn.disabled = false;
+        repairBtn.textContent = '🛠️ 一键修复断链';
+      }
+    };
+
+    try {
+      const data = await API.getProjectLinksHealth(projId);
+      localPathEl.textContent = data.local_path || '-';
+      const healthColor = data.broken_count === 0 ? 'var(--success-color)' : 'var(--error-color)';
+      healthSummaryEl.innerHTML = `<span style="color:${healthColor};">${data.healthy_count} 正常 / ${data.broken_count} 断链 (共 ${data.total_repos} 仓)</span>`;
+
+      // Volume distribution badges
+      const volBadges = Object.entries(data.volume_counts || {}).map(([vol, cnt]) => `
+        <span class="badge" style="background:#3b82f6; color:#fff; font-size:0.8rem; padding:0.2rem 0.5rem; border-radius:4px;">
+          💽 ${API.escapeHTML(vol)}: ${cnt} 仓
+        </span>
+      `).join('') || '<span style="color:var(--text-secondary);">-</span>';
+      volCountsEl.innerHTML = volBadges;
+
+      if (!data.items || data.items.length === 0) {
+        tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-secondary);">项目尚未绑定子仓库</td></tr>';
+        return;
+      }
+
+      tableBody.innerHTML = data.items.map(item => {
+        const isOk = item.status === 'ok';
+        const statusBadge = isOk
+          ? '<span style="color:var(--success-color);">✅ 正常链接</span>'
+          : `<span style="color:var(--error-color);">❌ 异常 (${API.escapeHTML(item.status)})</span>`;
+
+        return `
+          <tr>
+            <td><strong>${API.escapeHTML(item.alias_name)}</strong></td>
+            <td>
+              <div>${API.escapeHTML(item.repo_name)}</div>
+              <div style="font-size:0.75rem; color:var(--text-secondary);">${API.escapeHTML(item.repo_id)}</div>
+            </td>
+            <td>
+              <div style="font-size:0.8rem; font-family:monospace; color:var(--text-primary); word-break:break-all;">${API.escapeHTML(item.logical_path)}</div>
+              <div style="font-size:0.75rem; color:var(--text-secondary); margin-top:2px;">↳ 物理存储卷: <code style="color:#38bdf8;">${API.escapeHTML(item.volume_id)}</code> (${API.escapeHTML(item.physical_path)})</div>
+            </td>
+            <td class="col-center col-nowrap">${statusBadge}</td>
+            <td class="col-center col-nowrap" style="font-size:0.85rem;">${item.size_mb.toFixed(1)} MB</td>
+          </tr>
+        `;
+      }).join('');
+
+    } catch (err) {
+      tableBody.innerHTML = `<tr><td colspan="5" style="color:var(--error-color); text-align:center;">巡检失败: ${err.message}</td></tr>`;
+    }
   }
 
   // Load Projects
@@ -1033,9 +1182,324 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // ==========================================
+  // Super Admin 1: LLM Quota Settings (Task 17)
+  // ==========================================
+  const llmQuotaForm = document.getElementById('llmQuotaForm');
+  const refreshQuotaBtn = document.getElementById('refreshQuotaBtn');
+
+  async function loadLLMQuota() {
+    if (!isSuperAdmin) return;
+    try {
+      const q = await API.getLLMQuota();
+      if (!q) return;
+      document.getElementById('quotaMaxTPM').value = q.max_tpm ?? 0;
+      document.getElementById('quotaMaxRPM').value = q.max_rpm ?? 0;
+      document.getElementById('quotaDayConcurrency').value = q.day_concurrency ?? 2;
+      document.getElementById('quotaNightConcurrency').value = q.night_concurrency ?? 4;
+      document.getElementById('quotaThrottledCount').textContent = q.throttled_retries ?? 0;
+    } catch (e) {
+      console.warn('loadLLMQuota error', e);
+    }
+  }
+
+  if (refreshQuotaBtn) refreshQuotaBtn.addEventListener('click', loadLLMQuota);
+  if (llmQuotaForm) {
+    llmQuotaForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await API.updateLLMQuota({
+          max_tpm: Number(document.getElementById('quotaMaxTPM').value),
+          max_rpm: Number(document.getElementById('quotaMaxRPM').value),
+          day_concurrency: Number(document.getElementById('quotaDayConcurrency').value),
+          night_concurrency: Number(document.getElementById('quotaNightConcurrency').value)
+        });
+        showAlert('LLM 算力配额与日夜并发已成功实时生效！', 'success');
+        loadLLMQuota();
+      } catch (err) {
+        alert('更新配额失败: ' + err.message);
+      }
+    });
+  }
+
+  // ==========================================
+  // Super Admin 2: Storage Volumes & Migrations (Task 17)
+  // ==========================================
+  const refreshVolumesBtn = document.getElementById('refreshVolumesBtn');
+  const generateRebalanceBtn = document.getElementById('generateRebalanceBtn');
+  const volumesGrid = document.getElementById('volumesGrid');
+  const rebalancePlanArea = document.getElementById('rebalancePlanArea');
+  const rebalancePlanList = document.getElementById('rebalancePlanList');
+  const applyRebalancePlanBtn = document.getElementById('applyRebalancePlanBtn');
+  let currentRebalancePlan = [];
+
+  async function loadStorageVolumes() {
+    if (!isSuperAdmin) return;
+    try {
+      const vols = await API.getStorageVolumes();
+      if (!vols || vols.length === 0) {
+        volumesGrid.innerHTML = '<div style="color:var(--text-secondary);">暂无存储卷数据</div>';
+        return;
+      }
+      volumesGrid.innerHTML = vols.map(v => {
+        const usedPct = v.used_pct || (v.capacity_bytes > 0 ? (v.used_bytes / v.capacity_bytes * 100) : 0);
+        const color = usedPct > 80 ? '#ef4444' : (usedPct > 60 ? '#f59e0b' : '#10b981');
+        const capGB = (v.capacity_bytes / (1024*1024*1024)).toFixed(1);
+        const usedGB = (v.used_bytes / (1024*1024*1024)).toFixed(1);
+
+        return `
+          <div style="background:var(--bg-secondary); padding:1rem; border-radius:8px; border:1px solid var(--border-color);">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <strong>💽 ${API.escapeHTML(v.id)}</strong>
+              <span class="badge" style="background:${color}; color:#fff; font-size:0.75rem;">${usedPct.toFixed(1)}% 水位</span>
+            </div>
+            <div style="font-size:0.8rem; color:var(--text-secondary); margin:0.35rem 0;">
+              挂载路径: <code>${API.escapeHTML(v.mount_point)}</code>
+            </div>
+            <div style="width:100%; height:6px; background:#334155; border-radius:3px; overflow:hidden; margin:0.5rem 0;">
+              <div style="width:${Math.min(100, usedPct)}%; height:100%; background:${color};"></div>
+            </div>
+            <div style="font-size:0.8rem; color:var(--text-secondary); display:flex; justify-content:space-between;">
+              <span>已用: ${usedGB} GB / ${capGB} GB</span>
+              <span>${v.repo_count || 0} 个仓库</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+    } catch (e) {
+      console.warn('loadStorageVolumes error', e);
+    }
+  }
+
+  if (refreshVolumesBtn) refreshVolumesBtn.addEventListener('click', loadStorageVolumes);
+  if (generateRebalanceBtn) {
+    generateRebalanceBtn.addEventListener('click', async () => {
+      try {
+        const plan = await API.getRebalancePlan();
+        currentRebalancePlan = plan.moves || [];
+        if (currentRebalancePlan.length === 0) {
+          rebalancePlanArea.style.display = 'block';
+          rebalancePlanList.innerHTML = '<span style="color:var(--success-color);">✅ 当前各卷水位均衡，暂无需迁移的仓库！</span>';
+          applyRebalancePlanBtn.style.display = 'none';
+          return;
+        }
+        rebalancePlanArea.style.display = 'block';
+        applyRebalancePlanBtn.style.display = 'inline-block';
+        rebalancePlanList.innerHTML = currentRebalancePlan.map(m => `
+          <div style="margin-bottom:0.4rem;">
+            📦 仓库 <strong>${API.escapeHTML(m.repo_id)}</strong> (${(m.size_bytes / (1024*1024)).toFixed(1)} MB): 
+            从 <code style="color:#ef4444;">${API.escapeHTML(m.from_volume)}</code> 迁移到 
+            <code style="color:#10b981;">${API.escapeHTML(m.to_volume)}</code>
+          </div>
+        `).join('');
+      } catch (err) {
+        alert('生成均衡计划失败: ' + err.message);
+      }
+    });
+  }
+
+  if (applyRebalancePlanBtn) {
+    applyRebalancePlanBtn.addEventListener('click', async () => {
+      if (!currentRebalancePlan || currentRebalancePlan.length === 0) return;
+      applyRebalancePlanBtn.disabled = true;
+      applyRebalancePlanBtn.textContent = '⏳ 正在并发提交迁移任务...';
+      try {
+        for (const m of currentRebalancePlan) {
+          await API.executeMigration({
+            repo_id: m.repo_id,
+            target_volume: m.to_volume
+          });
+        }
+        showAlert(`已触发 ${currentRebalancePlan.length} 个仓库平滑在线迁移任务！后台状态机正在运行。`, 'success');
+        rebalancePlanArea.style.display = 'none';
+        loadStorageVolumes();
+      } catch (err) {
+        alert('执行迁移失败: ' + err.message);
+      } finally {
+        applyRebalancePlanBtn.disabled = false;
+        applyRebalancePlanBtn.textContent = '🚀 确认并一键执行批量迁移';
+      }
+    });
+  }
+
+  // ==========================================
+  // Super Admin 3: User RBAC & Domains (Task 17)
+  // ==========================================
+  const usersTableBody = document.querySelector('#usersTable tbody');
+  const refreshUsersBtn = document.getElementById('refreshUsersBtn');
+  const userModal = document.getElementById('userModal');
+  const closeUserModalBtn = document.getElementById('closeUserModalBtn');
+  const cancelUserModalBtn = document.getElementById('cancelUserModalBtn');
+  const userRbacForm = document.getElementById('userRbacForm');
+  let selectedUserForModal = null;
+
+  async function loadUsers() {
+    if (!isSuperAdmin) return;
+    try {
+      const users = await API.getUsers();
+      if (!users || users.length === 0) {
+        usersTableBody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-secondary);">暂无用户</td></tr>';
+        return;
+      }
+      usersTableBody.innerHTML = users.map(u => {
+        const roleBadge = u.role === 'super_admin'
+          ? '<span class="badge" style="background:#ef4444; color:#fff;">超管 (super_admin)</span>'
+          : (u.role === 'group_leader'
+            ? '<span class="badge" style="background:#3b82f6; color:#fff;">组长 (group_leader)</span>'
+            : '<span class="badge" style="background:#64748b; color:#fff;">普通用户 (user)</span>');
+
+        const domainTags = (u.authorized_domains || []).map(d => `
+          <span class="badge" style="background:#1e293b; border:1px solid #475569; margin:2px;">${API.escapeHTML(d)}</span>
+        `).join('') || '<span style="color:var(--text-secondary);">-</span>';
+
+        return `
+          <tr>
+            <td><strong>${API.escapeHTML(u.username)}</strong></td>
+            <td>${API.escapeHTML(u.display_name || '-')}</td>
+            <td>${roleBadge}</td>
+            <td>${domainTags}</td>
+            <td class="col-center col-nowrap">
+              <button class="btn btn-secondary btn-sm manage-user-btn" data-username="${API.escapeHTML(u.username)}">⚙️ 角色与授权</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      document.querySelectorAll('.manage-user-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const uname = e.currentTarget.getAttribute('data-username');
+          const user = users.find(x => x.username === uname);
+          if (user) openUserModal(user);
+        });
+      });
+    } catch (e) {
+      console.warn('loadUsers error', e);
+    }
+  }
+
+  function openUserModal(user) {
+    selectedUserForModal = user;
+    document.getElementById('userModalUsername').value = user.username;
+    document.getElementById('userModalUserDesc').textContent = `${user.display_name} (${user.username})`;
+    document.getElementById('userModalRole').value = user.role || 'user';
+    renderUserModalDomains(user.authorized_domains || []);
+    document.getElementById('userModalAlert').style.display = 'none';
+    userModal.style.display = 'flex';
+  }
+
+  function renderUserModalDomains(domains) {
+    const list = document.getElementById('userDomainsList');
+    if (!domains || domains.length === 0) {
+      list.innerHTML = '<span style="color:var(--text-secondary); font-size:0.85rem;">暂无授权业务域</span>';
+      return;
+    }
+    list.innerHTML = domains.map(d => `
+      <span class="badge" style="background:#3b82f6; color:#fff; display:inline-flex; align-items:center; gap:0.25rem; padding:0.2rem 0.5rem; border-radius:4px;">
+        ${API.escapeHTML(d)}
+        <span class="revoke-domain-btn" data-domain="${API.escapeHTML(d)}" style="cursor:pointer; font-weight:bold;">&times;</span>
+      </span>
+    `).join('');
+
+    list.querySelectorAll('.revoke-domain-btn').forEach(b => {
+      b.addEventListener('click', async (e) => {
+        const dom = e.currentTarget.getAttribute('data-domain');
+        try {
+          await API.revokeDomain(selectedUserForModal.username, dom);
+          selectedUserForModal.authorized_domains = selectedUserForModal.authorized_domains.filter(x => x !== dom);
+          renderUserModalDomains(selectedUserForModal.authorized_domains);
+          loadUsers();
+        } catch (err) {
+          alert('收回失败: ' + err.message);
+        }
+      });
+    });
+  }
+
+  document.getElementById('addDomainBtn')?.addEventListener('click', async () => {
+    const input = document.getElementById('newDomainInput');
+    const val = input.value.trim();
+    if (!val || !selectedUserForModal) return;
+    try {
+      await API.grantDomain(selectedUserForModal.username, val);
+      if (!selectedUserForModal.authorized_domains) selectedUserForModal.authorized_domains = [];
+      if (!selectedUserForModal.authorized_domains.includes(val)) selectedUserForModal.authorized_domains.push(val);
+      input.value = '';
+      renderUserModalDomains(selectedUserForModal.authorized_domains);
+      loadUsers();
+    } catch (err) {
+      alert('授权失败: ' + err.message);
+    }
+  });
+
+  if (closeUserModalBtn) closeUserModalBtn.addEventListener('click', () => userModal.style.display = 'none');
+  if (cancelUserModalBtn) cancelUserModalBtn.addEventListener('click', () => userModal.style.display = 'none');
+  if (userRbacForm) {
+    userRbacForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const role = document.getElementById('userModalRole').value;
+      try {
+        await API.setUserRole(selectedUserForModal.username, role);
+        userModal.style.display = 'none';
+        showAlert(`用户 [${selectedUserForModal.username}] 角色已设置为 ${role}！`, 'success');
+        loadUsers();
+      } catch (err) {
+        alert('保存角色失败: ' + err.message);
+      }
+    });
+  }
+  if (refreshUsersBtn) refreshUsersBtn.addEventListener('click', loadUsers);
+
+  // ==========================================
+  // Super Admin 4: Log Disk Cleanup (Task 17)
+  // ==========================================
+  const refreshLogStatsBtn = document.getElementById('refreshLogStatsBtn');
+  const cleanupLogsBtn = document.getElementById('cleanupLogsBtn');
+  const cleanupDaysInput = document.getElementById('cleanupDaysInput');
+  const logDiskStatsText = document.getElementById('logDiskStatsText');
+
+  async function loadLogStats() {
+    if (!isSuperAdmin) return;
+    try {
+      const stats = await API.getLogStats();
+      if (!stats) return;
+      const sizeMB = (stats.total_bytes / (1024*1024)).toFixed(1);
+      logDiskStatsText.innerHTML = `
+        <span style="color:#38bdf8;">${sizeMB} MB</span> 
+        <span style="font-size:0.85rem; color:var(--text-secondary); font-weight:normal;">(${stats.file_count || 0} 个日志文件 · 挂载点: <code>${API.escapeHTML(stats.log_dir)}</code>)</span>
+      `;
+    } catch (e) {
+      console.warn('loadLogStats error', e);
+    }
+  }
+
+  if (refreshLogStatsBtn) refreshLogStatsBtn.addEventListener('click', loadLogStats);
+  if (cleanupLogsBtn) {
+    cleanupLogsBtn.addEventListener('click', async () => {
+      const days = Number(cleanupDaysInput.value) || 7;
+      if (!confirm(`确定要清理日志盘中超过 ${days} 天的历史流水线日志吗？此操作不可逆！`)) return;
+      cleanupLogsBtn.disabled = true;
+      cleanupLogsBtn.textContent = '⏳ 清理中...';
+      try {
+        const res = await API.cleanupLogs({ older_than_days: days });
+        const freedMB = ((res.deleted_bytes || 0) / (1024*1024)).toFixed(1);
+        showAlert(`已成功清理 ${res.deleted_files || 0} 个过期日志文件，释放空间 ${freedMB} MB！`, 'success');
+        loadLogStats();
+      } catch (err) {
+        alert('清理日志失败: ' + err.message);
+      } finally {
+        cleanupLogsBtn.disabled = false;
+        cleanupLogsBtn.textContent = '🗑️ 一键安全清理';
+      }
+    });
+  }
+
   // Initial load & Polling
   refreshBatchStatus();
   loadDailyTokens();
+  loadLLMQuota();
+  loadStorageVolumes();
+  loadUsers();
+  loadLogStats();
   batchPollTimer = setInterval(() => {
     refreshBatchStatus();
     loadDailyTokens();

@@ -268,5 +268,120 @@ window.API = {
     const res = await fetch('/portal/telemetry/tokens/export?format=tsv');
     if (!res.ok) throw new Error('获取飞书导出数据失败 (' + res.status + ')');
     return await res.text();
+  },
+
+  // Project Symlinks Health & Repair (Task 16)
+  async getProjectLinksHealth(projectId) {
+    const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/links/health`);
+    if (!res.ok) throw new Error('获取跨盘软链状态失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async repairProjectLinks(projectId) {
+    const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/links/repair`, {
+      method: 'POST'
+    });
+    if (!res.ok) throw new Error('修复跨盘软链失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // LLM Quota Settings (Task 17)
+  async getLLMQuota() {
+    const res = await fetch('/api/settings/llm-quota');
+    if (!res.ok) throw new Error('获取LLM配额设置失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async updateLLMQuota(quotaData) {
+    const res = await fetch('/api/settings/llm-quota', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(quotaData)
+    });
+    if (!res.ok) throw new Error('更新LLM配额失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // Storage Pool & Volumes (Task 17)
+  async getStorageVolumes() {
+    const res = await fetch('/api/storage/volumes');
+    if (!res.ok) throw new Error('获取存储卷列表失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async getRebalancePlan() {
+    const res = await fetch('/api/storage/rebalance/plan');
+    if (!res.ok) throw new Error('生成均衡计划失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async executeMigration(migrationData) {
+    const res = await fetch('/api/storage/migrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(migrationData)
+    });
+    if (!res.ok) throw new Error('发起存储迁移失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // User RBAC & Business Domains (Task 17)
+  async getUsers() {
+    const res = await fetch('/portal/users');
+    if (!res.ok) throw new Error('获取用户列表失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async setUserRole(userId, role) {
+    const res = await fetch('/portal/users/role', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, role })
+    });
+    if (!res.ok) throw new Error('更新用户角色失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async grantDomain(userId, domain) {
+    const res = await fetch('/portal/users/grant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, business_domain: domain })
+    });
+    if (!res.ok) throw new Error('授权业务域失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async revokeDomain(userId, domain) {
+    const res = await fetch('/portal/users/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, business_domain: domain })
+    });
+    if (!res.ok) throw new Error('收回业务域失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async getAuditLogs(limit = 50) {
+    const res = await fetch(`/portal/audit?limit=${limit}`);
+    if (!res.ok) throw new Error('获取审计日志失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // Dedicated Log Disk Management (Task 17)
+  async getLogStats() {
+    const res = await fetch('/api/logs/stats');
+    if (!res.ok) throw new Error('获取日志盘状态失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async cleanupLogs(cleanupData) {
+    const res = await fetch('/api/logs/cleanup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cleanupData)
+    });
+    if (!res.ok) throw new Error('清理日志失败 (' + res.status + ')');
+    return await res.json();
   }
 };

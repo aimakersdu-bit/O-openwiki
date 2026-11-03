@@ -234,11 +234,11 @@
     </section>
 
     <!-- Microservice Projects Management Section -->
-    <section class="card" style="margin-top: 1.5rem;">
+    <section class="card" id="projectSection" style="margin-top: 1.5rem;">
       <div class="dashboard-header">
         <div>
-          <h2>🏢 微服务项目编排管理 (Virtual Workspaces)</h2>
-          <p class="subtitle">将多个微服务仓库聚合为虚拟大仓项目，自动提取跨服务调用链并生成系统全景知识库</p>
+          <h2 id="projectSectionTitle">🏢 微服务项目编排管理 (Virtual Workspaces)</h2>
+          <p class="subtitle" id="projectSectionSubtitle">将多个微服务仓库聚合为虚拟大仓项目，自动提取跨服务调用链并生成系统全景知识库</p>
         </div>
         <div style="display:flex; gap: 0.5rem;">
           <button id="openNewProjectModalBtn" class="btn btn-primary">➕ 创建微服务项目</button>
@@ -251,17 +251,136 @@
           <thead>
             <tr>
               <th style="min-width: 140px;">项目 ID / 名称</th>
+              <th style="min-width: 110px;">业务域</th>
               <th style="min-width: 240px;">包含微服务组件与角色</th>
               <th style="min-width: 180px;">虚拟工作区目录</th>
               <th class="col-center col-nowrap" style="min-width: 90px;">状态</th>
               <th class="col-center col-nowrap" style="min-width: 120px;">更新时间</th>
-              <th class="col-center col-nowrap" style="min-width: 220px;">操作</th>
+              <th class="col-center col-nowrap" style="min-width: 240px;">操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr><td colspan="6" style="text-align:center; color:var(--text-secondary);">正在加载微服务项目...</td></tr>
+            <tr><td colspan="7" style="text-align:center; color:var(--text-secondary);">正在加载微服务项目...</td></tr>
           </tbody>
         </table>
+      </div>
+    </section>
+
+    <!-- Super Admin Section 1: LLM Quota & Dynamic Rate Limit Settings -->
+    <section class="card super-admin-only" id="quotaSection" style="margin-top: 1.5rem; border-left: 4px solid #f59e0b;">
+      <div class="dashboard-header">
+        <div>
+          <h2>⚡ 行内私有 LLM 算力与网关限流配置</h2>
+          <p class="subtitle">动态调整行内私有化 OpenAI 协议模型网关的滑动窗口 TPM/RPM 限流上限、日夜构建并发与 429 自适应熔断降级</p>
+        </div>
+        <button id="refreshQuotaBtn" class="btn btn-secondary">🔄 刷新配额状态</button>
+      </div>
+
+      <form id="llmQuotaForm" style="margin-top: 1rem;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem;">
+          <div class="form-group">
+            <label for="quotaMaxTPM">每分钟最大 Token 数 (MAX_TPM, 0=不限)</label>
+            <input type="number" id="quotaMaxTPM" min="0" step="1000" placeholder="例如 500000">
+          </div>
+          <div class="form-group">
+            <label for="quotaMaxRPM">每分钟最大请求数 (MAX_RPM, 0=不限)</label>
+            <input type="number" id="quotaMaxRPM" min="0" step="10" placeholder="例如 120">
+          </div>
+          <div class="form-group">
+            <label for="quotaDayConcurrency">白天并发构建数 (07:00 ~ 22:00)</label>
+            <input type="number" id="quotaDayConcurrency" min="1" max="16" placeholder="例如 2">
+          </div>
+          <div class="form-group">
+            <label for="quotaNightConcurrency">夜间并发构建数 (22:00 ~ 07:00)</label>
+            <input type="number" id="quotaNightConcurrency" min="1" max="16" placeholder="例如 4">
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border-color, #334155);">
+          <div style="font-size: 0.85rem; color: var(--text-secondary, #94a3b8);" id="quotaStatusText">
+            近 60 分钟拦截与自适应降级次数: <span id="quotaThrottledCount" style="color: #f59e0b; font-weight: bold;">0</span> 次
+          </div>
+          <button type="submit" class="btn btn-primary">💾 保存并实时下发配额</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Super Admin Section 2: Storage Volumes & Migration Center -->
+    <section class="card super-admin-only" id="storageSection" style="margin-top: 1.5rem; border-left: 4px solid #8b5cf6;">
+      <div class="dashboard-header">
+        <div>
+          <h2>💽 多盘存储资源池与平滑迁移中心</h2>
+          <p class="subtitle">监控本地独立挂载卷 (disk0, vol1..volN) 水位容量，执行无感知 7 状态在线迁移与存储均衡计划</p>
+        </div>
+        <div style="display:flex; gap: 0.5rem;">
+          <button id="generateRebalanceBtn" class="btn btn-secondary">⚖️ 生成贪心均衡计划</button>
+          <button id="refreshVolumesBtn" class="btn btn-secondary">🔄 刷新存储池</button>
+        </div>
+      </div>
+
+      <!-- Volume Cards Grid -->
+      <div id="volumesGrid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 1rem;">
+        <!-- Injected by JS -->
+      </div>
+
+      <!-- Rebalance Plan Modal / Preview Area -->
+      <div id="rebalancePlanArea" style="margin-top: 1rem; display:none; background: var(--bg-secondary); padding: 1rem; border-radius: 8px; border: 1px solid var(--border-color);">
+        <h4 style="margin-bottom:0.5rem;">⚖️ 推荐存储迁移步骤 (贪心均衡计划):</h4>
+        <div id="rebalancePlanList" style="font-size:0.9rem; color:var(--text-secondary); margin-bottom: 0.75rem;"></div>
+        <button id="applyRebalancePlanBtn" class="btn btn-primary btn-sm">🚀 确认并一键执行批量迁移</button>
+      </div>
+    </section>
+
+    <!-- Super Admin Section 3: RBAC User & Business Domain Authorization -->
+    <section class="card super-admin-only" id="rbacSection" style="margin-top: 1.5rem; border-left: 4px solid #ec4899;">
+      <div class="dashboard-header">
+        <div>
+          <h2>👥 用户权限与业务域边界授权 (RBAC)</h2>
+          <p class="subtitle">为开发组长分配 <code>group_leader</code> 角色并绑定负责的业务域，限制其仅能操作授权域内的微服务聚合项目</p>
+        </div>
+        <button id="refreshUsersBtn" class="btn btn-secondary">🔄 刷新用户列表</button>
+      </div>
+
+      <div class="table-responsive" style="margin-top: 1rem;">
+        <table class="data-table" id="usersTable">
+          <thead>
+            <tr>
+              <th style="min-width: 140px;">登录用户名</th>
+              <th style="min-width: 140px;">姓名</th>
+              <th style="min-width: 120px;">系统角色</th>
+              <th style="min-width: 240px;">已授权业务域</th>
+              <th class="col-center col-nowrap" style="min-width: 140px;">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="5" style="text-align:center; color:var(--text-secondary);">正在加载用户列表...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Super Admin Section 4: Log Disk Cleanup -->
+    <section class="card super-admin-only" id="logDiskSection" style="margin-top: 1.5rem; border-left: 4px solid #06b6d4;">
+      <div class="dashboard-header">
+        <div>
+          <h2>🧹 独立日志盘管理与清理 (/data/disk_log)</h2>
+          <p class="subtitle">监控日志独立存储卷占用，安全清理构建流水线与系统日志 (防目录穿越)</p>
+        </div>
+        <button id="refreshLogStatsBtn" class="btn btn-secondary">🔄 刷新日志占用</button>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; background: var(--bg-secondary); padding: 1rem; border-radius: 8px;">
+        <div>
+          <div style="font-size:0.85rem; color:var(--text-secondary);">日志盘当前占用与文件数</div>
+          <div id="logDiskStatsText" style="font-size:1.1rem; font-weight:bold; margin-top:0.25rem;">
+            加载中...
+          </div>
+        </div>
+        <div style="display:flex; gap: 0.75rem; align-items: center;">
+          <label style="font-size:0.9rem;">清理保留天数:</label>
+          <input type="number" id="cleanupDaysInput" value="7" min="1" max="90" style="width: 70px; padding: 0.3rem 0.5rem;">
+          <button id="cleanupLogsBtn" class="btn btn-danger btn-sm">🗑️ 一键安全清理</button>
+        </div>
       </div>
     </section>
   </main>
@@ -344,9 +463,17 @@
               <input type="text" id="projName" placeholder="零售金融微服务平台" required>
             </div>
           </div>
-          <div class="form-group">
-            <label for="projDesc">项目架构与业务描述</label>
-            <input type="text" id="projDesc" placeholder="包含网关、授信、支用、还款等核心微服务组件">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+            <div class="form-group">
+              <label for="projBusinessDomain">所属业务域</label>
+              <select id="projBusinessDomain" required style="width: 100%; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);">
+                <!-- Injected by JS based on user's authorized domains -->
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="projDesc">项目架构与业务描述</label>
+              <input type="text" id="projDesc" placeholder="包含网关、授信、支用、还款等核心微服务组件">
+            </div>
           </div>
           <div class="form-group">
             <label>编排微服务子仓 (勾选组合进本虚拟项目的仓库并分配角色):</label>
@@ -412,6 +539,93 @@ credit-audit,信贷风控审批,https://github.com/bank/credit-audit.git,master,
           <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1rem;">
             <button type="button" id="cancelBatchImportBtn" class="btn btn-secondary">取消</button>
             <button type="submit" class="btn btn-primary">🚀 开始批量导入与调度</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cross-Disk Symlinks Inspection & Repair Modal (Task 16) -->
+  <div id="linksModal" class="modal-overlay" style="display:none;">
+    <div class="modal-card" style="max-width: 840px;">
+      <div class="modal-header">
+        <h3 id="linksModalTitle">🔗 虚拟大仓跨盘软链巡检与分布图</h3>
+        <button id="closeLinksModalBtn" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <!-- Overview summary banner -->
+        <div style="background: var(--bg-secondary); padding: 1rem; border-radius: 8px; border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem;">
+          <div>
+            <div style="font-size:0.85rem; color:var(--text-secondary);">项目根目录</div>
+            <code id="linksModalLocalPath" style="font-size:0.9rem;">-</code>
+          </div>
+          <div>
+            <div style="font-size:0.85rem; color:var(--text-secondary);">软链健康度</div>
+            <div id="linksModalHealthSummary" style="font-size:1.1rem; font-weight:bold;">-</div>
+          </div>
+          <div>
+            <div style="font-size:0.85rem; color:var(--text-secondary);">物理盘分布</div>
+            <div id="linksModalVolumeCounts" style="display:flex; gap:0.4rem; margin-top:0.25rem;">-</div>
+          </div>
+          <button id="repairLinksBtn" class="btn btn-primary btn-sm">🛠️ 一键修复断链</button>
+        </div>
+
+        <div class="table-responsive">
+          <table class="data-table" id="linksDetailTable">
+            <thead>
+              <tr>
+                <th style="min-width: 120px;">子仓别名</th>
+                <th style="min-width: 140px;">仓库 ID / 名称</th>
+                <th style="min-width: 220px;">逻辑软链 & 物理挂载卷</th>
+                <th class="col-center col-nowrap" style="min-width: 90px;">状态</th>
+                <th class="col-center col-nowrap" style="min-width: 90px;">容量</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Loaded dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- User Role & Business Domain Grant Modal (Task 17) -->
+  <div id="userModal" class="modal-overlay" style="display:none;">
+    <div class="modal-card" style="max-width: 540px;">
+      <div class="modal-header">
+        <h3 id="userModalTitle">👤 用户角色与业务域授权</h3>
+        <button id="closeUserModalBtn" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="userRbacForm">
+          <input type="hidden" id="userModalUsername">
+          <div class="form-group">
+            <label>用户名 / 姓名:</label>
+            <div id="userModalUserDesc" style="font-weight:bold; color:var(--text-primary); margin-top:0.25rem;"></div>
+          </div>
+          <div class="form-group">
+            <label for="userModalRole">分配系统角色:</label>
+            <select id="userModalRole" style="width: 100%; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);">
+              <option value="user">普通用户 (user) - 仅只读访问公开 Wiki 与 AI 问答</option>
+              <option value="group_leader">开发组长 (group_leader) - 授权业务域内编排微服务项目与软链巡检</option>
+              <option value="super_admin">超级管理员 (super_admin) - 全量运维管控与算力限流</option>
+            </select>
+          </div>
+          <div class="form-group" id="domainGrantGroup">
+            <label>绑定授权业务域 (按 Enter 添加):</label>
+            <div id="userDomainsList" style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem;">
+              <!-- Tags injected by JS -->
+            </div>
+            <div style="display: flex; gap: 0.5rem;">
+              <input type="text" id="newDomainInput" placeholder="例如 消费金融、零售业务、信贷中台...">
+              <button type="button" id="addDomainBtn" class="btn btn-secondary btn-sm">➕ 添加域</button>
+            </div>
+          </div>
+          <div id="userModalAlert" class="alert" style="display:none;"></div>
+          <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1rem;">
+            <button type="button" id="cancelUserModalBtn" class="btn btn-secondary">关闭</button>
+            <button type="submit" class="btn btn-primary">💾 保存角色设置</button>
           </div>
         </form>
       </div>

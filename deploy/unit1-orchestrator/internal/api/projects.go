@@ -411,3 +411,75 @@ func (s *Server) BuildProjectWorkspace(projectID string) error {
 	proj.Status = "active"
 	return db.UpdateProject(proj)
 }
+
+// handleProjectSubroutes routes /api/projects/build and /api/projects/{id}/links/*
+func (s *Server) handleProjectSubroutes(w http.ResponseWriter, r *http.Request) {
+	relPath := strings.TrimPrefix(r.URL.Path, "/api/projects/")
+	if relPath == "build" {
+		s.handleProjectBuild(w, r)
+		return
+	}
+
+	parts := strings.Split(relPath, "/")
+	// Expected: {id}/links/{action}
+	if len(parts) >= 3 && parts[1] == "links" {
+		projectID := parts[0]
+		action := parts[2]
+		s.handleProjectLinksAction(w, r, projectID, action)
+		return
+	}
+
+	http.NotFound(w, r)
+}
+
+func (s *Server) handleProjectLinksAction(w http.ResponseWriter, r *http.Request, projectID, action string) {
+	proj, err := db.GetProject(projectID)
+	if err != nil || proj == nil {
+		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+
+	authCtx := GetAuthContext(r)
+	if authCtx.Role == "group_leader" {
+		if !authCtx.IsDomainAuthorized(proj.BusinessDomain) {
+			http.Error(w, fmt.Sprintf("Forbidden: cannot inspect project in domain '%s'", proj.BusinessDomain), http.StatusForbidden)
+			return
+		}
+	} else if authCtx.Role != "super_admin" && authCtx.Role != "admin" {
+		http.Error(w, "Forbidden: insufficient permissions", http.StatusForbidden)
+		return
+	}
+
+	repos, err := db.GetProjectRepos(projectID)
+	if err != nil {
+		http.Error(w, "Failed to query project repos: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	wsMgr := project.NewWorkspaceManager(s.config.ProjectsBaseDir)
+
+	var preview *project.WorkspaceLinkPreview
+	switch action {
+	case "preview":
+		preview, err = wsMgr.PreviewWorkspaceLinks(proj, repos)
+	case "health":
+		preview, err = wsMgr.CheckWorkspaceHealth(proj, repos)
+	case "repair":
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed, POST required for repair", http.StatusMethodNotAllowed)
+			return
+		}
+		preview, err = wsMgr.RepairWorkspaceLinks(proj, repos)
+	default:
+		http.NotFound(w, r)
+		return
+	}
+
+	if err != nil {
+		http.Error(w, "Failed to perform links "+action+": "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(preview)
+}
