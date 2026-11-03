@@ -8,3 +8,8 @@ unit2-portal/portal
 *.db
 *.db-shm
 *.db-wal
+
+# Test runtime
+test_runtime/
+bin/
+

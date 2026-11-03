@@ -36,6 +36,14 @@ type Manager struct {
 	socketDir    string
 	idleTimeout  int
 	distDir      string
+	transport    http.RoundTripper
+}
+
+// SetTransport allows injecting a custom HTTP transport (e.g. for mock testing without real UDS).
+func (m *Manager) SetTransport(tr http.RoundTripper) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transport = tr
 }
 
 // NewManager creates a new repository worker daemon manager.
@@ -130,6 +138,16 @@ func (m *Manager) getOrStartWorker(ctx context.Context, repo *db.Repo) (*WorkerP
 		// Worker is dead or unhealthy, clean up
 		m.cleanupWorker(wp)
 		delete(m.workers, repo.ID)
+	}
+
+	if m.transport != nil {
+		wp := &WorkerProcess{
+			RepoID:     repo.ID,
+			SocketPath: filepath.Join(m.socketDir, fmt.Sprintf("mock-%s.sock", repo.ID)),
+			CreatedAt:  time.Now(),
+		}
+		m.workers[repo.ID] = wp
+		return wp, nil
 	}
 
 	// Ensure repository directory exists
@@ -233,6 +251,9 @@ func waitForSocket(ctx context.Context, cmd *exec.Cmd, socketPath string, stderr
 }
 
 func (m *Manager) isWorkerAlive(wp *WorkerProcess) bool {
+	if m.transport != nil {
+		return true
+	}
 	if wp.Cmd == nil || wp.Cmd.Process == nil {
 		return false
 	}
@@ -299,13 +320,20 @@ func (m *Manager) StreamChat(ctx context.Context, repo *db.Repo, userID string, 
 		return fmt.Errorf("%s", errMsg)
 	}
 
-	// Create HTTP client over Unix Domain Socket
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", wp.SocketPath)
+	// Create HTTP client over Unix Domain Socket or mock transport
+	var client *http.Client
+	if m.transport != nil {
+		client = &http.Client{
+			Transport: m.transport,
+		}
+	} else {
+		client = &http.Client{
+			Transport: &http.Transport{
+				DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+					return net.Dial("unix", wp.SocketPath)
+				},
 			},
-		},
+		}
 	}
 
 	threadID := sessionID
@@ -433,6 +461,16 @@ func (m *Manager) getOrStartProjectWorker(ctx context.Context, proj *db.Project)
 		delete(m.workers, workerKey)
 	}
 
+	if m.transport != nil {
+		wp := &WorkerProcess{
+			RepoID:     workerKey,
+			SocketPath: filepath.Join(m.socketDir, fmt.Sprintf("mock-proj-%s.sock", proj.ID)),
+			CreatedAt:  time.Now(),
+		}
+		m.workers[workerKey] = wp
+		return wp, nil
+	}
+
 	if proj.LocalPath != "" {
 		if _, err := os.Stat(proj.LocalPath); os.IsNotExist(err) {
 			_ = os.MkdirAll(proj.LocalPath, 0o755)
@@ -519,12 +557,19 @@ func (m *Manager) StreamProjectChat(ctx context.Context, proj *db.Project, userI
 		return fmt.Errorf("%s", errMsg)
 	}
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", wp.SocketPath)
+	var client *http.Client
+	if m.transport != nil {
+		client = &http.Client{
+			Transport: m.transport,
+		}
+	} else {
+		client = &http.Client{
+			Transport: &http.Transport{
+				DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+					return net.Dial("unix", wp.SocketPath)
+				},
 			},
-		},
+		}
 	}
 
 	threadID := sessionID

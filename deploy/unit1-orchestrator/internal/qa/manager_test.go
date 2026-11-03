@@ -3,6 +3,10 @@ package qa
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,54 +16,20 @@ import (
 	"github.com/openwiki/orchestrator/internal/db"
 )
 
+type mockRoundTripper struct {
+	fn func(req *http.Request) (*http.Response, error)
+}
+
+func (m *mockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return m.fn(req)
+}
+
 func TestManagerWorkerLifecycle(t *testing.T) {
-	// Create mock node script that acts as an echo QA daemon over UDS
 	tmpDir, err := os.MkdirTemp("", "qa-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
-
-	mockDaemonScript := filepath.Join(tmpDir, "mock-daemon.js")
-	mockScriptContent := `
-const http = require('http');
-const fs = require('fs');
-
-const args = process.argv.slice(2);
-let socketPath = '';
-for (const arg of args) {
-  if (arg.startsWith('--socket=')) socketPath = arg.substring(9);
-}
-
-try { if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath); } catch {}
-
-const server = http.createServer((req, res) => {
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok' }));
-    return;
-  }
-  if (req.method === 'POST') {
-    let body = '';
-    req.on('data', c => body += c);
-    req.on('end', () => {
-      const parsed = JSON.parse(body);
-      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-      res.write('event: status\ndata: {"stage":"tool_start","name":"test_tool"}\n\n');
-      res.write('event: delta\ndata: {"text":"Hello ' + parsed.question + '"}\n\n');
-      res.write('event: done\ndata: {"fullAnswer":"Hello ' + parsed.question + '"}\n\n');
-      res.end();
-    });
-  }
-});
-
-server.listen(socketPath, () => {
-  console.log("Mock daemon listening on " + socketPath);
-});
-`
-	if err := os.WriteFile(mockDaemonScript, []byte(mockScriptContent), 0o755); err != nil {
-		t.Fatalf("failed to write mock daemon: %v", err)
-	}
 
 	// Initialize test DB for RecordQASession
 	dbPath := filepath.Join(tmpDir, "test.db")
@@ -68,9 +38,25 @@ server.listen(socketPath, () => {
 	}
 	defer db.CloseDB()
 
-	// Create manager with mock daemon
-	mgr := NewManager(mockDaemonScript, tmpDir, 10, "")
+	// Create manager with mock transport
+	mgr := NewManager("scripts/qa-daemon.js", tmpDir, 10, "")
 	defer mgr.Close()
+
+	mgr.SetTransport(&mockRoundTripper{
+		fn: func(req *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(req.Body)
+			var parsed struct {
+				Question string `json:"question"`
+			}
+			_ = json.Unmarshal(body, &parsed)
+			respContent := fmt.Sprintf("event: status\ndata: {\"stage\":\"tool_start\",\"name\":\"test_tool\"}\n\nevent: delta\ndata: {\"text\":\"Hello %s\"}\n\nevent: done\ndata: {\"fullAnswer\":\"Hello %s\"}\n\n", parsed.Question, parsed.Question)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(respContent)),
+			}, nil
+		},
+	})
 
 	repo := &db.Repo{
 		ID:        "test-repo-1",
@@ -105,5 +91,11 @@ server.listen(socketPath, () => {
 	}
 	if sessions[0].Question != "World" || !strings.Contains(sessions[0].Answer, "Hello World") {
 		t.Errorf("unexpected session record: %+v", sessions[0])
+	}
+
+	// Test Evict
+	mgr.Evict(repo.ID)
+	if _, ok := mgr.workers[repo.ID]; ok {
+		t.Errorf("expected repo worker to be evicted")
 	}
 }

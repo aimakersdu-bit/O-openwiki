@@ -182,6 +182,58 @@ TSV_RESP=$(curl -s -b "$COOKIE_JAR" "http://127.0.0.1:$PORTAL_PORT/portal/teleme
 echo "  TSV 表头预览:"
 echo "$TSV_RESP" | head -n 3
 
+# 10. 验证多盘存储池与跨盘软链健康巡检
+echo "--> 10. 验证存储卷列表与软链健康度..."
+VOLUMES_RESP=$(curl -s -b "$COOKIE_JAR" "http://127.0.0.1:$PORTAL_PORT/api/storage/volumes")
+echo "  Volumes response: $VOLUMES_RESP"
+PROJ_ID=$(echo "$PROJECTS_RESP" | grep -o '"id":"proj-[^"]*' | head -n 1 | cut -d'"' -f4)
+if [ -n "$PROJ_ID" ]; then
+  HEALTH_RESP=$(curl -s -b "$COOKIE_JAR" "http://127.0.0.1:$PORTAL_PORT/api/projects/$PROJ_ID/links/health")
+  echo "  Project $PROJ_ID link health: $HEALTH_RESP"
+fi
+
+# 11. 验证内置 LLM 代理滑动窗口配额 API
+echo "--> 11. 验证 LLM 配额动态配置与读取..."
+QUOTA_GET=$(curl -s -b "$COOKIE_JAR" "http://127.0.0.1:$PORTAL_PORT/api/settings/llm-quota")
+echo "  Current LLM quota: $QUOTA_GET"
+QUOTA_PUT=$(curl -s -b "$COOKIE_JAR" -X PUT "http://127.0.0.1:$PORTAL_PORT/api/settings/llm-quota" \
+  -H "Content-Type: application/json" \
+  -d '{"max_tpm":500000,"max_rpm":3000,"day_start_hour":7,"night_start_hour":22}')
+echo "  Updated LLM quota: $QUOTA_PUT"
+
+# 12. 验证日志盘统计接口
+echo "--> 12. 验证独立日志盘统计接口..."
+LOGS_RESP=$(curl -s -b "$COOKIE_JAR" "http://127.0.0.1:$PORTAL_PORT/api/logs/stats")
+echo "  Logs stats: $LOGS_RESP"
+
+# 13. 验证业务域 RBAC 授权体系
+echo "--> 13. 验证组长业务域授权与越权拦截..."
+curl -s -b "$COOKIE_JAR" -X POST "http://127.0.0.1:$PORTAL_PORT/portal/users/role" \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"leader1","role":"group_leader"}'
+curl -s -b "$COOKIE_JAR" -X POST "http://127.0.0.1:$PORTAL_PORT/portal/users/grant" \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"leader1","business_domain":"消费金融"}'
+
+LEADER_COOKIE="$RUNTIME_DIR/leader_cookie.txt"
+curl -s -c "$LEADER_COOKIE" -X POST "http://127.0.0.1:$PORTAL_PORT/portal/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"leader1","password":"password"}' > /dev/null
+
+LEADER_ME=$(curl -s -b "$LEADER_COOKIE" "http://127.0.0.1:$PORTAL_PORT/portal/me")
+echo "  Leader info: $LEADER_ME"
+
+# 组长触发越权仓库构建 (信贷中台仓库 credit-risk)，应被拦截为 403
+BLOCK_RESP=$(curl -s -w "%{http_code}" -b "$LEADER_COOKIE" -X POST "http://127.0.0.1:$PORTAL_PORT/portal/build/trigger" \
+  -H "Content-Type: application/json" \
+  -d '{"repo_id":"credit-risk"}')
+echo "  Leader trigger credit-risk HTTP status: ${BLOCK_RESP: -3}"
+if [ "${BLOCK_RESP: -3}" != "403" ]; then
+  echo "❌ 组长跨业务域越权未被 403 拦截！"
+  exit 1
+fi
+echo "  成功完成业务域 RBAC 越权拦截验证 (HTTP 403)"
+
 echo ""
 echo "=============================================================================="
 echo "🎉 二进制测试全部成功通过！"

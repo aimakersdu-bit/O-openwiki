@@ -42,7 +42,11 @@ echo "--> 编译 Portal ($GOOS/$GOARCH)..."
 cd "$ROOT_DIR/deploy/unit2-portal"
 go build -v -ldflags="-s -w" -o "$OUTPUT_DIR/portal" .
 
-chmod +x "$OUTPUT_DIR/orchestrator" "$OUTPUT_DIR/portal"
+echo "--> 编译 openwiki-migrate CLI ($GOOS/$GOARCH)..."
+cd "$ROOT_DIR/deploy/unit1-orchestrator/cmd/openwiki-migrate"
+go build -v -ldflags="-s -w" -o "$OUTPUT_DIR/openwiki-migrate" .
+
+chmod +x "$OUTPUT_DIR/orchestrator" "$OUTPUT_DIR/portal" "$OUTPUT_DIR/openwiki-migrate"
 
 # 4. 组装部署资源 (不包含 openwiki 源码或 dist 编译产物)
 echo ""
@@ -52,8 +56,11 @@ echo "=== [3/3] 组装 x86_64 部署包 ==="
 mkdir -p "$OUTPUT_DIR/scripts"
 if [ -d "$ROOT_DIR/deploy/unit1-orchestrator/scripts" ]; then
     cp -r "$ROOT_DIR/deploy/unit1-orchestrator/scripts/"* "$OUTPUT_DIR/scripts/"
-    chmod +x "$OUTPUT_DIR/scripts/"*.sh 2>/dev/null || true
 fi
+if [ -f "$ROOT_DIR/deploy/scripts/backup-sqlite.sh" ]; then
+    cp "$ROOT_DIR/deploy/scripts/backup-sqlite.sh" "$OUTPUT_DIR/scripts/"
+fi
+chmod +x "$OUTPUT_DIR/scripts/"*.sh 2>/dev/null || true
 
 # 拷贝 assets (包含 index.html, client.js 及离线 vendor 库)
 mkdir -p "$OUTPUT_DIR/assets"
