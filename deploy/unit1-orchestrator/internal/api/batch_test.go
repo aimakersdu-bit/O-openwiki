@@ -3,8 +3,10 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -237,5 +239,73 @@ func TestDailyTokenUsageAndFeishuExport(t *testing.T) {
 	csvBody := wCSV.Body.String()
 	if !strings.Contains(csvBody, "100000,25000,125000,300000,10,2") {
 		t.Errorf("CSV data row mismatch: %s", csvBody)
+	}
+}
+
+func TestStorageVolumesAndBatchPlacement(t *testing.T) {
+	server, database, tmpDir := setupTestServer(t)
+	defer database.Close()
+
+	volDir := filepath.Join(tmpDir, "data_vol1")
+	_ = os.MkdirAll(volDir, 0755)
+
+	server.GetVolumeManager().SetStatfsFunc(func(path string) (int64, int64, error) {
+		return 1000 * 1024 * 1024 * 1024, 100 * 1024 * 1024 * 1024, nil
+	})
+
+	// 1. Register volume via POST /api/storage/volumes
+	payload := fmt.Sprintf(`{"id":"vol1","mount_point":%q}`, volDir)
+	reqPost := httptest.NewRequest(http.MethodPost, "/api/storage/volumes", strings.NewReader(payload))
+	reqPost.Header.Set("Content-Type", "application/json")
+	wPost := httptest.NewRecorder()
+	server.ServeHTTP(wPost, reqPost)
+
+	if wPost.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", wPost.Code, wPost.Body.String())
+	}
+
+	// 2. Query volume via GET /api/storage/volumes
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/storage/volumes", nil)
+	wGet := httptest.NewRecorder()
+	server.ServeHTTP(wGet, reqGet)
+
+	var getResp struct {
+		Volumes []db.Volume `json:"volumes"`
+	}
+	_ = json.NewDecoder(wGet.Body).Decode(&getResp)
+	if len(getResp.Volumes) != 1 || getResp.Volumes[0].ID != "vol1" {
+		t.Fatalf("expected 1 volume 'vol1', got %+v", getResp.Volumes)
+	}
+
+	// 3. Import repo and verify placed on vol1
+	importPayload := `{
+		"batch_name": "多盘放置测试",
+		"concurrency": 2,
+		"repos": [
+			{
+				"id": "trade-gateway",
+				"name": "交易网关",
+				"git_url": "git@github.com:bank/trade-gateway.git",
+				"branch": "master",
+				"tier": "A",
+				"business_domain": "零售业务"
+			}
+		]
+	}`
+	reqImport := httptest.NewRequest(http.MethodPost, "/api/repos/batch-import", strings.NewReader(importPayload))
+	reqImport.Header.Set("Content-Type", "application/json")
+	wImport := httptest.NewRecorder()
+	server.ServeHTTP(wImport, reqImport)
+
+	if wImport.Code != http.StatusOK && wImport.Code != http.StatusCreated {
+		t.Fatalf("expected 200/201 on batch import, got %d", wImport.Code)
+	}
+
+	repo, err := database.GetRepo("trade-gateway")
+	if err != nil || repo == nil {
+		t.Fatalf("expected repo trade-gateway created, got %v", err)
+	}
+	if repo.VolumeID != "vol1" {
+		t.Fatalf("expected repo placed on vol1, got %s", repo.VolumeID)
 	}
 }

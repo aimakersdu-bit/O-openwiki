@@ -86,6 +86,15 @@ func (s *Server) handleBatchImport(w http.ResponseWriter, r *http.Request) {
 			item.Branch = "master"
 		}
 		localPath := filepath.Join(s.config.ReposBaseDir, item.ID)
+		var volumeID string
+		if s.volumeManager != nil {
+			if vol, err := s.volumeManager.SelectVolumeForRepo(item.ID, 0); err == nil && vol != nil {
+				volumeID = vol.ID
+				if _, symlinkPath, err := s.volumeManager.CreateRepoPlacement(item.ID, vol.ID); err == nil && symlinkPath != "" {
+					localPath = symlinkPath
+				}
+			}
+		}
 
 		repo := &db.Repo{
 			ID:             item.ID,
@@ -98,6 +107,7 @@ func (s *Server) handleBatchImport(w http.ResponseWriter, r *http.Request) {
 			Tier:           item.Tier,
 			BusinessDomain: item.BusinessDomain,
 			LastReleaseAt:  item.LastReleaseAt,
+			VolumeID:       volumeID,
 			Status:         "active",
 		}
 

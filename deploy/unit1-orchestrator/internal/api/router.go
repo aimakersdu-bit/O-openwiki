@@ -5,15 +5,18 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/openwiki/orchestrator/internal/config"
+	"github.com/openwiki/orchestrator/internal/db"
 	"github.com/openwiki/orchestrator/internal/llmproxy"
 	"github.com/openwiki/orchestrator/internal/mcp"
 	"github.com/openwiki/orchestrator/internal/qa"
 	"github.com/openwiki/orchestrator/internal/scheduler"
+	"github.com/openwiki/orchestrator/internal/storage"
 )
 
 func logPrintf(format string, v ...interface{}) {
@@ -22,13 +25,14 @@ func logPrintf(format string, v ...interface{}) {
 
 // Server holds API handlers and dependencies.
 type Server struct {
-	config    *config.Config
-	scheduler *scheduler.Scheduler
-	qaPool    *qa.Pool
-	qaManager *qa.Manager
-	mcpServer *mcp.Server
-	llmProxy  *llmproxy.LLMProxy
-	mux       *http.ServeMux
+	config        *config.Config
+	scheduler     *scheduler.Scheduler
+	qaPool        *qa.Pool
+	qaManager     *qa.Manager
+	mcpServer     *mcp.Server
+	llmProxy      *llmproxy.LLMProxy
+	volumeManager *storage.VolumeManager
+	mux           *http.ServeMux
 
 	sseMu    sync.RWMutex
 	sseChans map[chan string]bool
@@ -61,6 +65,12 @@ func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, ma
 		s.llmProxy = llmproxy.NewLLMProxy(cfg.OpenAIUpstreamURL, cfg.OpenwikiAPIKey, nil, throttleCallback)
 	}
 
+	linksDir := "/data/disk0/links/repos"
+	if cfg != nil && cfg.ReposBaseDir != "" {
+		linksDir = filepath.Join(filepath.Dir(cfg.ReposBaseDir), "disk0", "links", "repos")
+	}
+	s.volumeManager = storage.NewVolumeManager(s.getDB(), linksDir)
+
 	if s.llmProxy != nil && sched != nil {
 		if sched.GetBuilder() != nil {
 			port := "3000"
@@ -81,6 +91,16 @@ func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, ma
 // GetLLMProxy returns the configured LLMProxy instance.
 func (s *Server) GetLLMProxy() *llmproxy.LLMProxy {
 	return s.llmProxy
+}
+
+// GetVolumeManager returns the VolumeManager instance.
+func (s *Server) GetVolumeManager() *storage.VolumeManager {
+	return s.volumeManager
+}
+
+// SetVolumeManager overrides the VolumeManager (useful for testing).
+func (s *Server) SetVolumeManager(vm *storage.VolumeManager) {
+	s.volumeManager = vm
 }
 
 func (s *Server) routes() {
@@ -114,6 +134,9 @@ func (s *Server) routes() {
 
 	// LLM Quota & Dynamic Rate Limit Settings API
 	s.mux.HandleFunc("/api/settings/llm-quota", s.handleLLMQuota)
+
+	// Storage Pool & Volumes Management API
+	s.mux.HandleFunc("/api/storage/volumes", s.handleStorageVolumes)
 
 	// MCP Protocol Endpoints (MCP 2025 Streamable HTTP & Legacy Remote SSE fallback)
 	if s.mcpServer != nil {
@@ -271,6 +294,61 @@ func (s *Server) handleLLMQuota(w http.ResponseWriter, r *http.Request) {
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok","message":"llm quota settings updated successfully"}`))
+
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleStorageVolumes(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	database := s.getDB()
+
+	switch r.Method {
+	case http.MethodGet:
+		volumes, err := database.ListVolumes()
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"list volumes: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"volumes": volumes,
+		})
+
+	case http.MethodPost:
+		var req struct {
+			ID         string `json:"id"`
+			MountPoint string `json:"mount_point"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
+			return
+		}
+		if req.ID == "" || req.MountPoint == "" {
+			http.Error(w, `{"error":"id and mount_point are required"}`, http.StatusBadRequest)
+			return
+		}
+
+		if s.volumeManager != nil {
+			vol, err := s.volumeManager.RegisterVolume(req.ID, req.MountPoint)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"register volume: %v"}`, err), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(vol)
+			return
+		}
+
+		v := &db.Volume{
+			ID:         req.ID,
+			MountPoint: req.MountPoint,
+			Status:     "active",
+		}
+		if err := database.CreateVolume(v); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"create volume: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(v)
 
 	default:
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)

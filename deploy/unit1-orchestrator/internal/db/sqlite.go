@@ -298,6 +298,27 @@ func (db *DB) migrate() error {
 			value      TEXT NOT NULL,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS volumes (
+			id          TEXT PRIMARY KEY,
+			mount_point TEXT NOT NULL,
+			total_bytes INTEGER NOT NULL DEFAULT 0,
+			used_bytes  INTEGER NOT NULL DEFAULT 0,
+			status      TEXT NOT NULL DEFAULT 'active',
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS volume_migrations (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			repo_id        TEXT NOT NULL,
+			from_volume_id TEXT NOT NULL,
+			to_volume_id   TEXT NOT NULL,
+			status         TEXT NOT NULL DEFAULT 'planned',
+			error          TEXT,
+			started_at     DATETIME,
+			finished_at    DATETIME,
+			created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
 	}
 
 	for _, bt := range batchTables {
@@ -305,6 +326,10 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("exec batch table creation: %w", err)
 		}
 	}
+
+	// Schema migrations for existing tables
+	_, _ = db.conn.Exec(`ALTER TABLE repos ADD COLUMN volume_id TEXT DEFAULT ''`)
+	_, _ = db.conn.Exec(`ALTER TABLE repos ADD COLUMN size_bytes INTEGER DEFAULT 0`)
 
 	defaultSettings := map[string]string{
 		"max_tpm":               "0",
@@ -352,6 +377,8 @@ type Repo struct {
 	Tier           string `json:"tier"`            // A, B, C 等级
 	BusinessDomain string `json:"business_domain"` // 所属微服务业务域
 	LastReleaseAt  string `json:"last_release_at"` // 最近发版时间
+	VolumeID       string `json:"volume_id"`       // 所在物理数据盘ID (如 vol1, vol2)
+	SizeBytes      int64  `json:"size_bytes"`      // 仓库实际占用磁盘字节数
 	CreatedAt      string `json:"created_at"`
 	UpdatedAt      string `json:"updated_at"`
 }
@@ -361,6 +388,7 @@ func (db *DB) ListRepos() ([]Repo, error) {
 	rows, err := db.conn.Query(`SELECT id, name, git_url, branch, local_path, 
 		COALESCE(wiki_dir,''), COALESCE(static_dir,''), schedule, status, 
 		COALESCE(tier,'B'), COALESCE(business_domain,''), COALESCE(last_release_at,''),
+		COALESCE(volume_id,''), COALESCE(size_bytes, 0),
 		created_at, updated_at FROM repos ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -373,6 +401,7 @@ func (db *DB) ListRepos() ([]Repo, error) {
 		if err := rows.Scan(&r.ID, &r.Name, &r.GitURL, &r.Branch, &r.LocalPath,
 			&r.WikiDir, &r.StaticDir, &r.Schedule, &r.Status,
 			&r.Tier, &r.BusinessDomain, &r.LastReleaseAt,
+			&r.VolumeID, &r.SizeBytes,
 			&r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -387,10 +416,12 @@ func (db *DB) GetRepo(id string) (*Repo, error) {
 	err := db.conn.QueryRow(`SELECT id, name, git_url, branch, local_path, 
 		COALESCE(wiki_dir,''), COALESCE(static_dir,''), schedule, status, 
 		COALESCE(tier,'B'), COALESCE(business_domain,''), COALESCE(last_release_at,''),
+		COALESCE(volume_id,''), COALESCE(size_bytes, 0),
 		created_at, updated_at FROM repos WHERE id = ?`, id).
 		Scan(&r.ID, &r.Name, &r.GitURL, &r.Branch, &r.LocalPath,
 			&r.WikiDir, &r.StaticDir, &r.Schedule, &r.Status,
 			&r.Tier, &r.BusinessDomain, &r.LastReleaseAt,
+			&r.VolumeID, &r.SizeBytes,
 			&r.CreatedAt, &r.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -414,10 +445,12 @@ func (db *DB) GetRepoByNameOrID(identifier string) (*Repo, error) {
 	err = db.conn.QueryRow(`SELECT id, name, git_url, branch, local_path, 
 		COALESCE(wiki_dir,''), COALESCE(static_dir,''), schedule, status, 
 		COALESCE(tier,'B'), COALESCE(business_domain,''), COALESCE(last_release_at,''),
+		COALESCE(volume_id,''), COALESCE(size_bytes, 0),
 		created_at, updated_at FROM repos WHERE name = ? LIMIT 1`, identifier).
 		Scan(&r.ID, &r.Name, &r.GitURL, &r.Branch, &r.LocalPath,
 			&r.WikiDir, &r.StaticDir, &r.Schedule, &r.Status,
 			&r.Tier, &r.BusinessDomain, &r.LastReleaseAt,
+			&r.VolumeID, &r.SizeBytes,
 			&r.CreatedAt, &r.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -431,10 +464,10 @@ func (db *DB) CreateRepo(r *Repo) error {
 	if tier == "" {
 		tier = "B"
 	}
-	_, err := db.conn.Exec(`INSERT INTO repos (id, name, git_url, branch, local_path, wiki_dir, static_dir, schedule, status, tier, business_domain, last_release_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := db.conn.Exec(`INSERT INTO repos (id, name, git_url, branch, local_path, wiki_dir, static_dir, schedule, status, tier, business_domain, last_release_at, volume_id, size_bytes)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.Name, r.GitURL, r.Branch, r.LocalPath, r.WikiDir, r.StaticDir, r.Schedule, r.Status,
-		tier, r.BusinessDomain, r.LastReleaseAt)
+		tier, r.BusinessDomain, r.LastReleaseAt, r.VolumeID, r.SizeBytes)
 	return err
 }
 
@@ -445,8 +478,8 @@ func (db *DB) UpdateRepo(r *Repo) error {
 	if tier == "" {
 		tier = "B"
 	}
-	_, err := db.conn.Exec(`UPDATE repos SET name = ?, git_url = ?, branch = ?, local_path = ?, wiki_dir = ?, static_dir = ?, schedule = ?, status = ?, tier = ?, business_domain = ?, last_release_at = ?, updated_at = ? WHERE id = ?`,
-		r.Name, r.GitURL, r.Branch, r.LocalPath, r.WikiDir, r.StaticDir, r.Schedule, r.Status, tier, r.BusinessDomain, r.LastReleaseAt, timeStr, r.ID)
+	_, err := db.conn.Exec(`UPDATE repos SET name = ?, git_url = ?, branch = ?, local_path = ?, wiki_dir = ?, static_dir = ?, schedule = ?, status = ?, tier = ?, business_domain = ?, last_release_at = ?, volume_id = ?, size_bytes = ?, updated_at = ? WHERE id = ?`,
+		r.Name, r.GitURL, r.Branch, r.LocalPath, r.WikiDir, r.StaticDir, r.Schedule, r.Status, tier, r.BusinessDomain, r.LastReleaseAt, r.VolumeID, r.SizeBytes, timeStr, r.ID)
 	return err
 }
 
@@ -1249,4 +1282,180 @@ func SetSetting(key, val string) error {
 
 func GetAllSettings() (map[string]string, error) {
 	return globalDB.GetAllSettings()
+}
+
+// --- Storage Volumes & Migrations ---
+
+type Volume struct {
+	ID         string `json:"id"`
+	MountPoint string `json:"mount_point"`
+	TotalBytes int64  `json:"total_bytes"`
+	UsedBytes  int64  `json:"used_bytes"`
+	Status     string `json:"status"` // "active", "read_only", "disabled"
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
+}
+
+type VolumeMigration struct {
+	ID           int64  `json:"id"`
+	RepoID       string `json:"repo_id"`
+	FromVolumeID string `json:"from_volume_id"`
+	ToVolumeID   string `json:"to_volume_id"`
+	Status       string `json:"status"` // planned, syncing, frozen, delta, verifying, switched, retained, rollback
+	Error        string `json:"error"`
+	StartedAt    string `json:"started_at"`
+	FinishedAt   string `json:"finished_at"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+}
+
+// CreateVolume inserts a storage volume.
+func (db *DB) CreateVolume(v *Volume) error {
+	status := v.Status
+	if status == "" {
+		status = "active"
+	}
+	_, err := db.conn.Exec(`INSERT INTO volumes (id, mount_point, total_bytes, used_bytes, status)
+		VALUES (?, ?, ?, ?, ?)`, v.ID, v.MountPoint, v.TotalBytes, v.UsedBytes, status)
+	return err
+}
+
+// GetVolume retrieves a volume by ID.
+func (db *DB) GetVolume(id string) (*Volume, error) {
+	var v Volume
+	err := db.conn.QueryRow(`SELECT id, mount_point, total_bytes, used_bytes, status, created_at, updated_at
+		FROM volumes WHERE id = ?`, id).
+		Scan(&v.ID, &v.MountPoint, &v.TotalBytes, &v.UsedBytes, &v.Status, &v.CreatedAt, &v.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &v, nil
+}
+
+// ListVolumes returns all configured storage volumes.
+func (db *DB) ListVolumes() ([]Volume, error) {
+	rows, err := db.conn.Query(`SELECT id, mount_point, total_bytes, used_bytes, status, created_at, updated_at
+		FROM volumes ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []Volume
+	for rows.Next() {
+		var v Volume
+		if err := rows.Scan(&v.ID, &v.MountPoint, &v.TotalBytes, &v.UsedBytes, &v.Status, &v.CreatedAt, &v.UpdatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, v)
+	}
+	return list, rows.Err()
+}
+
+// UpdateVolumeUsage updates the observed used and total capacity of a volume.
+func (db *DB) UpdateVolumeUsage(id string, usedBytes, totalBytes int64) error {
+	_, err := db.conn.Exec(`UPDATE volumes SET used_bytes = ?, total_bytes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		usedBytes, totalBytes, id)
+	return err
+}
+
+// UpdateRepoVolumeAndSize updates the volume_id and/or size_bytes of a repository.
+func (db *DB) UpdateRepoVolumeAndSize(repoID, volumeID string, sizeBytes int64) error {
+	if volumeID != "" {
+		_, err := db.conn.Exec(`UPDATE repos SET volume_id = ?, size_bytes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			volumeID, sizeBytes, repoID)
+		return err
+	}
+	_, err := db.conn.Exec(`UPDATE repos SET size_bytes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		sizeBytes, repoID)
+	return err
+}
+
+// GetRepoCountByVolume returns the number of repositories mapped to each volume.
+func (db *DB) GetRepoCountByVolume() (map[string]int, error) {
+	rows, err := db.conn.Query(`SELECT volume_id, COUNT(*) FROM repos WHERE volume_id != '' GROUP BY volume_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var volID string
+		var cnt int
+		if err := rows.Scan(&volID, &cnt); err != nil {
+			return nil, err
+		}
+		counts[volID] = cnt
+	}
+	return counts, rows.Err()
+}
+
+// CreateVolumeMigration inserts a new volume migration record.
+func (db *DB) CreateVolumeMigration(m *VolumeMigration) (int64, error) {
+	res, err := db.conn.Exec(`INSERT INTO volume_migrations (repo_id, from_volume_id, to_volume_id, status, error)
+		VALUES (?, ?, ?, ?, ?)`, m.RepoID, m.FromVolumeID, m.ToVolumeID, m.Status, m.Error)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// UpdateVolumeMigration updates status, error, and timestamps of a migration.
+func (db *DB) UpdateVolumeMigration(id int64, status, errMsg string) error {
+	var finishedClause string
+	if status == "switched" || status == "retained" || status == "rollback" {
+		finishedClause = ", finished_at = CURRENT_TIMESTAMP"
+	} else if status == "syncing" {
+		finishedClause = ", started_at = CURRENT_TIMESTAMP"
+	}
+	query := fmt.Sprintf(`UPDATE volume_migrations SET status = ?, error = ?, updated_at = CURRENT_TIMESTAMP%s WHERE id = ?`, finishedClause)
+	_, err := db.conn.Exec(query, status, errMsg, id)
+	return err
+}
+
+// GetVolumeMigration retrieves a migration by ID.
+func (db *DB) GetVolumeMigration(id int64) (*VolumeMigration, error) {
+	var m VolumeMigration
+	var errStr, startedAt, finishedAt sql.NullString
+	err := db.conn.QueryRow(`SELECT id, repo_id, from_volume_id, to_volume_id, status, error, started_at, finished_at, created_at, updated_at
+		FROM volume_migrations WHERE id = ?`, id).
+		Scan(&m.ID, &m.RepoID, &m.FromVolumeID, &m.ToVolumeID, &m.Status, &errStr, &startedAt, &finishedAt, &m.CreatedAt, &m.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	m.Error = errStr.String
+	m.StartedAt = startedAt.String
+	m.FinishedAt = finishedAt.String
+	return &m, nil
+}
+
+// ListVolumeMigrations returns all migration records.
+func (db *DB) ListVolumeMigrations() ([]VolumeMigration, error) {
+	rows, err := db.conn.Query(`SELECT id, repo_id, from_volume_id, to_volume_id, status, error, started_at, finished_at, created_at, updated_at
+		FROM volume_migrations ORDER BY id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []VolumeMigration
+	for rows.Next() {
+		var m VolumeMigration
+		var errStr, startedAt, finishedAt sql.NullString
+		if err := rows.Scan(&m.ID, &m.RepoID, &m.FromVolumeID, &m.ToVolumeID, &m.Status, &errStr, &startedAt, &finishedAt, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, err
+		}
+		m.Error = errStr.String
+		m.StartedAt = startedAt.String
+		m.FinishedAt = finishedAt.String
+		list = append(list, m)
+	}
+	return list, rows.Err()
 }
