@@ -257,6 +257,17 @@ func (m *Manager) cleanupWorker(wp *WorkerProcess) {
 	_ = os.Remove(wp.SocketPath)
 }
 
+// Evict terminates and removes any active QA worker daemon for the given repository.
+func (m *Manager) Evict(repoID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if wp, exists := m.workers[repoID]; exists {
+		m.cleanupWorker(wp)
+		delete(m.workers, repoID)
+		log.Printf("[QA-Manager] Evicted worker daemon for repo %s", repoID)
+	}
+}
+
 // ChatPayload represents the request JSON payload sent to the Worker.
 type ChatPayload struct {
 	Question  string `json:"question"`

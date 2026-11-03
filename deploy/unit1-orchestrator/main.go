@@ -60,6 +60,13 @@ func main() {
 	// Create API router
 	server := api.NewServer(cfg, sched, qaPool, qaManager, mcpServer)
 
+	// Recover interrupted migrations on startup
+	if server.GetMigrator() != nil {
+		if err := server.GetMigrator().ResumeOnRestart(); err != nil {
+			log.Printf("Warning: ResumeOnRestart failed: %v", err)
+		}
+	}
+
 	addr := cfg.ListenAddr
 	if addr == "" {
 		addr = ":3000"

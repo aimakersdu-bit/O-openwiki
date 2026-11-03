@@ -32,6 +32,7 @@ type Server struct {
 	mcpServer     *mcp.Server
 	llmProxy      *llmproxy.LLMProxy
 	volumeManager *storage.VolumeManager
+	migrator      *storage.Migrator
 	mux           *http.ServeMux
 
 	sseMu    sync.RWMutex
@@ -70,6 +71,7 @@ func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, ma
 		linksDir = filepath.Join(filepath.Dir(cfg.ReposBaseDir), "disk0", "links", "repos")
 	}
 	s.volumeManager = storage.NewVolumeManager(s.getDB(), linksDir)
+	s.migrator = storage.NewMigrator(s.getDB(), s.volumeManager, manager, linksDir)
 
 	if s.llmProxy != nil && sched != nil {
 		if sched.GetBuilder() != nil {
@@ -101,6 +103,16 @@ func (s *Server) GetVolumeManager() *storage.VolumeManager {
 // SetVolumeManager overrides the VolumeManager (useful for testing).
 func (s *Server) SetVolumeManager(vm *storage.VolumeManager) {
 	s.volumeManager = vm
+}
+
+// GetMigrator returns the configured Migrator instance.
+func (s *Server) GetMigrator() *storage.Migrator {
+	return s.migrator
+}
+
+// SetMigrator overrides the Migrator (useful for testing).
+func (s *Server) SetMigrator(m *storage.Migrator) {
+	s.migrator = m
 }
 
 func (s *Server) routes() {
@@ -137,6 +149,9 @@ func (s *Server) routes() {
 
 	// Storage Pool & Volumes Management API
 	s.mux.HandleFunc("/api/storage/volumes", s.handleStorageVolumes)
+	s.mux.HandleFunc("/api/storage/rebalance/plan", s.handleRebalancePlan)
+	s.mux.HandleFunc("/api/storage/migrations", s.handleMigrations)
+	s.mux.HandleFunc("/api/storage/migrations/", s.handleMigrationAction)
 
 	// MCP Protocol Endpoints (MCP 2025 Streamable HTTP & Legacy Remote SSE fallback)
 	if s.mcpServer != nil {
@@ -352,5 +367,113 @@ func (s *Server) handleStorageVolumes(w http.ResponseWriter, r *http.Request) {
 
 	default:
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleRebalancePlan(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if s.migrator == nil {
+		http.Error(w, `{"error":"migrator not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+	plan, err := s.migrator.GenerateRebalancePlan()
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"generate rebalance plan: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"plan": plan,
+	})
+}
+
+func (s *Server) handleMigrations(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	database := s.getDB()
+
+	switch r.Method {
+	case http.MethodGet:
+		migrations, err := database.ListVolumeMigrations()
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"list migrations: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"migrations": migrations,
+		})
+
+	case http.MethodPost:
+		var req struct {
+			RepoID     string `json:"repo_id"`
+			ToVolumeID string `json:"to_volume_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
+			return
+		}
+		if req.RepoID == "" || req.ToVolumeID == "" {
+			http.Error(w, `{"error":"repo_id and to_volume_id are required"}`, http.StatusBadRequest)
+			return
+		}
+		if s.migrator == nil {
+			http.Error(w, `{"error":"migrator not initialized"}`, http.StatusInternalServerError)
+			return
+		}
+
+		mig, err := s.migrator.Migrate(r.Context(), req.RepoID, req.ToVolumeID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"migrate error: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(mig)
+
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleMigrationAction(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if s.migrator == nil {
+		http.Error(w, `{"error":"migrator not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/storage/migrations/"), "/")
+	if len(parts) < 2 {
+		http.Error(w, `{"error":"invalid migration action url"}`, http.StatusBadRequest)
+		return
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		http.Error(w, `{"error":"invalid migration id"}`, http.StatusBadRequest)
+		return
+	}
+	action := parts[1]
+
+	switch action {
+	case "rollback":
+		if err := s.migrator.Rollback(r.Context(), id); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"rollback failed: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "message": "migration rolled back"})
+
+	case "cleanup":
+		if err := s.migrator.CleanupRetained(id); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"cleanup failed: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "message": "old replica cleaned up"})
+
+	default:
+		http.Error(w, fmt.Sprintf(`{"error":"unknown action %s"}`, action), http.StatusBadRequest)
 	}
 }

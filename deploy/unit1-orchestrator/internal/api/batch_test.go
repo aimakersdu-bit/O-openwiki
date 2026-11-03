@@ -31,6 +31,7 @@ func setupTestServer(t *testing.T) (*api.Server, *db.DB, string) {
 		DBPath:          dbPath,
 		ProjectsBaseDir: filepath.Join(tmpDir, "projects"),
 		StaticOutputDir: filepath.Join(tmpDir, "static"),
+		ReposBaseDir:    filepath.Join(tmpDir, "repos"),
 		OpenwikiCLI:     "openwiki",
 	}
 
@@ -307,5 +308,70 @@ func TestStorageVolumesAndBatchPlacement(t *testing.T) {
 	}
 	if repo.VolumeID != "vol1" {
 		t.Fatalf("expected repo placed on vol1, got %s", repo.VolumeID)
+	}
+}
+
+func TestMigrationAndRebalanceAPI(t *testing.T) {
+	server, database, tmpDir := setupTestServer(t)
+	defer database.Close()
+
+	vol1Path := filepath.Join(tmpDir, "vol1")
+	vol2Path := filepath.Join(tmpDir, "vol2")
+	_ = os.MkdirAll(vol1Path, 0755)
+	_ = os.MkdirAll(vol2Path, 0755)
+
+	_, _ = server.GetVolumeManager().RegisterVolume("vol1", vol1Path)
+	_, _ = server.GetVolumeManager().RegisterVolume("vol2", vol2Path)
+
+	repoID := "core-banking"
+	physicalVol1, symlinkPath, _ := server.GetVolumeManager().CreateRepoPlacement(repoID, "vol1")
+	_ = os.WriteFile(filepath.Join(physicalVol1, "main.go"), []byte("package main"), 0644)
+
+	repo := &db.Repo{
+		ID:        repoID,
+		Name:      "Core Banking",
+		VolumeID:  "vol1",
+		Status:    "active",
+		LocalPath: symlinkPath,
+	}
+	_ = database.CreateRepo(repo)
+
+	// 1. GET /api/storage/rebalance/plan
+	reqPlan := httptest.NewRequest(http.MethodGet, "/api/storage/rebalance/plan", nil)
+	wPlan := httptest.NewRecorder()
+	server.ServeHTTP(wPlan, reqPlan)
+	if wPlan.Code != http.StatusOK {
+		t.Fatalf("expected 200 on rebalance plan, got %d", wPlan.Code)
+	}
+
+	// 2. POST /api/storage/migrations (migrate core-banking from vol1 to vol2)
+	migPayload := fmt.Sprintf(`{"repo_id":%q,"to_volume_id":"vol2"}`, repoID)
+	reqMig := httptest.NewRequest(http.MethodPost, "/api/storage/migrations", strings.NewReader(migPayload))
+	reqMig.Header.Set("Content-Type", "application/json")
+	wMig := httptest.NewRecorder()
+	server.ServeHTTP(wMig, reqMig)
+
+	if wMig.Code != http.StatusOK {
+		t.Fatalf("expected 200 on migration trigger, got %d: %s", wMig.Code, wMig.Body.String())
+	}
+
+	var mig db.VolumeMigration
+	_ = json.NewDecoder(wMig.Body).Decode(&mig)
+	if mig.Status != "retained" {
+		t.Fatalf("expected migration status retained, got %s", mig.Status)
+	}
+
+	// 3. POST /api/storage/migrations/{id}/rollback
+	reqRollback := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/storage/migrations/%d/rollback", mig.ID), nil)
+	wRollback := httptest.NewRecorder()
+	server.ServeHTTP(wRollback, reqRollback)
+
+	if wRollback.Code != http.StatusOK {
+		t.Fatalf("expected 200 on rollback, got %d: %s", wRollback.Code, wRollback.Body.String())
+	}
+
+	r, _ := database.GetRepo(repoID)
+	if r.VolumeID != "vol1" {
+		t.Fatalf("expected repo volume restored to vol1, got %s", r.VolumeID)
 	}
 }
