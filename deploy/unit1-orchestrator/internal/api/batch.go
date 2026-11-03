@@ -336,8 +336,26 @@ func (s *Server) handleDailyTokens(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	authCtx := GetAuthContext(r)
+	domainFilter := r.URL.Query().Get("domain")
+	if authCtx.Role == "group_leader" && len(authCtx.AuthorizedDomains) > 0 {
+		if domainFilter != "" && !authCtx.IsDomainAuthorized(domainFilter) {
+			http.Error(w, "Forbidden: unauthorized domain", http.StatusForbidden)
+			return
+		}
+		if domainFilter == "" {
+			domainFilter = authCtx.AuthorizedDomains[0]
+		}
+	}
+
 	database := s.getDB()
-	list, err := database.ListDailyTokenUsage(limit)
+	var list []db.DailyTokenUsage
+	var err error
+	if domainFilter != "" {
+		list, err = database.ListDailyTokenUsage(limit, domainFilter)
+	} else {
+		list, err = database.ListDailyTokenUsage(limit)
+	}
 	if err != nil {
 		http.Error(w, "Failed to list daily tokens: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -359,8 +377,26 @@ func (s *Server) handleTokensExport(w http.ResponseWriter, r *http.Request) {
 		format = "tsv"
 	}
 
+	authCtx := GetAuthContext(r)
+	domainFilter := r.URL.Query().Get("domain")
+	if authCtx.Role == "group_leader" && len(authCtx.AuthorizedDomains) > 0 {
+		if domainFilter != "" && !authCtx.IsDomainAuthorized(domainFilter) {
+			http.Error(w, "Forbidden: unauthorized domain", http.StatusForbidden)
+			return
+		}
+		if domainFilter == "" {
+			domainFilter = authCtx.AuthorizedDomains[0]
+		}
+	}
+
 	database := s.getDB()
-	list, err := database.ListDailyTokenUsage(365)
+	var list []db.DailyTokenUsage
+	var err error
+	if domainFilter != "" {
+		list, err = database.ListDailyTokenUsage(365, domainFilter)
+	} else {
+		list, err = database.ListDailyTokenUsage(365)
+	}
 	if err != nil {
 		http.Error(w, "Failed to export token telemetry: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -370,19 +406,37 @@ func (s *Server) handleTokensExport(w http.ResponseWriter, r *http.Request) {
 	if format == "csv" {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.Header().Set("Content-Disposition", "attachment; filename=openwiki_daily_tokens.csv")
-		sb.WriteString("日期,Prompt消耗Tokens,Completion消耗Tokens,总消耗Tokens,Diff跳过节省Tokens,构建仓库数,跳过仓库数,更新时间\n")
+		// Write UTF-8 BOM for Microsoft Excel compatibility
+		sb.WriteString("\xEF\xBB\xBF")
+		sb.WriteString("日期,业务域,构建成功仓数,增量跳过仓数,总消耗Token,输入PromptToken,补全CompletionToken,节约Token估算,模型限流重试次数,平均单仓耗时\n")
 		for _, u := range list {
-			sb.WriteString(fmt.Sprintf("%s,%d,%d,%d,%d,%d,%d,%s\n",
-				u.Date, u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.SavedTokens, u.BuildCount, u.SkippedCount, u.UpdatedAt))
+			domainName := u.BusinessDomain
+			if domainName == "" {
+				domainName = "全部业务域"
+			}
+			avgSec := 0.0
+			if u.BuildCount > 0 {
+				avgSec = float64(u.TotalDurationSec) / float64(u.BuildCount)
+			}
+			sb.WriteString(fmt.Sprintf("%s,%s,%d,%d,%d,%d,%d,%d,%d,%.1fs\n",
+				u.Date, domainName, u.BuildCount, u.SkippedCount, u.TotalTokens, u.PromptTokens, u.CompletionTokens, u.SavedTokens, u.ThrottledCount, avgSec))
 		}
 	} else {
 		// TSV format for direct paste into Feishu / Lark Base & Docs
 		w.Header().Set("Content-Type", "text/tab-separated-values; charset=utf-8")
 		w.Header().Set("Content-Disposition", "attachment; filename=openwiki_daily_tokens.tsv")
-		sb.WriteString("日期\tPrompt消耗Tokens\tCompletion消耗Tokens\t总消耗Tokens\tDiff跳过节省Tokens\t构建仓库数\t跳过仓库数\t更新时间\n")
+		sb.WriteString("日期\t业务域\t构建成功仓数\t增量跳过仓数\t总消耗Token\t输入PromptToken\t补全CompletionToken\t节约Token估算\t模型限流重试次数\t平均单仓耗时\n")
 		for _, u := range list {
-			sb.WriteString(fmt.Sprintf("%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
-				u.Date, u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.SavedTokens, u.BuildCount, u.SkippedCount, u.UpdatedAt))
+			domainName := u.BusinessDomain
+			if domainName == "" {
+				domainName = "全部业务域"
+			}
+			avgSec := 0.0
+			if u.BuildCount > 0 {
+				avgSec = float64(u.TotalDurationSec) / float64(u.BuildCount)
+			}
+			sb.WriteString(fmt.Sprintf("%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.1fs\n",
+				u.Date, domainName, u.BuildCount, u.SkippedCount, u.TotalTokens, u.PromptTokens, u.CompletionTokens, u.SavedTokens, u.ThrottledCount, avgSec))
 		}
 	}
 

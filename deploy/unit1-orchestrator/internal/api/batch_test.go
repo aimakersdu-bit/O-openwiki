@@ -185,12 +185,15 @@ func TestDailyTokenUsageAndFeishuExport(t *testing.T) {
 	// 记录两条每日 Token 统计
 	err := database.RecordDailyTokenUsage(&db.DailyTokenUsage{
 		Date:             "2026-10-29",
+		BusinessDomain:   "消费金融",
 		PromptTokens:     100000,
 		CompletionTokens: 25000,
 		TotalTokens:      125000,
 		SavedTokens:      300000,
 		BuildCount:       10,
 		SkippedCount:     2,
+		ThrottledCount:   3,
+		TotalDurationSec: 150,
 	})
 	if err != nil {
 		t.Fatalf("RecordDailyTokenUsage failed: %v", err)
@@ -213,7 +216,7 @@ func TestDailyTokenUsageAndFeishuExport(t *testing.T) {
 		t.Errorf("Expected total tokens 125000, got %v", dailyList)
 	}
 
-	// 2. 测试 TSV (飞书多维表格直接粘贴) 导出
+	// 2. 测试 TSV (飞书多维表格直接粘贴) 导出包含 10 个业务字段
 	reqTSV := httptest.NewRequest(http.MethodGet, "/api/telemetry/tokens/export?format=tsv", nil)
 	wTSV := httptest.NewRecorder()
 	server.ServeHTTP(wTSV, reqTSV)
@@ -222,14 +225,14 @@ func TestDailyTokenUsageAndFeishuExport(t *testing.T) {
 		t.Fatalf("Expected 200 OK for TSV export, got %d", wTSV.Code)
 	}
 	tsvBody := wTSV.Body.String()
-	if !strings.Contains(tsvBody, "Prompt消耗Tokens\tCompletion消耗Tokens\t总消耗Tokens") {
+	if !strings.Contains(tsvBody, "日期\t业务域\t构建成功仓数\t增量跳过仓数\t总消耗Token\t输入PromptToken\t补全CompletionToken\t节约Token估算\t模型限流重试次数\t平均单仓耗时") {
 		t.Errorf("TSV header mismatch: %s", tsvBody)
 	}
-	if !strings.Contains(tsvBody, "100000\t25000\t125000\t300000\t10\t2") {
+	if !strings.Contains(tsvBody, "2026-10-29\t消费金融\t10\t2\t125000\t100000\t25000\t300000\t3\t15.0s") {
 		t.Errorf("TSV data row mismatch: %s", tsvBody)
 	}
 
-	// 3. 测试 CSV 导出
+	// 3. 测试 CSV 导出 (带 UTF-8 BOM)
 	reqCSV := httptest.NewRequest(http.MethodGet, "/api/telemetry/tokens/export?format=csv", nil)
 	wCSV := httptest.NewRecorder()
 	server.ServeHTTP(wCSV, reqCSV)
@@ -238,8 +241,56 @@ func TestDailyTokenUsageAndFeishuExport(t *testing.T) {
 		t.Fatalf("Expected 200 OK for CSV export, got %d", wCSV.Code)
 	}
 	csvBody := wCSV.Body.String()
-	if !strings.Contains(csvBody, "100000,25000,125000,300000,10,2") {
+	if !strings.HasPrefix(csvBody, "\xEF\xBB\xBF") {
+		t.Errorf("CSV missing UTF-8 BOM prefix")
+	}
+	if !strings.Contains(csvBody, "2026-10-29,消费金融,10,2,125000,100000,25000,300000,3,15.0s") {
 		t.Errorf("CSV data row mismatch: %s", csvBody)
+	}
+}
+
+func TestRecoverInterruptedTasksOnStartup(t *testing.T) {
+	_, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	batchID := "batch-interrupted"
+	_ = database.CreateBatchRun(&db.BatchRun{
+		ID:     batchID,
+		Name:   "Interrupted Batch",
+		Status: "running",
+	})
+	_ = database.CreateRepo(&db.Repo{
+		ID:        "interrupted-repo-1",
+		Name:      "Interrupted 1",
+		GitURL:    "https://example.com/1.git",
+		LocalPath: "/tmp/1",
+	})
+
+	_ = database.CreateBatchTask(&db.BatchTask{
+		BatchID: batchID,
+		RepoID:  "interrupted-repo-1",
+		Status:  "running",
+	})
+
+	// Verify it is 'running'
+	tasks, _ := database.ListBatchTasks(batchID)
+	if len(tasks) != 1 || tasks[0].Status != "running" {
+		t.Fatalf("expected 1 running task, got %+v", tasks)
+	}
+
+	// Trigger recovery
+	recovered, err := database.RecoverInterruptedBatchTasks()
+	if err != nil {
+		t.Fatalf("RecoverInterruptedBatchTasks failed: %v", err)
+	}
+	if recovered != 1 {
+		t.Fatalf("expected 1 task recovered, got %d", recovered)
+	}
+
+	// Verify it became 'pending'
+	tasksAfter, _ := database.ListBatchTasks(batchID)
+	if len(tasksAfter) != 1 || tasksAfter[0].Status != "pending" {
+		t.Fatalf("expected task status 'pending' after recovery, got %s", tasksAfter[0].Status)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -15,7 +16,7 @@ type DB struct {
 
 // Open opens (or creates) the SQLite database and runs migrations.
 func Open(path string) (*DB, error) {
-	conn, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000")
+	conn, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_synchronous=FULL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("open db %s: %w", path, err)
 	}
@@ -286,14 +287,18 @@ func (db *DB) migrate() error {
 			UNIQUE(batch_id, repo_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS daily_token_usage (
-			date              TEXT PRIMARY KEY,
-			prompt_tokens     INTEGER DEFAULT 0,
-			completion_tokens INTEGER DEFAULT 0,
-			total_tokens      INTEGER DEFAULT 0,
-			saved_tokens      INTEGER DEFAULT 0,
-			build_count       INTEGER DEFAULT 0,
-			skipped_count     INTEGER DEFAULT 0,
-			updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+			date               TEXT NOT NULL,
+			business_domain    TEXT NOT NULL DEFAULT '',
+			prompt_tokens      INTEGER DEFAULT 0,
+			completion_tokens  INTEGER DEFAULT 0,
+			total_tokens       INTEGER DEFAULT 0,
+			saved_tokens       INTEGER DEFAULT 0,
+			build_count        INTEGER DEFAULT 0,
+			skipped_count      INTEGER DEFAULT 0,
+			throttled_count    INTEGER DEFAULT 0,
+			total_duration_sec INTEGER DEFAULT 0,
+			updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (date, business_domain)
 		)`,
 		`CREATE TABLE IF NOT EXISTS system_settings (
 			key        TEXT PRIMARY KEY,
@@ -332,6 +337,10 @@ func (db *DB) migrate() error {
 	// Schema migrations for existing tables
 	_, _ = db.conn.Exec(`ALTER TABLE repos ADD COLUMN volume_id TEXT DEFAULT ''`)
 	_, _ = db.conn.Exec(`ALTER TABLE repos ADD COLUMN size_bytes INTEGER DEFAULT 0`)
+	_, _ = db.conn.Exec(`ALTER TABLE daily_token_usage ADD COLUMN business_domain TEXT DEFAULT ''`)
+	_, _ = db.conn.Exec(`ALTER TABLE daily_token_usage ADD COLUMN throttled_count INTEGER DEFAULT 0`)
+	_, _ = db.conn.Exec(`ALTER TABLE daily_token_usage ADD COLUMN total_duration_sec INTEGER DEFAULT 0`)
+	_, _ = db.conn.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_tokens_pk ON daily_token_usage(date, business_domain)`)
 
 	defaultSettings := map[string]string{
 		"max_tpm":               "0",
@@ -1099,12 +1108,15 @@ type BatchTask struct {
 
 type DailyTokenUsage struct {
 	Date             string `json:"date"`
+	BusinessDomain   string `json:"business_domain"`
 	PromptTokens     int64  `json:"prompt_tokens"`
 	CompletionTokens int64  `json:"completion_tokens"`
 	TotalTokens      int64  `json:"total_tokens"`
 	SavedTokens      int64  `json:"saved_tokens"`
 	BuildCount       int    `json:"build_count"`
 	SkippedCount     int    `json:"skipped_count"`
+	ThrottledCount   int    `json:"throttled_count"`
+	TotalDurationSec int    `json:"total_duration_sec"`
 	UpdatedAt        string `json:"updated_at"`
 }
 
@@ -1202,26 +1214,36 @@ func (db *DB) ListBatchTasks(batchID string) ([]BatchTask, error) {
 }
 
 func (db *DB) RecordDailyTokenUsage(u *DailyTokenUsage) error {
-	_, err := db.conn.Exec(`INSERT INTO daily_token_usage (date, prompt_tokens, completion_tokens, total_tokens, saved_tokens, build_count, skipped_count, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(date) DO UPDATE SET
+	domain := u.BusinessDomain
+	_, err := db.conn.Exec(`INSERT INTO daily_token_usage (date, business_domain, prompt_tokens, completion_tokens, total_tokens, saved_tokens, build_count, skipped_count, throttled_count, total_duration_sec, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(date, business_domain) DO UPDATE SET
 			prompt_tokens = prompt_tokens + excluded.prompt_tokens,
 			completion_tokens = completion_tokens + excluded.completion_tokens,
 			total_tokens = total_tokens + excluded.total_tokens,
 			saved_tokens = saved_tokens + excluded.saved_tokens,
 			build_count = build_count + excluded.build_count,
 			skipped_count = skipped_count + excluded.skipped_count,
+			throttled_count = throttled_count + excluded.throttled_count,
+			total_duration_sec = total_duration_sec + excluded.total_duration_sec,
 			updated_at = CURRENT_TIMESTAMP`,
-		u.Date, u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.SavedTokens, u.BuildCount, u.SkippedCount)
+		u.Date, domain, u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.SavedTokens, u.BuildCount, u.SkippedCount, u.ThrottledCount, u.TotalDurationSec)
 	return err
 }
 
-func (db *DB) ListDailyTokenUsage(limit int) ([]DailyTokenUsage, error) {
+func (db *DB) ListDailyTokenUsage(limit int, domainFilter ...string) ([]DailyTokenUsage, error) {
 	if limit <= 0 {
 		limit = 30
 	}
-	rows, err := db.conn.Query(`SELECT date, prompt_tokens, completion_tokens, total_tokens, saved_tokens, build_count, skipped_count, updated_at
-		FROM daily_token_usage ORDER BY date DESC LIMIT ?`, limit)
+	var rows *sql.Rows
+	var err error
+	if len(domainFilter) > 0 && domainFilter[0] != "" {
+		rows, err = db.conn.Query(`SELECT date, COALESCE(business_domain, ''), prompt_tokens, completion_tokens, total_tokens, saved_tokens, build_count, skipped_count, COALESCE(throttled_count, 0), COALESCE(total_duration_sec, 0), updated_at
+			FROM daily_token_usage WHERE business_domain = ? ORDER BY date DESC LIMIT ?`, domainFilter[0], limit)
+	} else {
+		rows, err = db.conn.Query(`SELECT date, COALESCE(business_domain, ''), prompt_tokens, completion_tokens, total_tokens, saved_tokens, build_count, skipped_count, COALESCE(throttled_count, 0), COALESCE(total_duration_sec, 0), updated_at
+			FROM daily_token_usage ORDER BY date DESC, business_domain ASC LIMIT ?`, limit)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1230,12 +1252,25 @@ func (db *DB) ListDailyTokenUsage(limit int) ([]DailyTokenUsage, error) {
 	var list []DailyTokenUsage
 	for rows.Next() {
 		var u DailyTokenUsage
-		if err := rows.Scan(&u.Date, &u.PromptTokens, &u.CompletionTokens, &u.TotalTokens, &u.SavedTokens, &u.BuildCount, &u.SkippedCount, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.Date, &u.BusinessDomain, &u.PromptTokens, &u.CompletionTokens, &u.TotalTokens, &u.SavedTokens, &u.BuildCount, &u.SkippedCount, &u.ThrottledCount, &u.TotalDurationSec, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, u)
 	}
 	return list, nil
+}
+
+// RecoverInterruptedBatchTasks resets any residual running batch tasks to pending upon startup.
+func (db *DB) RecoverInterruptedBatchTasks() (int64, error) {
+	res, err := db.conn.Exec(`UPDATE batch_tasks SET status = 'pending' WHERE status = 'running'`)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		log.Printf("[batch_scheduler] Reset %d interrupted running tasks to pending on startup", n)
+	}
+	return n, nil
 }
 
 // --- System Settings DAO ---

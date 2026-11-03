@@ -60,7 +60,16 @@ func NewBatchScheduler(database *db.DB, pipeline *BuildPipeline, limiter *Dynami
 		windowEndHour:   7,
 	}
 	bs.pauseCond = sync.NewCond(&bs.mu)
+	_, _ = bs.RecoverInterruptedTasks()
 	return bs
+}
+
+// RecoverInterruptedTasks resets any residual running batch tasks to pending upon startup.
+func (bs *BatchScheduler) RecoverInterruptedTasks() (int64, error) {
+	if bs.db == nil {
+		return 0, nil
+	}
+	return bs.db.RecoverInterruptedBatchTasks()
 }
 
 // SetConcurrency dynamically updates the concurrency limit in real time.

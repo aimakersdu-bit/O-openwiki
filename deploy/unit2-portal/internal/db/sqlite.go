@@ -22,7 +22,7 @@ type Session struct {
 // InitDB opens SQLite connection and creates sessions table.
 func InitDB(dbPath string) error {
 	var err error
-	DB, err = sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
+	DB, err = sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_synchronous=FULL&_busy_timeout=5000")
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
