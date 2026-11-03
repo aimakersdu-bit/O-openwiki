@@ -33,7 +33,7 @@ try {
 
   const origStatSync = fs.statSync;
   if (typeof origStatSync === "function") {
-    (fs as any).statSync = function (p: any, options?: any) {
+    fs.statSync = function (p: any, options?: any) {
       if (
         typeof p === "string" &&
         (p.includes("$bunfs") || p.startsWith("/$bunfs")) &&

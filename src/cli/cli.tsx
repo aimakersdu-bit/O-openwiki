@@ -8,7 +8,7 @@ process.on("uncaughtException", (err) => {
 process.on("unhandledRejection", (reason) => {
   console.error("UNHANDLED REJECTION STACK:", reason);
 });
-import packageJson from "../../package.json" with { type: "json" };
+import packageJson from "../../package.json";
 void packageJson;
 import React from "react";
 import { render } from "ink";
