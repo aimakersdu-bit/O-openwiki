@@ -210,10 +210,16 @@ document.addEventListener('DOMContentLoaded', async () => {
           case 'running':
             buildBadge = '<span class="badge" style="background:rgba(56,189,248,0.2); color:var(--accent-color);">🔄 构建中...</span>';
             break;
-          case 'success':
+         case 'success':
+           buildBadge = '<span class="badge" style="background:rgba(74,222,128,0.2); color:var(--success-color);">✅ 构建成功</span>';
+           break;
+          case 'completed':
             buildBadge = '<span class="badge" style="background:rgba(74,222,128,0.2); color:var(--success-color);">✅ 构建成功</span>';
             break;
-          case 'failed':
+          case 'interrupted':
+            buildBadge = '<span class="badge" style="background:rgba(251,191,36,0.2); color:#f59e0b;">⚠️ 已中断</span>';
+            break;
+         case 'failed':
             buildBadge = '<span class="badge" style="background:rgba(248,113,113,0.2); color:var(--error-color);">❌ 构建失败</span>';
             break;
           case 'skipped':
@@ -1505,4 +1511,3 @@ document.addEventListener('DOMContentLoaded', async () => {
     loadDailyTokens();
   }, 4000);
 });
-

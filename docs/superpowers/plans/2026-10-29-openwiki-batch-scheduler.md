@@ -274,7 +274,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 ### 阶段三：按业务域授权的组长权限体系（RBAC）
 
-- [ ] **Task 14 Portal 用户与业务域授权数据层**
+- [x] **Task 14 Portal 用户与业务域授权数据层**（`9bfc100`）
   - **Files:**
     - Modify: `deploy/unit2-portal/internal/db/sqlite.go`（新增 `users`、`user_domain_grants`、`audit_logs`）
     - Modify: `deploy/unit2-portal/internal/auth/ldap.go` & `session.go`（登录时同步用户并加载 `role` 与 `authorized_domains`）
@@ -282,7 +282,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   - **Step 1:** 编写测试 `TestGroupLeaderDomainScope`、`TestSuperAdminBreakGlass`、`TestGrantAndRevokeDomain`。
   - **Step 2:** 实现用户角色与业务域授权 CRUD。
 
-- [ ] **Task 15 业务域权限拦截中间件与跨进程 HMAC 签名**
+- [x] **Task 15 业务域权限拦截中间件与跨进程 HMAC 签名**（`d363f14`）
   - **Files:**
     - Create: `deploy/unit2-portal/internal/api/rbac_middleware.go`
     - Modify: `deploy/unit2-portal/internal/api/router.go`

@@ -2,18 +2,27 @@
 set -e
 
 # ==============================================================================
-# OpenWiki 阿里云 ECS Workbench 一键安装与服务部署脚本
+# OpenWiki 阿里云 ECS Workbench 一键安装与升级脚本
 # 适用环境：阿里云 ECS (Alibaba Cloud Linux / CentOS / Ubuntu / Debian)
 # 架构支持：x86_64 / aarch64 (ARM64)
+#
+# 用法 (在 ECS 上解压发布包后执行):
+#   bash scripts/ecs-deploy.sh
+#
+# 升级时只需替换 bin/ 目录后重新执行本脚本即可。
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# 默认安装目录 (可通过 OPENWIKI_INSTALL_DIR 环境变量覆盖)
+INSTALL_DIR="${OPENWIKI_INSTALL_DIR:-/opt/openwiki}"
+DATA_DIR="/data/openwiki"
+
 echo "=============================================================================="
-echo "  ⚡ OpenWiki 阿里云 ECS 一键部署启动"
+echo "  ⚡ OpenWiki 阿里云 ECS 部署/升级启动"
 echo "  主机架构: $(uname -m), 系统内核: $(uname -r)"
-echo "  部署目录: $DEPLOY_DIR"
+echo "  部署目录: $INSTALL_DIR  数据目录: $DATA_DIR"
 echo "=============================================================================="
 
 # 1. 架构检测
@@ -65,26 +74,143 @@ else
     exit 1
   fi
 
-  DATA_DIR="$DEPLOY_DIR/data"
+  # 准备目录
+  mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/public" "$INSTALL_DIR/assets" "$INSTALL_DIR/scripts"
   mkdir -p "$DATA_DIR/repos" "$DATA_DIR/static" "$DATA_DIR/db" "$DATA_DIR/logs"
 
-  # 杀掉已有后台进程
-  pkill -f "$BIN_PATH/orchestrator" 2>/dev/null || true
-  pkill -f "$BIN_PATH/portal" 2>/dev/null || true
+  # 3.1 复制二进制与资源到安装目录
+  echo "--> 复制二进制到 $INSTALL_DIR/bin/ ..."
+  cp -f "$BIN_PATH/orchestrator" "$BIN_PATH/portal" "$BIN_PATH/openwiki-migrate" "$INSTALL_DIR/bin/" 2>/dev/null || true
+  chmod +x "$INSTALL_DIR/bin/"*
 
-  echo "--> 启动 Orchestrator (端口: 3000)..."
-  "$BIN_PATH/orchestrator" -config "$BIN_PATH/config.json" > "$DATA_DIR/logs/orchestrator.log" 2>&1 &
+  # 3.2 复制前端静态资源
+  echo "--> 复制前端资源..."
+  cp -rf "$BIN_PATH/public/"* "$INSTALL_DIR/public/" 2>/dev/null || true
+  cp -rf "$BIN_PATH/assets/"* "$INSTALL_DIR/assets/" 2>/dev/null || true
+  cp -rf "$BIN_PATH/scripts/"* "$INSTALL_DIR/scripts/" 2>/dev/null || true
+  chmod +x "$INSTALL_DIR/scripts/"*.sh 2>/dev/null || true
 
-  echo "--> 启动 Portal (端口: 8080)..."
-  cd "$BIN_PATH"
-  ./portal -config "$BIN_PATH/config.yaml" > "$DATA_DIR/logs/portal.log" 2>&1 &
+  # 3.3 创建 openwiki dist 软链 (可视化 graph 导出与 client-lib.js 依赖)
+  OPENWIKI_PKG_DIR=""
+  for candidate in \
+    "$INSTALL_DIR/node22/lib/node_modules/openwiki" \
+    "$(npm root -g 2>/dev/null)/openwiki" \
+    "/usr/lib/node_modules/openwiki"; do
+    if [ -f "$candidate/dist/visualize/graph.js" ]; then
+      OPENWIKI_PKG_DIR="$candidate"
+      break
+    fi
+  done
+  if [ -n "$OPENWIKI_PKG_DIR" ]; then
+    echo "--> 创建 dist 软链: $INSTALL_DIR/dist -> $OPENWIKI_PKG_DIR/dist"
+    ln -sfn "$OPENWIKI_PKG_DIR/dist" "$INSTALL_DIR/dist"
+  else
+    echo "⚠️  未找到 openwiki npm 包的 dist 目录，Wiki 可视化导出将不可用"
+    echo "    请确保已安装 openwiki CLI: npm install -g openwiki"
+  fi
+
+  # 3.4 生成或保留 orchestrator 配置
+  CONFIG_JSON="$INSTALL_DIR/config.json"
+  if [ ! -f "$CONFIG_JSON" ]; then
+    echo "--> 生成默认 orchestrator 配置..."
+    cat << 'EOF' > "$CONFIG_JSON"
+{
+  "listen_addr": ":3009",
+  "openwiki_cli": "/opt/openwiki/node22/bin/openwiki",
+  "openwiki_dist_dir": "/opt/openwiki/dist",
+  "static_output_dir": "/data/openwiki/static",
+  "vendor_assets_dir": "/opt/openwiki/assets/vendor",
+  "repos_base_dir": "/data/openwiki/repos",
+  "projects_base_dir": "/data/openwiki/projects",
+  "db_path": "/data/openwiki/db/orchestrator.db",
+  "max_concurrent_qa": 2,
+  "qa_timeout_sec": 120,
+  "default_language": "zh-CN",
+  "openai_upstream_url": "http://127.0.0.1:8889/v1",
+  "openwiki_api_key": "",
+  "openwiki_provider": "openai-compatible",
+  "openwiki_model": "glm-5.2"
+}
+EOF
+    echo "    ⚠️  请编辑 $CONFIG_JSON 填入正确的 openwiki_api_key 和 openai_upstream_url"
+  else
+    echo "--> 保留已有 orchestrator 配置: $CONFIG_JSON"
+  fi
+
+  # 3.5 生成或保留 portal 配置
+  CONFIG_YAML="$INSTALL_DIR/config.yaml"
+  if [ ! -f "$CONFIG_YAML" ]; then
+    echo "--> 生成默认 portal 配置..."
+    cat << 'EOF' > "$CONFIG_YAML"
+port: 8099
+db_path: "/data/openwiki/db/portal.db"
+orchestrator_url: "http://127.0.0.1:3009"
+static_output_dir: "/data/openwiki/static"
+session_ttl_hours: 24
+
+ldap:
+  enabled: false
+  url: "mock"
+
+auth:
+  admin_users:
+    - "admin"
+    - "bigc"
+    - "lisi"
+EOF
+  else
+    echo "--> 保留已有 portal 配置: $CONFIG_YAML"
+  fi
+
+  # 3.6 安装 nginx 反向代理配置
+  if command -v nginx >/dev/null 2>&1; then
+    NGINX_CONF_SRC="$DEPLOY_DIR/nginx-standalone.conf"
+    if [ ! -f "$NGINX_CONF_SRC" ]; then
+      NGINX_CONF_SRC="$SCRIPT_DIR/../nginx-standalone.conf"
+    fi
+    if [ -f "$NGINX_CONF_SRC" ]; then
+      echo "--> 安装 nginx 配置..."
+      cp -f "$NGINX_CONF_SRC" /etc/nginx/conf.d/openwiki.conf
+      nginx -t 2>&1 && nginx -s reload 2>&1 && echo "    nginx 配置已更新" || echo "    ⚠️ nginx 配置测试失败，请手动检查"
+    fi
+  fi
+
+  # 3.7 停止旧进程
+  echo "--> 停止已有服务进程..."
+  pkill -f "$INSTALL_DIR/bin/orchestrator" 2>/dev/null || true
+  pkill -f "$INSTALL_DIR/bin/portal" 2>/dev/null || true
+  sleep 2
+
+  # 3.8 启动新进程
+  echo "--> 启动 Orchestrator (端口: 3009)..."
+  nohup "$INSTALL_DIR/bin/orchestrator" -config "$CONFIG_JSON" > "$DATA_DIR/logs/orchestrator.log" 2>&1 &
+
+  echo "--> 启动 Portal (端口: 8099)..."
+  cd "$INSTALL_DIR"
+  nohup "$INSTALL_DIR/bin/portal" -config "$CONFIG_YAML" -public "$INSTALL_DIR/public" > "$DATA_DIR/logs/portal.log" 2>&1 &
 
   echo "--> 等待服务启动..."
   sleep 3
+
+  # 3.9 健康检查
+  for i in {1..10}; do
+    if curl -s "http://127.0.0.1:3009/api/health" | grep -q "ok" && curl -s "http://127.0.0.1:8099/portal/health" | grep -q "ok"; then
+      echo "✅ Orchestrator 与 Portal 健康检查通过！"
+      break
+    fi
+    sleep 1
+  done
 fi
 
 # 4. 获取公网 IP
 PUBLIC_IP=$(curl -s --connect-timeout 2 http://100.100.100.200/latest/meta-data/eipv4 2>/dev/null || curl -s --connect-timeout 2 ifconfig.me 2>/dev/null || echo "127.0.0.1")
+
+# 5. 确定访问端口
+if [ "$HAS_DOCKER" = "true" ]; then
+  WEB_PORT="80"
+else
+  WEB_PORT="8891"
+fi
 
 echo ""
 echo "=============================================================================="
@@ -92,14 +218,13 @@ echo "🎉 OpenWiki 服务已成功在 ECS 上启动运行！"
 echo "=============================================================================="
 echo ""
 echo " 🌐 访问地址:"
+echo "   - Web 控制台门户: http://$PUBLIC_IP:$WEB_PORT/portal/"
+echo "   - 运维与批量调度: http://$PUBLIC_IP:$WEB_PORT/portal/admin.html"
+echo "   - Wiki 可视化: http://$PUBLIC_IP:$WEB_PORT/wiki/<repo_id>/"
 if [ "$HAS_DOCKER" = "true" ]; then
-  echo "   - Web 控制台门户: http://$PUBLIC_IP/portal/"
-  echo "   - 运维与批量调度: http://$PUBLIC_IP/portal/admin.html"
   echo "   - Orchestrator API: http://$PUBLIC_IP:3000/"
 else
-  echo "   - Web 控制台门户: http://$PUBLIC_IP:8080/portal/"
-  echo "   - 运维与批量调度: http://$PUBLIC_IP:8080/portal/admin.html"
-  echo "   - Orchestrator API: http://$PUBLIC_IP:3000/"
+  echo "   - Orchestrator API: http://$PUBLIC_IP:3009/"
 fi
 echo ""
 echo " 🔑 初始登录账号: admin"

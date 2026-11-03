@@ -57,7 +57,10 @@ func (db *DB) CleanStaleBuilds() error {
 	if db == nil || db.conn == nil {
 		return nil
 	}
-	_, err := db.conn.Exec("UPDATE builds SET status = 'interrupted', finished_at = CURRENT_TIMESTAMP, error = 'Interrupted by daemon restart' WHERE status = 'running'")
+	// Only mark builds that started before this process launched as interrupted,
+	// so freshly created builds (same-second race with Start()) are not clobbered.
+	cutoff := time.Now().Local().Format("2006-01-02 15:04:05")
+	_, err := db.conn.Exec("UPDATE builds SET status = 'interrupted', finished_at = CURRENT_TIMESTAMP, error = 'Interrupted by daemon restart' WHERE status = 'running' AND started_at <= ?", cutoff)
 	return err
 }
 

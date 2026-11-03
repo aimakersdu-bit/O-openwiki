@@ -46,8 +46,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Helper to parse build list into display status
   function parseBuildStatus(repo, builds = []) {
     const latestBuild = builds[0];
-    const hasSuccess = builds.some(b => b.status === 'success' || b.status === 'skipped');
-    const isBuilding = latestBuild && (latestBuild.status === 'pending' || latestBuild.status === 'running');
+   const hasSuccess = builds.some(b => b.status === 'success' || b.status === 'skipped');
+   const hasCompleted = builds.some(b => b.status === 'completed' || b.status === 'success' || b.status === 'skipped');
+   const isBuilding = latestBuild && (latestBuild.status === 'pending' || latestBuild.status === 'running');
 
     let statusKey = 'unbuilt'; // 'ready', 'building', 'unbuilt'
     let statusHtml = '';
@@ -55,7 +56,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (isBuilding) {
       statusKey = 'building';
       statusHtml = `<span style="color: var(--accent-color);">⚡ 增量构建中 (Build #${latestBuild.id})...</span>`;
-    } else if (latestBuild && latestBuild.status === 'success') {
+   } else if (latestBuild && (latestBuild.status === 'success' || latestBuild.status === 'completed')) {
       statusKey = 'ready';
       statusHtml = `<span style="color: var(--success-color);">✅ 已构建完成</span>`;
     } else if (latestBuild && latestBuild.status === 'skipped') {
@@ -69,7 +70,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusKey = 'unbuilt';
         statusHtml = `<span style="color: var(--error-color, #ef4444);">❌ 构建失败</span>`;
       }
-    } else if (hasSuccess) {
+   } else if (hasCompleted) {
       statusKey = 'ready';
       statusHtml = `<span style="color: var(--success-color);">✅ 已构建完成</span>`;
     } else {
@@ -77,17 +78,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       statusHtml = `<span style="color: var(--text-secondary);">⏳ 尚未构建</span>`;
     }
 
-    const wikiActionHtml = hasSuccess
+   const wikiActionHtml = hasCompleted
       ? `<a href="${repo.wiki_url}" target="_blank" class="btn btn-primary btn-sm">📖 查看 Wiki</a>`
       : `<button class="btn btn-primary btn-sm" disabled style="opacity: 0.5; cursor: not-allowed;" title="仓库尚未生成 Wiki 页面">📖 尚未构建</button>`;
 
-    const chatActionHtml = hasSuccess
+   const chatActionHtml = hasCompleted
       ? `<button class="btn btn-secondary btn-sm chat-btn" data-id="${repo.id}" data-name="${API.escapeHTML(repo.name)}">💬 AI 问答</button>`
       : `<button class="btn btn-secondary btn-sm" disabled style="opacity: 0.5; cursor: not-allowed;" title="知识库尚未就绪，请先完成构建">💬 AI 问答</button>`;
 
     return {
       statusKey,
-      hasSuccess,
+     hasSuccess,
+     hasCompleted,
       isBuilding,
       latestBuild,
       statusHtml,

@@ -126,16 +126,32 @@ func (b *Builder) createOpenWikiCmdWithBuildID(buildID int64, repoPath string, a
 
 	// Environment setup
 	env := os.Environ()
+	// Prepend the openwiki CLI's directory to PATH so that `#!/usr/bin/env node`
+	// resolves to the correct Node version bundled with the CLI.
+	cliDir := ""
+	if b.OpenwikiCLI != "" {
+		cliDir = filepath.Dir(b.OpenwikiCLI)
+	}
 	hasPath := false
 	for i, e := range env {
 		if strings.HasPrefix(e, "PATH=") {
-			env[i] = e + ":/usr/local/bin:/opt/homebrew/bin"
+			extra := "/usr/local/bin:/opt/homebrew/bin"
+			if cliDir != "" {
+				env[i] = "PATH=" + cliDir + ":" + strings.TrimPrefix(e, "PATH=") + ":" + extra
+			} else {
+				env[i] = e + ":" + extra
+			}
 			hasPath = true
 			break
 		}
 	}
 	if !hasPath {
-		env = append(env, "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin")
+		base := "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+		if cliDir != "" {
+			env = append(env, "PATH="+cliDir+":"+base)
+		} else {
+			env = append(env, "PATH="+base)
+		}
 	}
 	if b.OpenwikiDistDir != "" {
 		env = append(env, fmt.Sprintf("OPENWIKI_DIST_DIR=%s", b.OpenwikiDistDir))
@@ -366,6 +382,11 @@ func (b *Builder) copyVisualizerAssets(staticDir string, log *strings.Builder) e
 		content := string(data)
 		content = strings.Replace(content, `fetch("/api/graph")`, `fetch(new URL("api/graph", window.location.href).href)`, 1)
 		content = strings.Replace(content, `new EventSource("/events")`, `new EventSource(new URL("events", window.location.href).href)`, 1)
+		// Patch rewriteLinks to resolve absolute /openwiki/ markdown links to graph node IDs
+		content = strings.Replace(content,
+			`const target = normalize(dir, clean).replace(/\.md$/, "");`,
+			`const isAbs = clean.startsWith("/"); const cleanPath = clean.replace(/^\\/?(?:openwiki\\/)?/, ""); const target = isAbs ? cleanPath.replace(/\.md$/, "") : normalize(dir, cleanPath).replace(/\.md$/, "");`,
+			1)
 		os.WriteFile(clientDst, []byte(content), 0644)
 	}
 

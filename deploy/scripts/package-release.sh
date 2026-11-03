@@ -40,6 +40,7 @@ tar -czf "$PACKAGE_FILE" \
   Dockerfile \
   docker-compose.yml \
   nginx.conf \
+  nginx-standalone.conf \
   logrotate.conf \
   entrypoint.sh \
   healthcheck.sh \
