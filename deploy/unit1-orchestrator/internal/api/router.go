@@ -234,7 +234,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Enable CORS for Portal requests
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Session-Id")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Session-Id, X-OpenWiki-User, X-OpenWiki-Role, X-OpenWiki-Domains, X-OpenWiki-Sig")
 	w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id")
 
 	if r.Method == http.MethodOptions {
@@ -242,7 +242,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mux.ServeHTTP(w, r)
+	s.authMiddleware(s.mux).ServeHTTP(w, r)
 }
 
 func (s *Server) handleLLMQuota(w http.ResponseWriter, r *http.Request) {

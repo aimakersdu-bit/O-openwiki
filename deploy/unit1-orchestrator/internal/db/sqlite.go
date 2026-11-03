@@ -206,13 +206,14 @@ func (db *DB) migrate() error {
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS projects (
-			id          TEXT PRIMARY KEY,
-			name        TEXT NOT NULL,
-			description TEXT,
-			local_path  TEXT NOT NULL,
-			status      TEXT NOT NULL DEFAULT 'active',
-			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+			id              TEXT PRIMARY KEY,
+			name            TEXT NOT NULL,
+			description     TEXT,
+			business_domain TEXT NOT NULL DEFAULT '',
+			local_path      TEXT NOT NULL,
+			status          TEXT NOT NULL DEFAULT 'active',
+			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS project_repos (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -246,6 +247,7 @@ func (db *DB) migrate() error {
 	db.conn.Exec(`ALTER TABLE repos ADD COLUMN tier TEXT DEFAULT 'B'`)
 	db.conn.Exec(`ALTER TABLE repos ADD COLUMN business_domain TEXT DEFAULT ''`)
 	db.conn.Exec(`ALTER TABLE repos ADD COLUMN last_release_at DATETIME`)
+	db.conn.Exec(`ALTER TABLE projects ADD COLUMN business_domain TEXT DEFAULT ''`)
 	db.conn.Exec(`ALTER TABLE builds ADD COLUMN rate_limited_retries INTEGER DEFAULT 0`)
 	db.conn.Exec(`ALTER TABLE builds ADD COLUMN prompt_tokens INTEGER DEFAULT 0`)
 	db.conn.Exec(`ALTER TABLE builds ADD COLUMN completion_tokens INTEGER DEFAULT 0`)
@@ -901,13 +903,14 @@ func ListUserProjectQASessions(projectID, userID string, limit int) ([]QASession
 
 // Project represents a multi-repo project workspace.
 type Project struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	LocalPath   string `json:"local_path"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	BusinessDomain string `json:"business_domain"`
+	LocalPath      string `json:"local_path"`
+	Status         string `json:"status"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 // ProjectRepo represents a repo mapping inside a project.
@@ -928,7 +931,7 @@ type RepoWithAlias struct {
 
 // ListProjects returns all registered projects.
 func (db *DB) ListProjects() ([]Project, error) {
-	rows, err := db.conn.Query(`SELECT id, name, COALESCE(description,''), local_path, status, created_at, updated_at FROM projects ORDER BY name`)
+	rows, err := db.conn.Query(`SELECT id, name, COALESCE(description,''), COALESCE(business_domain,''), local_path, status, created_at, updated_at FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -937,7 +940,7 @@ func (db *DB) ListProjects() ([]Project, error) {
 	var projects []Project
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.LocalPath, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.BusinessDomain, &p.LocalPath, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		projects = append(projects, p)
@@ -948,8 +951,8 @@ func (db *DB) ListProjects() ([]Project, error) {
 // GetProject returns a single project by ID.
 func (db *DB) GetProject(id string) (*Project, error) {
 	p := &Project{}
-	err := db.conn.QueryRow(`SELECT id, name, COALESCE(description,''), local_path, status, created_at, updated_at FROM projects WHERE id = ?`, id).
-		Scan(&p.ID, &p.Name, &p.Description, &p.LocalPath, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+	err := db.conn.QueryRow(`SELECT id, name, COALESCE(description,''), COALESCE(business_domain,''), local_path, status, created_at, updated_at FROM projects WHERE id = ?`, id).
+		Scan(&p.ID, &p.Name, &p.Description, &p.BusinessDomain, &p.LocalPath, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -958,16 +961,16 @@ func (db *DB) GetProject(id string) (*Project, error) {
 
 // CreateProject inserts a new project.
 func (db *DB) CreateProject(p *Project) error {
-	_, err := db.conn.Exec(`INSERT INTO projects (id, name, description, local_path, status) VALUES (?, ?, ?, ?, ?)`,
-		p.ID, p.Name, p.Description, p.LocalPath, p.Status)
+	_, err := db.conn.Exec(`INSERT INTO projects (id, name, description, business_domain, local_path, status) VALUES (?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Name, p.Description, p.BusinessDomain, p.LocalPath, p.Status)
 	return err
 }
 
 // UpdateProject updates project fields and updated_at timestamp.
 func (db *DB) UpdateProject(p *Project) error {
 	timeStr := time.Now().Local().Format("2006-01-02 15:04:05")
-	_, err := db.conn.Exec(`UPDATE projects SET name = ?, description = ?, local_path = ?, status = ?, updated_at = ? WHERE id = ?`,
-		p.Name, p.Description, p.LocalPath, p.Status, timeStr, p.ID)
+	_, err := db.conn.Exec(`UPDATE projects SET name = ?, description = ?, business_domain = ?, local_path = ?, status = ?, updated_at = ? WHERE id = ?`,
+		p.Name, p.Description, p.BusinessDomain, p.LocalPath, p.Status, timeStr, p.ID)
 	return err
 }
 

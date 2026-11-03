@@ -38,26 +38,29 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		s.listProjects(w, r)
 	case http.MethodPost:
-		if session.Role != "admin" {
-			http.Error(w, `{"error":"Forbidden: Administrator privileges required"}`, http.StatusForbidden)
+		if !canManageProjects(session.Role) {
+			http.Error(w, `{"error":"Forbidden: Group Leader or Administrator privileges required"}`, http.StatusForbidden)
 			return
 		}
+		s.RecordAudit(r, "project.create", "", nil)
 		s.proxyToOrchestrator(w, r, "POST", "/api/projects")
 	case http.MethodPut:
-		if session.Role != "admin" {
-			http.Error(w, `{"error":"Forbidden: Administrator privileges required"}`, http.StatusForbidden)
+		if !canManageProjects(session.Role) {
+			http.Error(w, `{"error":"Forbidden: Group Leader or Administrator privileges required"}`, http.StatusForbidden)
 			return
 		}
+		s.RecordAudit(r, "project.update", "", nil)
 		s.proxyToOrchestrator(w, r, "PUT", "/api/projects")
 	case http.MethodDelete:
-		if session.Role != "admin" {
-			http.Error(w, `{"error":"Forbidden: Administrator privileges required"}`, http.StatusForbidden)
+		if !canManageProjects(session.Role) {
+			http.Error(w, `{"error":"Forbidden: Group Leader or Administrator privileges required"}`, http.StatusForbidden)
 			return
 		}
 		target := "/api/projects"
 		if query := r.URL.RawQuery; query != "" {
 			target += "?" + query
 		}
+		s.RecordAudit(r, "project.delete", r.URL.Query().Get("id"), nil)
 		s.proxyToOrchestrator(w, r, "DELETE", target)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -70,15 +73,31 @@ func (s *Server) handleProjectBuildTrigger(w http.ResponseWriter, r *http.Reques
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if session.Role != "admin" {
-		http.Error(w, `{"error":"Forbidden: Administrator privileges required to trigger builds"}`, http.StatusForbidden)
+	if !canManageProjects(session.Role) {
+		http.Error(w, `{"error":"Forbidden: Group Leader or Administrator privileges required to trigger builds"}`, http.StatusForbidden)
 		return
 	}
+	s.RecordAudit(r, "project.build_trigger", "", nil)
 	s.proxyToOrchestrator(w, r, "POST", "/api/projects/build")
 }
 
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
-	resp, err := s.httpClient.Get(s.config.OrchestratorURL + "/api/projects")
+	req, err := http.NewRequest(http.MethodGet, s.config.OrchestratorURL+"/api/projects", nil)
+	if err != nil {
+		http.Error(w, "Failed to create request: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	user := s.getSessionUser(r)
+	if user != nil {
+		secret := s.config.HMACSecret
+		if secret == "" {
+			secret = "openwiki-hmac-shared-secret"
+		}
+		SignRequest(req, secret, user.UserID, user.Role, user.AuthorizedDomains)
+	}
+
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		http.Error(w, "Failed to connect to Orchestrator: "+err.Error(), http.StatusBadGateway)
 		return

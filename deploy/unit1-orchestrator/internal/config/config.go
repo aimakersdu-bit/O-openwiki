@@ -42,6 +42,9 @@ type Config struct {
 	GitHTTPUsername string `json:"git_http_username"`
 	GitHTTPPassword string `json:"git_http_password"`
 	GitHTTPToken    string `json:"git_http_token"`
+
+	// Inter-service HMAC Authentication
+	HMACSecret string `json:"hmac_secret"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -66,6 +69,7 @@ func DefaultConfig() *Config {
 		QASocketDir:      os.TempDir(),
 		QAIdleTimeoutSec: 7200,
 		DefaultLanguage:  "zh-CN",
+		HMACSecret:       "openwiki-hmac-shared-secret",
 	}
 }
 
@@ -144,5 +148,8 @@ func overrideEnv(cfg *Config) {
 	}
 	if envKey := os.Getenv("OPENAI_API_KEY"); envKey != "" && cfg.OpenwikiAPIKey == "" {
 		cfg.OpenwikiAPIKey = envKey
+	}
+	if envSecret := os.Getenv("OPENWIKI_HMAC_SECRET"); envSecret != "" {
+		cfg.HMACSecret = envSecret
 	}
 }

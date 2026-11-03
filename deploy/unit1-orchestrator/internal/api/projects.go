@@ -20,11 +20,12 @@ type ProjectRepoInput struct {
 }
 
 type CreateProjectRequest struct {
-	ID          string             `json:"id"`
-	Name        string             `json:"name"`
-	Description string             `json:"description"`
-	LocalPath   string             `json:"local_path,omitempty"`
-	Repos       []ProjectRepoInput `json:"repos,omitempty"`
+	ID             string             `json:"id"`
+	Name           string             `json:"name"`
+	Description    string             `json:"description"`
+	BusinessDomain string             `json:"business_domain"`
+	LocalPath      string             `json:"local_path,omitempty"`
+	Repos          []ProjectRepoInput `json:"repos,omitempty"`
 }
 
 type ProjectResponse struct {
@@ -54,6 +55,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 
 // listProjects returns all registered projects along with their child repos.
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
+	authCtx := GetAuthContext(r)
 	projects, err := db.ListProjects()
 	if err != nil {
 		http.Error(w, "Failed to query projects: "+err.Error(), http.StatusInternalServerError)
@@ -62,6 +64,9 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 
 	res := make([]ProjectResponse, 0, len(projects))
 	for _, p := range projects {
+		if authCtx.Role == "group_leader" && !authCtx.IsDomainAuthorized(p.BusinessDomain) {
+			continue
+		}
 		repos, err := db.GetProjectRepos(p.ID)
 		if err != nil {
 			repos = []db.RepoWithAlias{}
@@ -91,17 +96,40 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	authCtx := GetAuthContext(r)
+	if authCtx.Role == "group_leader" {
+		if req.BusinessDomain == "" || !authCtx.IsDomainAuthorized(req.BusinessDomain) {
+			http.Error(w, fmt.Sprintf("Forbidden: not authorized for business domain '%s'", req.BusinessDomain), http.StatusForbidden)
+			return
+		}
+		for _, repoInput := range req.Repos {
+			repo, err := db.GetRepo(repoInput.RepoID)
+			if err != nil || repo == nil {
+				http.Error(w, fmt.Sprintf("Repository '%s' not found", repoInput.RepoID), http.StatusBadRequest)
+				return
+			}
+			if repo.BusinessDomain != "" && !authCtx.IsDomainAuthorized(repo.BusinessDomain) {
+				http.Error(w, fmt.Sprintf("Forbidden: repository '%s' belongs to domain '%s' which is outside your authorized domains", repo.ID, repo.BusinessDomain), http.StatusForbidden)
+				return
+			}
+		}
+	} else if authCtx.Role != "super_admin" && authCtx.Role != "admin" {
+		http.Error(w, "Forbidden: insufficient permissions", http.StatusForbidden)
+		return
+	}
+
 	localPath := req.LocalPath
 	if localPath == "" {
 		localPath = filepath.Join(s.config.ProjectsBaseDir, req.ID)
 	}
 
 	proj := &db.Project{
-		ID:          req.ID,
-		Name:        req.Name,
-		Description: req.Description,
-		LocalPath:   localPath,
-		Status:      "active",
+		ID:             req.ID,
+		Name:           req.Name,
+		Description:    req.Description,
+		BusinessDomain: req.BusinessDomain,
+		LocalPath:      localPath,
+		Status:         "active",
 	}
 
 	if err := db.CreateProject(proj); err != nil {
@@ -156,10 +184,39 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	authCtx := GetAuthContext(r)
+	if authCtx.Role == "group_leader" {
+		if !authCtx.IsDomainAuthorized(existing.BusinessDomain) {
+			http.Error(w, fmt.Sprintf("Forbidden: cannot modify project in domain '%s'", existing.BusinessDomain), http.StatusForbidden)
+			return
+		}
+		if req.BusinessDomain != "" && !authCtx.IsDomainAuthorized(req.BusinessDomain) {
+			http.Error(w, fmt.Sprintf("Forbidden: cannot change project to unauthorized domain '%s'", req.BusinessDomain), http.StatusForbidden)
+			return
+		}
+		for _, repoInput := range req.Repos {
+			repo, err := db.GetRepo(repoInput.RepoID)
+			if err != nil || repo == nil {
+				http.Error(w, fmt.Sprintf("Repository '%s' not found", repoInput.RepoID), http.StatusBadRequest)
+				return
+			}
+			if repo.BusinessDomain != "" && !authCtx.IsDomainAuthorized(repo.BusinessDomain) {
+				http.Error(w, fmt.Sprintf("Forbidden: repository '%s' belongs to domain '%s' which is outside your authorized domains", repo.ID, repo.BusinessDomain), http.StatusForbidden)
+				return
+			}
+		}
+	} else if authCtx.Role != "super_admin" && authCtx.Role != "admin" {
+		http.Error(w, "Forbidden: insufficient permissions", http.StatusForbidden)
+		return
+	}
+
 	if req.Name != "" {
 		existing.Name = req.Name
 	}
 	existing.Description = req.Description
+	if req.BusinessDomain != "" {
+		existing.BusinessDomain = req.BusinessDomain
+	}
 	if req.LocalPath != "" {
 		existing.LocalPath = req.LocalPath
 	}
@@ -201,6 +258,23 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	existing, err := db.GetProject(id)
+	if err != nil || existing == nil {
+		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+
+	authCtx := GetAuthContext(r)
+	if authCtx.Role == "group_leader" {
+		if !authCtx.IsDomainAuthorized(existing.BusinessDomain) {
+			http.Error(w, fmt.Sprintf("Forbidden: cannot delete project in domain '%s'", existing.BusinessDomain), http.StatusForbidden)
+			return
+		}
+	} else if authCtx.Role != "super_admin" && authCtx.Role != "admin" {
+		http.Error(w, "Forbidden: insufficient permissions", http.StatusForbidden)
+		return
+	}
+
 	if err := db.DeleteProject(id); err != nil {
 		http.Error(w, "Failed to delete project: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -232,6 +306,17 @@ func (s *Server) handleProjectBuild(w http.ResponseWriter, r *http.Request) {
 	proj, err := db.GetProject(req.ProjectID)
 	if err != nil || proj == nil {
 		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+
+	authCtx := GetAuthContext(r)
+	if authCtx.Role == "group_leader" {
+		if !authCtx.IsDomainAuthorized(proj.BusinessDomain) {
+			http.Error(w, fmt.Sprintf("Forbidden: cannot trigger build for project in domain '%s'", proj.BusinessDomain), http.StatusForbidden)
+			return
+		}
+	} else if authCtx.Role != "super_admin" && authCtx.Role != "admin" {
+		http.Error(w, "Forbidden: insufficient permissions", http.StatusForbidden)
 		return
 	}
 

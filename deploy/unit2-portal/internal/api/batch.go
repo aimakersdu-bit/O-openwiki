@@ -16,11 +16,12 @@ func (s *Server) handlePortalBatchImport(w http.ResponseWriter, r *http.Request)
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if session.Role != "admin" {
+	if !isSuperAdmin(session.Role) {
 		http.Error(w, `{"error":"Forbidden: Administrator privileges required"}`, http.StatusForbidden)
 		return
 	}
 
+	s.RecordAudit(r, "batch.import", "", nil)
 	s.proxyToOrchestrator(w, r, http.MethodPost, "/api/repos/batch-import")
 }
 
@@ -31,11 +32,12 @@ func (s *Server) handlePortalBatchConcurrency(w http.ResponseWriter, r *http.Req
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if session.Role != "admin" {
+	if !isSuperAdmin(session.Role) {
 		http.Error(w, `{"error":"Forbidden: Administrator privileges required"}`, http.StatusForbidden)
 		return
 	}
 
+	s.RecordAudit(r, "batch.concurrency", "", nil)
 	s.proxyToOrchestrator(w, r, http.MethodPut, "/api/batch/concurrency")
 }
 
@@ -61,7 +63,7 @@ func (s *Server) handlePortalBatchControl(w http.ResponseWriter, r *http.Request
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if session.Role != "admin" {
+	if !isSuperAdmin(session.Role) {
 		http.Error(w, `{"error":"Forbidden: Administrator privileges required"}`, http.StatusForbidden)
 		return
 	}
@@ -71,6 +73,7 @@ func (s *Server) handlePortalBatchControl(w http.ResponseWriter, r *http.Request
 	if q := r.URL.RawQuery; q != "" {
 		target += "?" + q
 	}
+	s.RecordAudit(r, "batch."+action, "", nil)
 	s.proxyToOrchestrator(w, r, http.MethodPost, target)
 }
 

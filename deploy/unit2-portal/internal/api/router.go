@@ -67,6 +67,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/portal/telemetry/tokens/daily", s.handlePortalDailyTokens)
 	s.mux.HandleFunc("/portal/telemetry/tokens/export", s.handlePortalTokensExport)
 
+	// User & Business Domain RBAC Management APIs
+	s.mux.HandleFunc("/portal/users", s.handleUsers)
+	s.mux.HandleFunc("/portal/users/role", s.handleSetUserRole)
+	s.mux.HandleFunc("/portal/users/grant", s.handleGrantDomain)
+	s.mux.HandleFunc("/portal/users/revoke", s.handleRevokeDomain)
+
 	// Health check
 	s.mux.HandleFunc("/portal/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -101,6 +107,18 @@ func (s *Server) routes() {
 	// Reverse proxy /api/ to Orchestrator URL for standalone dev execution
 	if orchURL, err := url.Parse(s.config.OrchestratorURL); err == nil && orchURL.Scheme != "" {
 		proxy := httputil.NewSingleHostReverseProxy(orchURL)
+		origDirector := proxy.Director
+		proxy.Director = func(outReq *http.Request) {
+			origDirector(outReq)
+			user := s.getSessionUser(outReq)
+			if user != nil {
+				secret := s.config.HMACSecret
+				if secret == "" {
+					secret = "openwiki-hmac-shared-secret"
+				}
+				SignRequest(outReq, secret, user.UserID, user.Role, user.AuthorizedDomains)
+			}
+		}
 		proxy.FlushInterval = -1 // Immediate flush for SSE streaming
 		s.mux.Handle("/api/", proxy)
 	}

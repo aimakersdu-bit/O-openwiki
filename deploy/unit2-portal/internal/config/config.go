@@ -38,7 +38,8 @@ type Config struct {
 		AdminGroup string   `yaml:"admin_group"` // LDAP group with admin privileges
 	} `yaml:"auth"`
 
-	SessionTTLHours int `yaml:"session_ttl_hours"`
+	SessionTTLHours int    `yaml:"session_ttl_hours"`
+	HMACSecret      string `yaml:"hmac_secret"`
 }
 
 func DefaultConfig() *Config {
@@ -52,6 +53,7 @@ func DefaultConfig() *Config {
 		OrchestratorURL: "http://127.0.0.1:3000",
 		StaticOutputDir: filepath.Join(home, ".openwiki", "static"),
 		SessionTTLHours: 24,
+		HMACSecret:      "openwiki-hmac-shared-secret",
 	}
 	cfg.LDAP.Enabled = true
 	cfg.LDAP.URL = "ldap://127.0.0.1:389"
@@ -111,6 +113,9 @@ func overrideEnv(cfg *Config) {
 	}
 	if envBindPass := os.Getenv("LDAP_BIND_PASSWORD"); envBindPass != "" {
 		cfg.LDAP.BindPassword = envBindPass
+	}
+	if envSecret := os.Getenv("OPENWIKI_HMAC_SECRET"); envSecret != "" {
+		cfg.HMACSecret = envSecret
 	}
 	normalizeLDAPConfig(cfg)
 }

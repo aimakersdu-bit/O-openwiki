@@ -33,19 +33,21 @@ func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		s.listRepos(w, r)
 	case http.MethodPost:
-		if session.Role != "admin" {
+		if !isSuperAdmin(session.Role) {
 			http.Error(w, `{"error":"Forbidden: Administrator privileges required"}`, http.StatusForbidden)
 			return
 		}
+		s.RecordAudit(r, "repo.create", "", nil)
 		s.proxyToOrchestrator(w, r, "POST", "/api/repos")
 	case http.MethodPut:
-		if session.Role != "admin" {
+		if !isSuperAdmin(session.Role) {
 			http.Error(w, `{"error":"Forbidden: Administrator privileges required"}`, http.StatusForbidden)
 			return
 		}
+		s.RecordAudit(r, "repo.update", "", nil)
 		s.proxyToOrchestrator(w, r, "PUT", "/api/repos")
 	case http.MethodDelete:
-		if session.Role != "admin" {
+		if !isSuperAdmin(session.Role) {
 			http.Error(w, `{"error":"Forbidden: Administrator privileges required"}`, http.StatusForbidden)
 			return
 		}
@@ -53,6 +55,7 @@ func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
 		if query := r.URL.RawQuery; query != "" {
 			target += "?" + query
 		}
+		s.RecordAudit(r, "repo.delete", r.URL.Query().Get("id"), nil)
 		s.proxyToOrchestrator(w, r, "DELETE", target)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -65,24 +68,12 @@ func (s *Server) handleBuildTrigger(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if session.Role != "admin" {
+	if !isSuperAdmin(session.Role) {
 		http.Error(w, `{"error":"Forbidden: Administrator privileges required to trigger builds"}`, http.StatusForbidden)
 		return
 	}
+	s.RecordAudit(r, "build.trigger", "", nil)
 	s.proxyToOrchestrator(w, r, "POST", "/api/build/trigger")
-}
-
-func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
-	session, err := auth.GetSessionFromRequest(r)
-	if err != nil || session == nil {
-		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-	if session.Role != "admin" {
-		http.Error(w, `{"error":"Forbidden: Administrator privileges required for audit logs"}`, http.StatusForbidden)
-		return
-	}
-	s.proxyToOrchestrator(w, r, "GET", "/api/build/status")
 }
 
 func (s *Server) listRepos(w http.ResponseWriter, r *http.Request) {
@@ -121,6 +112,15 @@ func (s *Server) proxyToOrchestrator(w http.ResponseWriter, r *http.Request, met
 	}
 	if ct := r.Header.Get("Content-Type"); ct != "" {
 		req.Header.Set("Content-Type", ct)
+	}
+
+	user := s.getSessionUser(r)
+	if user != nil {
+		secret := s.config.HMACSecret
+		if secret == "" {
+			secret = "openwiki-hmac-shared-secret"
+		}
+		SignRequest(req, secret, user.UserID, user.Role, user.AuthorizedDomains)
 	}
 
 	resp, err := s.httpClient.Do(req)
