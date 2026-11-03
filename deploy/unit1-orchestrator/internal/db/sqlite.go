@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -107,6 +108,10 @@ func CreateBuild(repoID, gitHead, status string) (int64, error) {
 
 func FinishBuild(id int64, status, buildLog, buildErr string) error {
 	return globalDB.FinishBuild(id, status, buildLog, buildErr)
+}
+
+func FinishBuildWithTokens(id int64, status, buildLog, buildErr string, promptTokens, completionTokens, totalTokens, savedTokens int64, retries int) error {
+	return globalDB.FinishBuildWithTokens(id, status, buildLog, buildErr, promptTokens, completionTokens, totalTokens, savedTokens, retries)
 }
 
 func GetLatestBuilds(repoID string, limit int) ([]Build, error) {
@@ -241,6 +246,11 @@ func (db *DB) migrate() error {
 	db.conn.Exec(`ALTER TABLE repos ADD COLUMN tier TEXT DEFAULT 'B'`)
 	db.conn.Exec(`ALTER TABLE repos ADD COLUMN business_domain TEXT DEFAULT ''`)
 	db.conn.Exec(`ALTER TABLE repos ADD COLUMN last_release_at DATETIME`)
+	db.conn.Exec(`ALTER TABLE builds ADD COLUMN rate_limited_retries INTEGER DEFAULT 0`)
+	db.conn.Exec(`ALTER TABLE builds ADD COLUMN prompt_tokens INTEGER DEFAULT 0`)
+	db.conn.Exec(`ALTER TABLE builds ADD COLUMN completion_tokens INTEGER DEFAULT 0`)
+	db.conn.Exec(`ALTER TABLE builds ADD COLUMN total_tokens INTEGER DEFAULT 0`)
+	db.conn.Exec(`ALTER TABLE builds ADD COLUMN saved_tokens INTEGER DEFAULT 0`)
 
 	batchTables := []string{
 		`CREATE TABLE IF NOT EXISTS batch_runs (
@@ -283,12 +293,27 @@ func (db *DB) migrate() error {
 			skipped_count     INTEGER DEFAULT 0,
 			updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS system_settings (
+			key        TEXT PRIMARY KEY,
+			value      TEXT NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
 	}
 
 	for _, bt := range batchTables {
 		if _, err := db.conn.Exec(bt); err != nil {
 			return fmt.Errorf("exec batch table creation: %w", err)
 		}
+	}
+
+	defaultSettings := map[string]string{
+		"max_tpm":               "0",
+		"max_rpm":               "0",
+		"day_max_concurrency":   "2",
+		"night_max_concurrency": "4",
+	}
+	for k, v := range defaultSettings {
+		db.conn.Exec(`INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)`, k, v)
 	}
 
 	indices := []string{
@@ -456,14 +481,19 @@ func (db *DB) UpdateRepoStatus(id, status string) error {
 
 // Build represents a single build record.
 type Build struct {
-	ID         int64  `json:"id"`
-	RepoID     string `json:"repo_id"`
-	GitHead    string `json:"git_head"`
-	Status     string `json:"status"`
-	StartedAt  string `json:"started_at"`
-	FinishedAt string `json:"finished_at"`
-	Log        string `json:"log"`
-	Error      string `json:"error"`
+	ID                 int64  `json:"id"`
+	RepoID             string `json:"repo_id"`
+	GitHead            string `json:"git_head"`
+	Status             string `json:"status"`
+	StartedAt          string `json:"started_at"`
+	FinishedAt         string `json:"finished_at"`
+	Log                string `json:"log"`
+	Error              string `json:"error"`
+	RateLimitedRetries int    `json:"rate_limited_retries"`
+	PromptTokens       int64  `json:"prompt_tokens"`
+	CompletionTokens   int64  `json:"completion_tokens"`
+	TotalTokens        int64  `json:"total_tokens"`
+	SavedTokens        int64  `json:"saved_tokens"`
 }
 
 // CreateBuild inserts a new build record and returns its ID.
@@ -485,6 +515,16 @@ func (db *DB) FinishBuild(id int64, status, buildLog, buildErr string) error {
 	return err
 }
 
+// FinishBuildWithTokens updates a build record with status, logs, real tokens, and retry counts.
+func (db *DB) FinishBuildWithTokens(id int64, status, buildLog, buildErr string, promptTokens, completionTokens, totalTokens, savedTokens int64, retries int) error {
+	timeStr := time.Now().Local().Format("2006-01-02 15:04:05")
+	_, err := db.conn.Exec(`UPDATE builds SET status = ?, finished_at = ?, log = ?, error = ?,
+		prompt_tokens = ?, completion_tokens = ?, total_tokens = ?, saved_tokens = ?, rate_limited_retries = ?
+		WHERE id = ?`,
+		status, timeStr, buildLog, buildErr, promptTokens, completionTokens, totalTokens, savedTokens, retries, id)
+	return err
+}
+
 // UpdateBuildLog updates intermediate build log and error without changing status.
 func (db *DB) UpdateBuildLog(id int64, buildLog, buildErr string) error {
 	_, err := db.conn.Exec(`UPDATE builds SET log = ?, error = ? WHERE id = ?`, buildLog, buildErr, id)
@@ -494,7 +534,8 @@ func (db *DB) UpdateBuildLog(id int64, buildLog, buildErr string) error {
 // ListBuilds returns recent builds for a repo.
 func (db *DB) ListBuilds(repoID string, limit int) ([]Build, error) {
 	rows, err := db.conn.Query(`SELECT id, repo_id, COALESCE(git_head,''), status, 
-		COALESCE(started_at,''), COALESCE(finished_at,''), COALESCE(log,''), COALESCE(error,'')
+		COALESCE(started_at,''), COALESCE(finished_at,''), COALESCE(log,''), COALESCE(error,''),
+		COALESCE(rate_limited_retries, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(total_tokens, 0), COALESCE(saved_tokens, 0)
 		FROM builds WHERE repo_id = ? ORDER BY id DESC LIMIT ?`, repoID, limit)
 	if err != nil {
 		return nil, err
@@ -505,7 +546,8 @@ func (db *DB) ListBuilds(repoID string, limit int) ([]Build, error) {
 	for rows.Next() {
 		var b Build
 		if err := rows.Scan(&b.ID, &b.RepoID, &b.GitHead, &b.Status,
-			&b.StartedAt, &b.FinishedAt, &b.Log, &b.Error); err != nil {
+			&b.StartedAt, &b.FinishedAt, &b.Log, &b.Error,
+			&b.RateLimitedRetries, &b.PromptTokens, &b.CompletionTokens, &b.TotalTokens, &b.SavedTokens); err != nil {
 			return nil, err
 		}
 		builds = append(builds, b)
@@ -1154,4 +1196,57 @@ func (db *DB) ListDailyTokenUsage(limit int) ([]DailyTokenUsage, error) {
 		list = append(list, u)
 	}
 	return list, nil
+}
+
+// --- System Settings DAO ---
+
+// GetSetting retrieves a setting value by key, or returns defaultVal if not found.
+func (db *DB) GetSetting(key string, defaultVal ...string) (string, error) {
+	var val string
+	err := db.conn.QueryRow(`SELECT value FROM system_settings WHERE key = ?`, key).Scan(&val)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) && len(defaultVal) > 0 {
+			return defaultVal[0], nil
+		}
+		return "", err
+	}
+	return val, nil
+}
+
+// SetSetting upserts a setting key/value.
+func (db *DB) SetSetting(key, val string) error {
+	_, err := db.conn.Exec(`INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`, key, val)
+	return err
+}
+
+// GetAllSettings returns all key/value pairs from system_settings.
+func (db *DB) GetAllSettings() (map[string]string, error) {
+	rows, err := db.conn.Query(`SELECT key, value FROM system_settings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	settings := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		settings[k] = v
+	}
+	return settings, rows.Err()
+}
+
+func GetSetting(key string, defaultVal ...string) (string, error) {
+	return globalDB.GetSetting(key, defaultVal...)
+}
+
+func SetSetting(key, val string) error {
+	return globalDB.SetSetting(key, val)
+}
+
+func GetAllSettings() (map[string]string, error) {
+	return globalDB.GetAllSettings()
 }

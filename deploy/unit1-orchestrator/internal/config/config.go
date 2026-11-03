@@ -22,9 +22,10 @@ type Config struct {
 	DBPath          string `json:"db_path"`             // path to SQLite database file
 
 	// OpenWiki provider settings
-	OpenwikiProvider string `json:"openwiki_provider"` // e.g. "openai", "gemini"
-	OpenwikiModel    string `json:"openwiki_model"`    // e.g. "gpt-4o"
-	OpenwikiAPIKey   string `json:"openwiki_api_key"`  // LLM API key
+	OpenwikiProvider  string `json:"openwiki_provider"`    // e.g. "openai", "gemini"
+	OpenwikiModel     string `json:"openwiki_model"`       // e.g. "gpt-4o"
+	OpenwikiAPIKey    string `json:"openwiki_api_key"`     // LLM API key
+	OpenAIUpstreamURL string `json:"openai_upstream_url"`  // Upstream OpenAI-compatible API base URL (e.g. "https://api.openai.com/v1")
 
 	// QA settings
 	MaxConcurrentQA  int    `json:"max_concurrent_qa"`   // max concurrent chat processes
@@ -129,5 +130,14 @@ func overrideEnv(cfg *Config) {
 		cfg.GitHTTPToken = envToken
 	} else if envToken := os.Getenv("GIT_TOKEN"); envToken != "" {
 		cfg.GitHTTPToken = envToken
+	}
+
+	if envUpstream := os.Getenv("OPENAI_UPSTREAM_URL"); envUpstream != "" {
+		cfg.OpenAIUpstreamURL = envUpstream
+	} else if envBase := os.Getenv("OPENAI_BASE_URL"); envBase != "" {
+		cfg.OpenAIUpstreamURL = envBase
+	}
+	if envKey := os.Getenv("OPENAI_API_KEY"); envKey != "" && cfg.OpenwikiAPIKey == "" {
+		cfg.OpenwikiAPIKey = envKey
 	}
 }

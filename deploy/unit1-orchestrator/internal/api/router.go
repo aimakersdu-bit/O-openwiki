@@ -1,11 +1,15 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 
 	"github.com/openwiki/orchestrator/internal/config"
+	"github.com/openwiki/orchestrator/internal/llmproxy"
 	"github.com/openwiki/orchestrator/internal/mcp"
 	"github.com/openwiki/orchestrator/internal/qa"
 	"github.com/openwiki/orchestrator/internal/scheduler"
@@ -22,6 +26,7 @@ type Server struct {
 	qaPool    *qa.Pool
 	qaManager *qa.Manager
 	mcpServer *mcp.Server
+	llmProxy  *llmproxy.LLMProxy
 	mux       *http.ServeMux
 
 	sseMu    sync.RWMutex
@@ -29,7 +34,7 @@ type Server struct {
 }
 
 // NewServer creates a new Orchestrator API server.
-func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, manager *qa.Manager, mcpServer *mcp.Server) *Server {
+func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, manager *qa.Manager, mcpServer *mcp.Server, proxy ...*llmproxy.LLMProxy) *Server {
 	s := &Server{
 		config:    cfg,
 		scheduler: sched,
@@ -39,8 +44,28 @@ func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, ma
 		mux:       http.NewServeMux(),
 		sseChans:  make(map[chan string]bool),
 	}
+	if len(proxy) > 0 && proxy[0] != nil {
+		s.llmProxy = proxy[0]
+	} else if cfg != nil {
+		var throttleCallback func(int)
+		if sched != nil && sched.GetRateLimiter() != nil {
+			throttleCallback = func(delta int) {
+				lim := sched.GetRateLimiter()
+				cur := lim.GetConcurrency()
+				if cur > 1 {
+					lim.SetConcurrency(cur - 1)
+				}
+			}
+		}
+		s.llmProxy = llmproxy.NewLLMProxy(cfg.OpenAIUpstreamURL, cfg.OpenwikiAPIKey, nil, throttleCallback)
+	}
 	s.routes()
 	return s
+}
+
+// GetLLMProxy returns the configured LLMProxy instance.
+func (s *Server) GetLLMProxy() *llmproxy.LLMProxy {
+	return s.llmProxy
 }
 
 func (s *Server) routes() {
@@ -65,6 +90,15 @@ func (s *Server) routes() {
 	// Daily Token Telemetry & Feishu/Lark Multi-dimensional Table Export
 	s.mux.HandleFunc("/api/telemetry/tokens/daily", s.handleDailyTokens)
 	s.mux.HandleFunc("/api/telemetry/tokens/export", s.handleTokensExport)
+
+	// OpenAI-Compatible Internal LLM Gateway
+	if s.llmProxy != nil {
+		s.mux.Handle("/internal/llm/v1/", s.llmProxy)
+		s.mux.Handle("/internal/llm/v1", s.llmProxy)
+	}
+
+	// LLM Quota & Dynamic Rate Limit Settings API
+	s.mux.HandleFunc("/api/settings/llm-quota", s.handleLLMQuota)
 
 	// MCP Protocol Endpoints (MCP 2025 Streamable HTTP & Legacy Remote SSE fallback)
 	if s.mcpServer != nil {
@@ -149,4 +183,81 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mux.ServeHTTP(w, r)
+}
+
+func (s *Server) handleLLMQuota(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	database := s.getDB()
+
+	switch r.Method {
+	case http.MethodGet:
+		maxTPMStr, _ := database.GetSetting("max_tpm", "0")
+		maxRPMStr, _ := database.GetSetting("max_rpm", "0")
+		dayConcStr, _ := database.GetSetting("day_max_concurrency", "2")
+		nightConcStr, _ := database.GetSetting("night_max_concurrency", "4")
+
+		maxTPM, _ := strconv.Atoi(maxTPMStr)
+		maxRPM, _ := strconv.Atoi(maxRPMStr)
+		dayConc, _ := strconv.Atoi(dayConcStr)
+		nightConc, _ := strconv.Atoi(nightConcStr)
+
+		var curTPM, curRPM, peakTPM, peakRPM, count429 int
+		if s.llmProxy != nil {
+			curTPM, curRPM, peakTPM, peakRPM = s.llmProxy.GetLimiter().GetStats()
+			count429 = s.llmProxy.Get429Count()
+		}
+
+		resp := map[string]interface{}{
+			"max_tpm":              maxTPM,
+			"max_rpm":              maxRPM,
+			"current_tpm":          curTPM,
+			"current_rpm":          curRPM,
+			"peak_tpm":             peakTPM,
+			"peak_rpm":             peakRPM,
+			"rate_limit_429_count": count429,
+			"day_max_concurrency":   dayConc,
+			"night_max_concurrency": nightConc,
+		}
+		json.NewEncoder(w).Encode(resp)
+
+	case http.MethodPut, http.MethodPost:
+		var req struct {
+			MaxTPM              *int `json:"max_tpm"`
+			MaxRPM              *int `json:"max_rpm"`
+			DayMaxConcurrency   *int `json:"day_max_concurrency"`
+			NightMaxConcurrency *int `json:"night_max_concurrency"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
+			return
+		}
+
+		if req.MaxTPM != nil {
+			_ = database.SetSetting("max_tpm", strconv.Itoa(*req.MaxTPM))
+		}
+		if req.MaxRPM != nil {
+			_ = database.SetSetting("max_rpm", strconv.Itoa(*req.MaxRPM))
+		}
+		if req.DayMaxConcurrency != nil {
+			_ = database.SetSetting("day_max_concurrency", strconv.Itoa(*req.DayMaxConcurrency))
+		}
+		if req.NightMaxConcurrency != nil {
+			_ = database.SetSetting("night_max_concurrency", strconv.Itoa(*req.NightMaxConcurrency))
+		}
+
+		// Apply immediately to running rate limiter
+		if s.llmProxy != nil {
+			maxTPMStr, _ := database.GetSetting("max_tpm", "0")
+			maxRPMStr, _ := database.GetSetting("max_rpm", "0")
+			tpm, _ := strconv.Atoi(maxTPMStr)
+			rpm, _ := strconv.Atoi(maxRPMStr)
+			s.llmProxy.GetLimiter().SetQuota(tpm, rpm)
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok","message":"llm quota settings updated successfully"}`))
+
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
 }

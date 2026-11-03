@@ -114,4 +114,31 @@ func TestBatchRunAndDailyTokenUsageCRUD(t *testing.T) {
 	if err != nil || len(usages) != 1 || usages[0].TotalTokens != 15700 {
 		t.Fatalf("Unexpected daily token usage: %+v", usages)
 	}
+
+	// 5. 测试 system_settings 与 FinishBuildWithTokens
+	val, err := database.GetSetting("max_tpm")
+	if err != nil || val != "0" {
+		t.Fatalf("Expected default max_tpm 0, got %s, err: %v", val, err)
+	}
+
+	if err := database.SetSetting("max_tpm", "150000"); err != nil {
+		t.Fatalf("SetSetting failed: %v", err)
+	}
+	val, _ = database.GetSetting("max_tpm")
+	if val != "150000" {
+		t.Fatalf("Expected updated max_tpm 150000, got %s", val)
+	}
+
+	buildID, err := database.CreateBuild("trade-gateway", "commit-1", "running")
+	if err != nil {
+		t.Fatalf("CreateBuild failed: %v", err)
+	}
+	if err := database.FinishBuildWithTokens(buildID, "completed", "success log", "", 100, 200, 300, 50, 2); err != nil {
+		t.Fatalf("FinishBuildWithTokens failed: %v", err)
+	}
+
+	builds, err := database.ListBuilds("trade-gateway", 1)
+	if err != nil || len(builds) != 1 || builds[0].TotalTokens != 300 || builds[0].RateLimitedRetries != 2 {
+		t.Fatalf("Unexpected build after FinishBuildWithTokens: %+v", builds)
+	}
 }
