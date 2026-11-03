@@ -83,6 +83,9 @@ func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, ma
 		}
 		if sched.GetPipeline() != nil {
 			sched.GetPipeline().SetLLMProxy(s.llmProxy)
+			if cfg != nil && cfg.LogBaseDir != "" {
+				sched.GetPipeline().SetLogBaseDir(cfg.LogBaseDir)
+			}
 		}
 	}
 
@@ -152,6 +155,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/storage/rebalance/plan", s.handleRebalancePlan)
 	s.mux.HandleFunc("/api/storage/migrations", s.handleMigrations)
 	s.mux.HandleFunc("/api/storage/migrations/", s.handleMigrationAction)
+
+	// Dedicated Log Disk Management Endpoints
+	s.mux.HandleFunc("/api/logs/stats", s.handleLogStats)
+	s.mux.HandleFunc("/api/logs/cleanup", s.handleLogCleanup)
 
 	// MCP Protocol Endpoints (MCP 2025 Streamable HTTP & Legacy Remote SSE fallback)
 	if s.mcpServer != nil {

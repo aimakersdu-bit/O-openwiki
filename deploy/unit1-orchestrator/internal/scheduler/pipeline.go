@@ -84,6 +84,7 @@ type BuildPipeline struct {
 	builder       *Builder
 	rateLimiter   *DynamicRateLimiter
 	llmProxy      *llmproxy.LLMProxy
+	logBaseDir    string
 	mu            sync.Mutex
 	runningBuilds map[string]int64 // repo_id -> build_id
 }
@@ -101,6 +102,11 @@ func NewBuildPipeline(database *db.DB, builder *Builder, rateLimiter *DynamicRat
 // SetLLMProxy sets the proxy instance for intercepting build token usage.
 func (p *BuildPipeline) SetLLMProxy(proxy *llmproxy.LLMProxy) {
 	p.llmProxy = proxy
+}
+
+// SetLogBaseDir sets the base directory for disk_log persistence.
+func (p *BuildPipeline) SetLogBaseDir(dir string) {
+	p.logBaseDir = dir
 }
 
 // Execute runs the build pipeline for a repository.
@@ -284,6 +290,14 @@ func (p *BuildPipeline) Execute(ctx context.Context, repo *db.Repo, force bool, 
 	}
 
 	_ = p.db.FinishBuildWithTokens(buildID, finalStatus, fullLog, buildRes.Error, promptTokens, completionTokens, totalTokens, 0, retries)
+
+	// Persist build log to disk_log file
+	if p.logBaseDir != "" {
+		buildDir := filepath.Join(p.logBaseDir, "builds", "general")
+		_ = os.MkdirAll(buildDir, 0755)
+		logFilePath := filepath.Join(buildDir, fmt.Sprintf("%s.log", repo.ID))
+		_ = os.WriteFile(logFilePath, []byte(fullLog), 0644)
+	}
 
 	today := time.Now().Format("2006-01-02")
 	_ = p.db.RecordDailyTokenUsage(&db.DailyTokenUsage{

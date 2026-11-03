@@ -19,6 +19,7 @@ type Config struct {
 	VendorAssetsDir string `json:"vendor_assets_dir"`  // path to pre-downloaded vendor/ assets
 	ReposBaseDir    string `json:"repos_base_dir"`     // base directory for cloned repositories
 	ProjectsBaseDir string `json:"projects_base_dir"`  // base directory for virtual project workspaces
+	LogBaseDir      string `json:"log_base_dir"`       // base directory for logs (e.g. /data/disk_log)
 	DBPath          string `json:"db_path"`             // path to SQLite database file
 
 	// OpenWiki provider settings
@@ -57,6 +58,7 @@ func DefaultConfig() *Config {
 		VendorAssetsDir:  "assets/vendor",
 		ReposBaseDir:     filepath.Join(home, ".openwiki", "repos"),
 		ProjectsBaseDir:  filepath.Join(home, ".openwiki", "projects"),
+		LogBaseDir:       filepath.Join(home, ".openwiki", "disk_log"),
 		DBPath:           "orchestrator.db",
 		MaxConcurrentQA:  5,
 		QATimeoutSec:     600,
@@ -111,6 +113,9 @@ func overrideEnv(cfg *Config) {
 	}
 	if envRepos := os.Getenv("REPOS_BASE_DIR"); envRepos != "" {
 		cfg.ReposBaseDir = envRepos
+	}
+	if envLog := os.Getenv("LOG_BASE_DIR"); envLog != "" {
+		cfg.LogBaseDir = envLog
 	}
 
 	// Git HTTP Credentials Overrides
