@@ -181,8 +181,12 @@ func (b *Builder) createOpenWikiCmdWithBuildID(buildID int64, repoPath string, a
 
 	// LLM Proxy Environment Injection
 	if b.LLMBaseURL != "" {
-		env = append(env, fmt.Sprintf("OPENAI_BASE_URL=%s", b.LLMBaseURL))
-		env = append(env, fmt.Sprintf("OPENAI_COMPATIBLE_BASE_URL=%s", b.LLMBaseURL))
+		baseURL := strings.TrimSuffix(b.LLMBaseURL, "/")
+		if buildID > 0 {
+			baseURL = fmt.Sprintf("%s/build/%d", baseURL, buildID)
+		}
+		env = append(env, fmt.Sprintf("OPENAI_BASE_URL=%s", baseURL))
+		env = append(env, fmt.Sprintf("OPENAI_COMPATIBLE_BASE_URL=%s", baseURL))
 	}
 	if buildID > 0 {
 		env = append(env, fmt.Sprintf("OPENAI_API_KEY=ow-build-%d", buildID))

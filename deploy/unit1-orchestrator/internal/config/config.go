@@ -145,9 +145,17 @@ func overrideEnv(cfg *Config) {
 		cfg.OpenAIUpstreamURL = envUpstream
 	} else if envBase := os.Getenv("OPENAI_BASE_URL"); envBase != "" {
 		cfg.OpenAIUpstreamURL = envBase
+	} else if envCompatBase := os.Getenv("OPENAI_COMPATIBLE_BASE_URL"); envCompatBase != "" {
+		cfg.OpenAIUpstreamURL = envCompatBase
 	}
-	if envKey := os.Getenv("OPENAI_API_KEY"); envKey != "" && cfg.OpenwikiAPIKey == "" {
-		cfg.OpenwikiAPIKey = envKey
+	if cfg.OpenwikiAPIKey == "" {
+		if envKey := os.Getenv("OPENAI_API_KEY"); envKey != "" {
+			cfg.OpenwikiAPIKey = envKey
+		} else if envCompatKey := os.Getenv("OPENAI_COMPATIBLE_API_KEY"); envCompatKey != "" {
+			cfg.OpenwikiAPIKey = envCompatKey
+		} else if envOwKey := os.Getenv("OPENWIKI_API_KEY"); envOwKey != "" {
+			cfg.OpenwikiAPIKey = envOwKey
+		}
 	}
 	if envSecret := os.Getenv("OPENWIKI_HMAC_SECRET"); envSecret != "" {
 		cfg.HMACSecret = envSecret

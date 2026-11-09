@@ -1434,9 +1434,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (!q) return;
       document.getElementById('quotaMaxTPM').value = q.max_tpm ?? 0;
       document.getElementById('quotaMaxRPM').value = q.max_rpm ?? 0;
-      document.getElementById('quotaDayConcurrency').value = q.day_concurrency ?? 2;
-      document.getElementById('quotaNightConcurrency').value = q.night_concurrency ?? 4;
-      document.getElementById('quotaThrottledCount').textContent = q.throttled_retries ?? 0;
+      document.getElementById('quotaDayConcurrency').value = q.day_max_concurrency ?? q.day_concurrency ?? 2;
+      document.getElementById('quotaNightConcurrency').value = q.night_max_concurrency ?? q.night_concurrency ?? 4;
+      const count429 = q.rate_limit_429_count ?? q.throttled_retries ?? 0;
+      const statusEl = document.getElementById('quotaStatusText');
+      if (statusEl) {
+        statusEl.innerHTML = `近 60 分钟 429 拦截与自适应降级: <span id="quotaThrottledCount" style="color: #f59e0b; font-weight: bold;">${count429}</span> 次 &nbsp;|&nbsp; 实时窗口: <b>${q.current_tpm ?? 0}</b> TPM / <b>${q.current_rpm ?? 0}</b> RPM &nbsp;|&nbsp; 历史峰值: <b>${q.peak_tpm ?? 0}</b> TPM / <b>${q.peak_rpm ?? 0}</b> RPM`;
+      }
     } catch (e) {
       console.warn('loadLLMQuota error', e);
     }
@@ -1447,11 +1451,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     llmQuotaForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       try {
+        const dayConc = Number(document.getElementById('quotaDayConcurrency').value);
+        const nightConc = Number(document.getElementById('quotaNightConcurrency').value);
         await API.updateLLMQuota({
           max_tpm: Number(document.getElementById('quotaMaxTPM').value),
           max_rpm: Number(document.getElementById('quotaMaxRPM').value),
-          day_concurrency: Number(document.getElementById('quotaDayConcurrency').value),
-          night_concurrency: Number(document.getElementById('quotaNightConcurrency').value)
+          day_max_concurrency: dayConc,
+          night_max_concurrency: nightConc,
+          day_concurrency: dayConc,
+          night_concurrency: nightConc
         });
         showAlert('LLM 算力配额与日夜并发已成功实时生效！', 'success');
         loadLLMQuota();

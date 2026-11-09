@@ -225,8 +225,20 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build target URL
+	// Build target URL (and extract optional /build/<buildID>/ prefix from path)
 	subPath := strings.TrimPrefix(r.URL.Path, "/internal/llm/v1")
+	if strings.HasPrefix(subPath, "/build/") {
+		rest := strings.TrimPrefix(subPath, "/build/")
+		parts := strings.SplitN(rest, "/", 2)
+		if parts[0] != "" && buildID == "" {
+			buildID = parts[0]
+		}
+		if len(parts) > 1 {
+			subPath = "/" + parts[1]
+		} else {
+			subPath = ""
+		}
+	}
 	if !strings.HasPrefix(subPath, "/") && subPath != "" {
 		subPath = "/" + subPath
 	}

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/openwiki/orchestrator/internal/config"
 	"github.com/openwiki/orchestrator/internal/db"
@@ -63,6 +64,19 @@ func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, ma
 			}
 		}
 		s.llmProxy = llmproxy.NewLLMProxy(cfg.OpenAIUpstreamURL, cfg.OpenwikiAPIKey, nil, throttleCallback)
+	}
+
+	if database := s.getDB(); database != nil {
+		if s.llmProxy != nil {
+			maxTPMStr, _ := database.GetSetting("max_tpm", "0")
+			maxRPMStr, _ := database.GetSetting("max_rpm", "0")
+			tpm, _ := strconv.Atoi(maxTPMStr)
+			rpm, _ := strconv.Atoi(maxRPMStr)
+			s.llmProxy.GetLimiter().SetQuota(tpm, rpm)
+		}
+		if sched != nil && sched.GetBatchScheduler() != nil {
+			sched.GetBatchScheduler().ApplyDayNightConcurrency(time.Now())
+		}
 	}
 
 	linksDir := "/data/disk0/links/repos"
@@ -271,15 +285,18 @@ func (s *Server) handleLLMQuota(w http.ResponseWriter, r *http.Request) {
 		}
 
 		resp := map[string]interface{}{
-			"max_tpm":              maxTPM,
-			"max_rpm":              maxRPM,
-			"current_tpm":          curTPM,
-			"current_rpm":          curRPM,
-			"peak_tpm":             peakTPM,
-			"peak_rpm":             peakRPM,
-			"rate_limit_429_count": count429,
+			"max_tpm":               maxTPM,
+			"max_rpm":               maxRPM,
+			"current_tpm":           curTPM,
+			"current_rpm":           curRPM,
+			"peak_tpm":              peakTPM,
+			"peak_rpm":              peakRPM,
+			"rate_limit_429_count":  count429,
+			"throttled_retries":     count429,
 			"day_max_concurrency":   dayConc,
+			"day_concurrency":       dayConc,
 			"night_max_concurrency": nightConc,
+			"night_concurrency":     nightConc,
 		}
 		json.NewEncoder(w).Encode(resp)
 
@@ -289,6 +306,8 @@ func (s *Server) handleLLMQuota(w http.ResponseWriter, r *http.Request) {
 			MaxRPM              *int `json:"max_rpm"`
 			DayMaxConcurrency   *int `json:"day_max_concurrency"`
 			NightMaxConcurrency *int `json:"night_max_concurrency"`
+			DayConcurrency      *int `json:"day_concurrency"`
+			NightConcurrency    *int `json:"night_concurrency"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
@@ -301,20 +320,31 @@ func (s *Server) handleLLMQuota(w http.ResponseWriter, r *http.Request) {
 		if req.MaxRPM != nil {
 			_ = database.SetSetting("max_rpm", strconv.Itoa(*req.MaxRPM))
 		}
-		if req.DayMaxConcurrency != nil {
-			_ = database.SetSetting("day_max_concurrency", strconv.Itoa(*req.DayMaxConcurrency))
+		dayConc := req.DayMaxConcurrency
+		if dayConc == nil {
+			dayConc = req.DayConcurrency
 		}
-		if req.NightMaxConcurrency != nil {
-			_ = database.SetSetting("night_max_concurrency", strconv.Itoa(*req.NightMaxConcurrency))
+		if dayConc != nil {
+			_ = database.SetSetting("day_max_concurrency", strconv.Itoa(*dayConc))
+		}
+		nightConc := req.NightMaxConcurrency
+		if nightConc == nil {
+			nightConc = req.NightConcurrency
+		}
+		if nightConc != nil {
+			_ = database.SetSetting("night_max_concurrency", strconv.Itoa(*nightConc))
 		}
 
-		// Apply immediately to running rate limiter
+		// Apply immediately to running rate limiter and batch concurrency scheduler
 		if s.llmProxy != nil {
 			maxTPMStr, _ := database.GetSetting("max_tpm", "0")
 			maxRPMStr, _ := database.GetSetting("max_rpm", "0")
 			tpm, _ := strconv.Atoi(maxTPMStr)
 			rpm, _ := strconv.Atoi(maxRPMStr)
 			s.llmProxy.GetLimiter().SetQuota(tpm, rpm)
+		}
+		if s.scheduler != nil && s.scheduler.GetBatchScheduler() != nil {
+			s.scheduler.GetBatchScheduler().ApplyDayNightConcurrency(time.Now())
 		}
 
 		w.WriteHeader(http.StatusOK)
