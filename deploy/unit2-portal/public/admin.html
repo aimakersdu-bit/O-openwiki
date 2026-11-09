@@ -172,6 +172,26 @@
 
         <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem;">
           <div class="form-group">
+            <label for="repoBusinessDomain">所属业务域 <span style="color:var(--text-secondary); font-weight:normal;">(必填，如消金、零售金融)</span></label>
+            <div style="display: flex; gap: 0.5rem;">
+              <select id="repoBusinessDomain" required style="flex: 1; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);">
+                <option value="" disabled selected>-- 请选择业务域 --</option>
+              </select>
+              <input type="text" id="repoCustomBusinessDomain" placeholder="输入自定义业务域" style="flex: 1; display: none; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="repoTier">核心等级 (Tier)</label>
+            <select id="repoTier" style="width: 100%; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);">
+              <option value="A">A 级 (核心高优)</option>
+              <option value="B" selected>B 级 (普通微服务)</option>
+              <option value="C">C 级 (边缘/低频)</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem;">
+          <div class="form-group">
             <label for="localPath">服务器本地工作目录 <span style="color:var(--text-secondary); font-weight:normal;">(可选，默认 /var/openwiki/repos/&lt;repo_id&gt;)</span></label>
             <input type="text" id="localPath" placeholder="/var/openwiki/repos/order-service">
           </div>
@@ -470,6 +490,25 @@
             <div class="form-group">
               <label for="editBranch">分支</label>
               <input type="text" id="editBranch" required>
+            </div>
+          </div>
+          <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem;">
+            <div class="form-group">
+              <label for="editRepoBusinessDomain">所属业务域 <span style="color:var(--text-secondary); font-weight:normal;">(必填)</span></label>
+              <div style="display: flex; gap: 0.5rem;">
+                <select id="editRepoBusinessDomain" required style="flex: 1; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);">
+                  <option value="" disabled selected>-- 请选择业务域 --</option>
+                </select>
+                <input type="text" id="editCustomBusinessDomain" placeholder="输入自定义业务域" style="flex: 1; display: none; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);">
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="editRepoTier">核心等级 (Tier)</label>
+              <select id="editRepoTier" style="width: 100%; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);">
+                <option value="A">A 级 (核心高优)</option>
+                <option value="B">B 级 (普通微服务)</option>
+                <option value="C">C 级 (边缘/低频)</option>
+              </select>
             </div>
           </div>
           <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem;">

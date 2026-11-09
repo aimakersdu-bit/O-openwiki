@@ -119,15 +119,17 @@ func (s *Server) createRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 type UpdateRepoRequest struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	GitURL    string `json:"git_url"`
-	Branch    string `json:"branch"`
-	LocalPath string `json:"local_path"`
-	WikiDir   string `json:"wiki_dir"`
-	StaticDir string `json:"static_dir"`
-	Schedule  string `json:"schedule"`
-	Status    string `json:"status"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	GitURL         string `json:"git_url"`
+	Branch         string `json:"branch"`
+	BusinessDomain string `json:"business_domain"`
+	Tier           string `json:"tier"`
+	LocalPath      string `json:"local_path"`
+	WikiDir        string `json:"wiki_dir"`
+	StaticDir      string `json:"static_dir"`
+	Schedule       string `json:"schedule"`
+	Status         string `json:"status"`
 }
 
 func (s *Server) updateRepo(w http.ResponseWriter, r *http.Request) {
@@ -157,6 +159,12 @@ func (s *Server) updateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Branch != "" {
 		existing.Branch = req.Branch
+	}
+	if req.BusinessDomain != "" {
+		existing.BusinessDomain = req.BusinessDomain
+	}
+	if req.Tier != "" {
+		existing.Tier = req.Tier
 	}
 	if req.LocalPath != "" {
 		existing.LocalPath = req.LocalPath

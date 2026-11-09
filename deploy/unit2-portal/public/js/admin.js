@@ -155,16 +155,116 @@ document.addEventListener('DOMContentLoaded', async () => {
     localPathInput.placeholder = `/var/openwiki/repos/${val || 'order-service'}`;
   });
 
+  // State
+  let cachedRepos = [];
+  let cachedBuildsMap = new Map();
+  let configuredDomainsCache = null;
+
+  // Business Domain Selection Elements
+  const repoDomainSelect = document.getElementById('repoBusinessDomain');
+  const repoCustomDomainInput = document.getElementById('repoCustomBusinessDomain');
+  const editRepoDomainSelect = document.getElementById('editRepoBusinessDomain');
+  const editCustomDomainInput = document.getElementById('editCustomBusinessDomain');
+
+  function setupCustomDomainToggle(selectEl, customInputEl) {
+    if (!selectEl || !customInputEl) return;
+    selectEl.addEventListener('change', () => {
+      if (selectEl.value === '__custom__') {
+        customInputEl.style.display = 'block';
+        customInputEl.focus();
+      } else {
+        customInputEl.style.display = 'none';
+      }
+    });
+  }
+
+  setupCustomDomainToggle(repoDomainSelect, repoCustomDomainInput);
+  setupCustomDomainToggle(editRepoDomainSelect, editCustomDomainInput);
+
+  async function getAvailableDomains(selectedDomain = '') {
+    // group_leader: restricted to authorized domains only
+    if (isGroupLeader && currentUser && currentUser.authorized_domains) {
+      let list = (currentUser.authorized_domains || []).slice();
+      if (selectedDomain && !list.includes(selectedDomain)) list.push(selectedDomain);
+      return list;
+    }
+
+    if (configuredDomainsCache === null) {
+      try {
+        const list = await API.getDomains();
+        configuredDomainsCache = (list || []).map(d => d.name);
+      } catch (e) {
+        configuredDomainsCache = [];
+      }
+    }
+    let domains = (configuredDomainsCache || []).slice();
+
+    // Backward-compat fallback: if no configured domains yet, dedup from cached repos
+    if (domains.length === 0) {
+      const set = new Set();
+      (cachedRepos || []).forEach(r => { if (r.business_domain) set.add(r.business_domain); });
+      domains = Array.from(set);
+    }
+    if (selectedDomain && !domains.includes(selectedDomain)) domains.push(selectedDomain);
+    return domains;
+  }
+
+  async function populateDomainDropdown(selectEl, customInputEl, selectedDomain = '', allowCustom = true) {
+    if (!selectEl) return;
+    const domains = await getAvailableDomains(selectedDomain);
+
+    let html = '<option value="" disabled ' + (!selectedDomain ? 'selected' : '') + '>-- 请选择业务域 --</option>';
+    let matched = false;
+    domains.forEach(d => {
+      const isSel = (d === selectedDomain);
+      if (isSel) matched = true;
+      html += `<option value="${API.escapeHTML(d)}" ${isSel ? 'selected' : ''}>${API.escapeHTML(d)}</option>`;
+    });
+
+    if (allowCustom && !isGroupLeader) {
+      html += `<option value="__custom__">➕ 手动输入新业务域...</option>`;
+    }
+    selectEl.innerHTML = html;
+
+    if (customInputEl) {
+      if (selectedDomain && !matched && allowCustom && !isGroupLeader) {
+        selectEl.value = '__custom__';
+        customInputEl.style.display = 'block';
+        customInputEl.value = selectedDomain;
+      } else if (domains.length === 0 && allowCustom && !isGroupLeader) {
+        selectEl.value = '__custom__';
+        customInputEl.style.display = 'block';
+        customInputEl.value = selectedDomain || '';
+      } else {
+        customInputEl.style.display = 'none';
+        customInputEl.value = '';
+      }
+    }
+  }
+
   // Register Repo Form Handler
   registerForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     adminAlert.style.display = 'none';
+
+    let businessDomain = repoDomainSelect ? repoDomainSelect.value : '';
+    if (businessDomain === '__custom__' && repoCustomDomainInput) {
+      businessDomain = repoCustomDomainInput.value.trim();
+    }
+    if (!businessDomain) {
+      showAlert('请选择或输入所属业务域！', 'error');
+      return;
+    }
+
+    const tier = (document.getElementById('repoTier') && document.getElementById('repoTier').value) || 'B';
 
     const repoData = {
       id: repoIdInput.value.trim(),
       name: document.getElementById('repoName').value.trim(),
       git_url: document.getElementById('gitUrl').value.trim(),
       branch: document.getElementById('branch').value.trim() || 'master',
+      business_domain: businessDomain,
+      tier: tier,
       local_path: localPathInput.value.trim(),
       schedule: document.getElementById('schedule').value.trim()
     };
@@ -173,8 +273,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       await API.registerRepo(repoData);
       showAlert('仓库注册成功，已成功加入 Cron 调度队列！', 'success');
       registerForm.reset();
-      // 保持添加仓库默认分支为 master
+      // 保持添加仓库默认分支为 master，默认 Tier 为 B
       document.getElementById('branch').value = 'master';
+      if (document.getElementById('repoTier')) document.getElementById('repoTier').value = 'B';
+      populateDomainDropdown(repoDomainSelect, repoCustomDomainInput, '', true);
       loadAdminRepos();
     } catch (err) {
       showAlert(err.message, 'error');
@@ -186,11 +288,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     e.preventDefault();
     editAlert.style.display = 'none';
 
+    let editBusinessDomain = editRepoDomainSelect ? editRepoDomainSelect.value : '';
+    if (editBusinessDomain === '__custom__' && editCustomDomainInput) {
+      editBusinessDomain = editCustomDomainInput.value.trim();
+    }
+    if (!editBusinessDomain) {
+      editAlert.textContent = '请选择或输入所属业务域！';
+      editAlert.className = 'alert alert-error';
+      editAlert.style.display = 'block';
+      return;
+    }
+
+    const editTier = (document.getElementById('editRepoTier') && document.getElementById('editRepoTier').value) || 'B';
+
     const repoData = {
       id: document.getElementById('editRepoId').value,
       name: document.getElementById('editRepoName').value.trim(),
       git_url: document.getElementById('editGitUrl').value.trim(),
       branch: document.getElementById('editBranch').value.trim(),
+      business_domain: editBusinessDomain,
+      tier: editTier,
       local_path: document.getElementById('editLocalPath').value.trim(),
       schedule: document.getElementById('editSchedule').value.trim()
     };
@@ -208,8 +325,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // Search & Pagination State
-  let cachedRepos = [];
-  let cachedBuildsMap = new Map();
   let searchKeyword = '';
   let currentPage = 1;
   let pageSize = '10';
@@ -259,6 +374,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     return cachedRepos.filter(r => {
       return (r.id && r.id.toLowerCase().includes(q)) ||
              (r.name && r.name.toLowerCase().includes(q)) ||
+             (r.business_domain && r.business_domain.toLowerCase().includes(q)) ||
              (r.git_url && r.git_url.toLowerCase().includes(q)) ||
              (r.branch && r.branch.toLowerCase().includes(q)) ||
              (r.local_path && r.local_path.toLowerCase().includes(q));
@@ -319,7 +435,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         <tr>
           <td class="col-nowrap">
             <strong>${API.escapeHTML(repo.name)}</strong>
-            <div style="font-size:0.75rem; color:var(--text-secondary);">${API.escapeHTML(repo.id)}</div>
+            <div style="font-size:0.75rem; color:var(--text-secondary); margin-top:2px;">
+              <code>${API.escapeHTML(repo.id)}</code>
+              ${repo.business_domain ? `<span class="badge" style="background:rgba(20,184,166,0.15); color:#14b8a6; font-size:0.7rem; padding:1px 5px; margin-left:4px;">${API.escapeHTML(repo.business_domain)}</span>` : ''}
+              ${repo.tier ? `<span class="badge" style="background:rgba(99,102,241,0.15); color:#818cf8; font-size:0.7rem; padding:1px 4px; margin-left:4px;">Tier ${API.escapeHTML(repo.tier)}</span>` : ''}
+            </div>
           </td>
           <td>
             <code style="display:block; max-width:280px; word-break:break-all; font-size:0.8rem;">${API.escapeHTML(repo.git_url)}</code>
@@ -482,6 +602,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('editRepoName').value = targetRepo.name || targetRepo.id;
         document.getElementById('editGitUrl').value = targetRepo.git_url || '';
         document.getElementById('editBranch').value = targetRepo.branch || 'master';
+        if (document.getElementById('editRepoTier')) {
+          document.getElementById('editRepoTier').value = targetRepo.tier || 'B';
+        }
+        populateDomainDropdown(editRepoDomainSelect, editCustomDomainInput, targetRepo.business_domain || '', true);
         document.getElementById('editLocalPath').value = targetRepo.local_path || '';
         document.getElementById('editSchedule').value = targetRepo.schedule || '0 2 * * *';
 
@@ -512,6 +636,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       const repos = await API.getRepos();
       cachedRepos = repos || [];
+
+      // Ensure domain dropdowns have options
+      populateDomainDropdown(repoDomainSelect, repoCustomDomainInput, repoDomainSelect ? repoDomainSelect.value : '', true).catch(() => {});
+
       if (!repos || repos.length === 0) {
         adminTableBody.innerHTML = '<tr><td colspan="7" style="text-align:center; color: var(--text-secondary); padding: 2rem;">暂无已注册仓库。</td></tr>';
         renderAdminPagination(0, 1, 1);
@@ -614,40 +742,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     projReposPicker.innerHTML = html;
   }
 
-  let configuredDomainsCache = null;
-
-  // Render the business domain <select>. Loads from the configurable domain dictionary
-  // (/portal/domains) first; falls back to dedup from cached repos for backward compat.
+  // Render the business domain <select> for microservice projects.
   async function populateDomainSelect(selectedDomain = '') {
     const domainSelect = document.getElementById('projBusinessDomain');
     if (!domainSelect) return;
-
-    // group_leader: restricted to authorized domains only
-    if (isGroupLeader && currentUser && currentUser.authorized_domains) {
-      renderDomainOptions(currentUser.authorized_domains, selectedDomain, domainSelect);
-      return;
-    }
-
-    // admin/super_admin: load from configurable domain dictionary
-    let domains = [];
-    if (configuredDomainsCache === null) {
-      try {
-        const list = await API.getDomains();
-        configuredDomainsCache = (list || []).map(d => d.name);
-      } catch (e) {
-        configuredDomainsCache = []; // fallback below
-      }
-    }
-    domains = configuredDomainsCache.slice();
-
-    // Backward-compat fallback: if no configured domains yet, dedup from cached repos
-    if (domains.length === 0) {
-      const set = new Set();
-      (cachedRepos || []).forEach(r => { if (r.business_domain) set.add(r.business_domain); });
-      domains = Array.from(set);
-    }
-    if (selectedDomain && !domains.includes(selectedDomain)) domains.push(selectedDomain);
-
+    const domains = await getAvailableDomains(selectedDomain);
     renderDomainOptions(domains, selectedDomain, domainSelect);
   }
 
@@ -1656,6 +1755,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       const list = await API.getDomains();
       configuredDomainsCache = (list || []).map(d => d.name); // refresh cache
+      populateDomainDropdown(repoDomainSelect, repoCustomDomainInput, repoDomainSelect ? repoDomainSelect.value : '', true).catch(() => {});
       if (!list || list.length === 0) {
         domainsTableBody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-secondary);">尚未配置业务域。新增后将作为仓库导入与项目编排的下拉选项。</td></tr>';
         return;
