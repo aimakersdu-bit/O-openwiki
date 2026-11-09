@@ -1567,8 +1567,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     });
   }
-    });
-  }
 
   // ==========================================
   // Super Admin 3: User RBAC & Domains (Task 17)
