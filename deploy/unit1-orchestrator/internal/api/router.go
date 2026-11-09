@@ -417,12 +417,16 @@ func (s *Server) handleMigrations(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req struct {
-			RepoID     string `json:"repo_id"`
-			ToVolumeID string `json:"to_volume_id"`
+			RepoID       string `json:"repo_id"`
+			ToVolumeID   string `json:"to_volume_id"`
+			TargetVolume string `json:"target_volume"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
 			return
+		}
+		if req.ToVolumeID == "" {
+			req.ToVolumeID = req.TargetVolume
 		}
 		if req.RepoID == "" || req.ToVolumeID == "" {
 			http.Error(w, `{"error":"repo_id and to_volume_id are required"}`, http.StatusBadRequest)

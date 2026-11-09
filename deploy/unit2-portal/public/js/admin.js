@@ -1475,16 +1475,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function loadStorageVolumes() {
     if (!isSuperAdmin) return;
     try {
-      const vols = await API.getStorageVolumes();
+      const res = await API.getStorageVolumes();
+      const vols = Array.isArray(res) ? res : (res && Array.isArray(res.volumes) ? res.volumes : []);
       if (!vols || vols.length === 0) {
-        volumesGrid.innerHTML = '<div style="color:var(--text-secondary);">暂无存储卷数据</div>';
+        volumesGrid.innerHTML = '<div style="color:var(--text-secondary); padding:1.5rem; text-align:center; background:var(--bg-secondary); border-radius:8px; border:1px dashed var(--border-color); grid-column:1/-1;">暂无存储卷数据。请先配置或注册存储卷挂载点。</div>';
         return;
       }
       volumesGrid.innerHTML = vols.map(v => {
-        const usedPct = v.used_pct || (v.capacity_bytes > 0 ? (v.used_bytes / v.capacity_bytes * 100) : 0);
+        const total = v.total_bytes || v.capacity_bytes || 0;
+        const used = v.used_bytes || 0;
+        const usedPct = total > 0 ? (used / total * 100) : 0;
         const color = usedPct > 80 ? '#ef4444' : (usedPct > 60 ? '#f59e0b' : '#10b981');
-        const capGB = (v.capacity_bytes / (1024*1024*1024)).toFixed(1);
-        const usedGB = (v.used_bytes / (1024*1024*1024)).toFixed(1);
+        const capGB = (total / (1024*1024*1024)).toFixed(1);
+        const usedGB = (used / (1024*1024*1024)).toFixed(1);
 
         return `
           <div style="background:var(--bg-secondary); padding:1rem; border-radius:8px; border:1px solid var(--border-color);">
@@ -1500,13 +1503,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             </div>
             <div style="font-size:0.8rem; color:var(--text-secondary); display:flex; justify-content:space-between;">
               <span>已用: ${usedGB} GB / ${capGB} GB</span>
-              <span>${v.repo_count || 0} 个仓库</span>
+              <span>状态: <span style="color:${v.status === 'active' ? 'var(--success-color)' : 'var(--text-secondary)'}; font-weight:600;">${v.status || 'active'}</span></span>
             </div>
           </div>
         `;
       }).join('');
     } catch (e) {
       console.warn('loadStorageVolumes error', e);
+      if (volumesGrid) {
+        volumesGrid.innerHTML = `<div style="color:var(--error-color); padding:1rem; grid-column:1/-1;">加载存储卷失败: ${API.escapeHTML(e.message)}</div>`;
+      }
     }
   }
 
@@ -1514,8 +1520,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (generateRebalanceBtn) {
     generateRebalanceBtn.addEventListener('click', async () => {
       try {
-        const plan = await API.getRebalancePlan();
-        currentRebalancePlan = plan.moves || [];
+        const planRes = await API.getRebalancePlan();
+        currentRebalancePlan = planRes.plan || planRes.moves || (Array.isArray(planRes) ? planRes : []);
         if (currentRebalancePlan.length === 0) {
           rebalancePlanArea.style.display = 'block';
           rebalancePlanList.innerHTML = '<span style="color:var(--success-color);">✅ 当前各卷水位均衡，暂无需迁移的仓库！</span>';
@@ -1527,8 +1533,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         rebalancePlanList.innerHTML = currentRebalancePlan.map(m => `
           <div style="margin-bottom:0.4rem;">
             📦 仓库 <strong>${API.escapeHTML(m.repo_id)}</strong> (${(m.size_bytes / (1024*1024)).toFixed(1)} MB): 
-            从 <code style="color:#ef4444;">${API.escapeHTML(m.from_volume)}</code> 迁移到 
-            <code style="color:#10b981;">${API.escapeHTML(m.to_volume)}</code>
+            从 <code style="color:#ef4444;">${API.escapeHTML(m.from_volume_id || m.from_volume)}</code> 迁移到 
+            <code style="color:#10b981;">${API.escapeHTML(m.to_volume_id || m.to_volume)}</code>
+            ${m.reason ? `<span style="font-size:0.8rem; color:var(--text-secondary);">(${API.escapeHTML(m.reason)})</span>` : ''}
           </div>
         `).join('');
       } catch (err) {
@@ -1546,7 +1553,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         for (const m of currentRebalancePlan) {
           await API.executeMigration({
             repo_id: m.repo_id,
-            target_volume: m.to_volume
+            to_volume_id: m.to_volume_id || m.to_volume
           });
         }
         showAlert(`已触发 ${currentRebalancePlan.length} 个仓库平滑在线迁移任务！后台状态机正在运行。`, 'success');
@@ -1558,6 +1565,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         applyRebalancePlanBtn.disabled = false;
         applyRebalancePlanBtn.textContent = '🚀 确认并一键执行批量迁移';
       }
+    });
+  }
     });
   }
 
