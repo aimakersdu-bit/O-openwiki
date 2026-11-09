@@ -76,10 +76,18 @@ func (s *Server) handleBatchImport(w http.ResponseWriter, r *http.Request) {
 	database := s.getDB()
 
 	domainRepos := make(map[string][]string)
+	importErrors := make([]string, 0)
+	importedCount := 0
 
 	for _, item := range req.Repos {
 		item.ID = strings.TrimSpace(item.ID)
 		if item.ID == "" {
+			continue
+		}
+		// G2: business_domain is required for domain aggregation and RBAC.
+		item.BusinessDomain = strings.TrimSpace(item.BusinessDomain)
+		if item.BusinessDomain == "" {
+			importErrors = append(importErrors, fmt.Sprintf("仓库 %s 缺少 business_domain", item.ID))
 			continue
 		}
 		if item.Branch == "" {
@@ -118,9 +126,8 @@ func (s *Server) handleBatchImport(w http.ResponseWriter, r *http.Request) {
 			_ = database.UpdateRepo(repo)
 		}
 
-		if item.BusinessDomain != "" {
-			domainRepos[item.BusinessDomain] = append(domainRepos[item.BusinessDomain], item.ID)
-		}
+		domainRepos[item.BusinessDomain] = append(domainRepos[item.BusinessDomain], item.ID)
+		importedCount++
 	}
 
 	// Auto-aggregate microservices by business domain into virtual projects
@@ -152,14 +159,20 @@ func (s *Server) handleBatchImport(w http.ResponseWriter, r *http.Request) {
 		_ = s.scheduler.GetBatchScheduler().StartBatch(context.Background(), batchID)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	skipped := len(req.Repos) - importedCount
+	resp := map[string]interface{}{
 		"success":        true,
 		"batch_id":       batchID,
-		"total_imported": len(req.Repos),
+		"total_imported": importedCount,
 		"status":         "pending",
-	})
+	}
+	if skipped > 0 {
+		resp["skipped"] = skipped
+		resp["errors"] = importErrors
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(resp)
 }
 
 // aggregateDomainProject groups repos belonging to the same domain into a Monorepo Project.

@@ -1,6 +1,7 @@
 package scheduler_test
 
 import (
+	"os"
 	"testing"
 
 	"github.com/openwiki/orchestrator/internal/scheduler"
@@ -47,5 +48,24 @@ func TestFormatETA(t *testing.T) {
 		if got != tc.expected {
 			t.Errorf("FormatETA(%d) = %q, expected %q", tc.seconds, got, tc.expected)
 		}
+	}
+}
+
+func TestWriteBuildLogFileMultiSegmentRepoID(t *testing.T) {
+	tmpDir := t.TempDir()
+	repoID := "bxbank/DEO/xone-auth"
+	logContent := "=== BUILD SUCCESSFUL ===\n"
+
+	logFilePath, err := scheduler.WriteBuildLogFile(tmpDir, repoID, logContent)
+	if err != nil {
+		t.Fatalf("WriteBuildLogFile failed for multi-segment repoID %q: %v", repoID, err)
+	}
+
+	data, err := os.ReadFile(logFilePath)
+	if err != nil {
+		t.Fatalf("failed to read written build log at %q: %v", logFilePath, err)
+	}
+	if string(data) != logContent {
+		t.Fatalf("expected log content %q, got %q", logContent, string(data))
 	}
 }

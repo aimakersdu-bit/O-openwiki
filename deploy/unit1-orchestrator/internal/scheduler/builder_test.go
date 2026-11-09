@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -72,5 +73,82 @@ const x = 42;`
 	}
 	if !strings.Contains(out, "const x = 42;") {
 		t.Errorf("unrelated content should be preserved")
+	}
+}
+
+func TestIngestKnowledge_LinksMarkdownFiles(t *testing.T) {
+	tmp := t.TempDir()
+	// doc/knowledge with nested MD files
+	src := tmp + "/doc/knowledge"
+	if err := os.MkdirAll(src+"/sub", 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src+"/a.md", []byte("# A"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src+"/sub/b.md", []byte("# B"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// a non-md file that must be ignored
+	if err := os.WriteFile(src+"/notes.txt", []byte("ignore"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &Builder{}
+	var logBuf strings.Builder
+	if !b.ingestKnowledge("repo-x", tmp, &logBuf) {
+		t.Fatalf("ingestKnowledge should return true when doc/knowledge exists with MD files")
+	}
+
+	dst := tmp + "/openwiki/knowledge"
+	for _, rel := range []string{"a.md", "sub/b.md"} {
+		link := dst + "/" + rel
+		fi, err := os.Lstat(link)
+		if err != nil {
+			t.Fatalf("expected symlink %s: %v", link, err)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s should be a symlink", link)
+		}
+	}
+	// notes.txt must NOT be linked
+	if _, err := os.Lstat(dst + "/notes.txt"); !os.IsNotExist(err) {
+		t.Fatalf("non-md file should not be linked")
+	}
+}
+
+func TestIngestKnowledge_NoDirectoryReturnsFalse(t *testing.T) {
+	tmp := t.TempDir()
+	b := &Builder{}
+	var logBuf strings.Builder
+	if b.ingestKnowledge("repo-y", tmp, &logBuf) {
+		t.Fatalf("ingestKnowledge should return false when doc/knowledge absent")
+	}
+}
+
+func TestIngestKnowledge_IdempotentRelink(t *testing.T) {
+	tmp := t.TempDir()
+	src := tmp + "/doc/knowledge"
+	if err := os.MkdirAll(src, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src+"/a.md", []byte("# A"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	b := &Builder{}
+	var logBuf strings.Builder
+	if !b.ingestKnowledge("repo-z", tmp, &logBuf) {
+		t.Fatal("first ingest should succeed")
+	}
+	// second run must not error and link must still resolve
+	if !b.ingestKnowledge("repo-z", tmp, &logBuf) {
+		t.Fatal("second ingest should succeed (idempotent)")
+	}
+	target, err := os.Readlink(tmp + "/openwiki/knowledge/a.md")
+	if err != nil {
+		t.Fatalf("symlink should still resolve: %v", err)
+	}
+	if !strings.HasSuffix(target, "/doc/knowledge/a.md") {
+		t.Fatalf("symlink target unexpected: %s", target)
 	}
 }

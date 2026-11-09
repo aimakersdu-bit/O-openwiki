@@ -62,7 +62,10 @@ let agentModulePath = '';
 
 const candidates = [
   process.env.OPENWIKI_DIST_DIR ? path.join(process.env.OPENWIKI_DIST_DIR, 'agent', 'index.js') : '',
+  path.resolve(__dirname, '../dist/agent/index.js'),
+  path.resolve(__dirname, '../../dist/agent/index.js'),
   path.resolve(__dirname, '../../../dist/agent/index.js'),
+  '/opt/openwiki/dist/agent/index.js',
   path.resolve(repoDir, 'node_modules/openwiki/dist/agent/index.js'),
   path.resolve('/app/dist/agent/index.js')
 ].filter(Boolean);
@@ -392,18 +395,27 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-// Remove existing socket file if present
+// Ensure socket parent directory exists and remove existing stale socket file if present
 try {
+  const socketDir = path.dirname(socketPath);
+  if (socketDir && !fs.existsSync(socketDir)) {
+    fs.mkdirSync(socketDir, { recursive: true });
+  }
   if (fs.existsSync(socketPath)) {
     fs.unlinkSync(socketPath);
   }
 } catch (err) {
-  console.warn(`[QA-Daemon] Notice: could not remove previous socket ${socketPath}:`, err.message);
+  console.warn(`[QA-Daemon] Notice: could not prepare socket path ${socketPath}:`, err.message);
 }
 
 // Handle signals
 process.on('SIGINT', () => cleanupAndExit(0));
 process.on('SIGTERM', () => cleanupAndExit(0));
+
+server.on('error', (err) => {
+  console.error(`[QA-Daemon] Server error on UDS ${socketPath}:`, err);
+  process.exit(1);
+});
 
 server.listen(socketPath, () => {
   console.log(`[QA-Daemon] Worker listening on UDS ${socketPath} (Repo: ${repoDir}, TTL: ${ttlSeconds}s)`);

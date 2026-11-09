@@ -65,6 +65,17 @@ func InitDB(dbPath string) error {
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
+
+	CREATE TABLE IF NOT EXISTS business_domains (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL UNIQUE,
+		description TEXT DEFAULT '',
+		sort_order INTEGER DEFAULT 0,
+		status TEXT NOT NULL DEFAULT 'active',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_business_domains_name ON business_domains(name);
 	`
 	if _, err := DB.Exec(schema); err != nil {
 		return fmt.Errorf("failed to execute schema: %w", err)
@@ -264,6 +275,82 @@ func GetUserDomains(username string) ([]string, error) {
 		domains = append(domains, d)
 	}
 	return domains, rows.Err()
+}
+
+// BusinessDomain is a configurable business domain dictionary entry.
+type BusinessDomain struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	SortOrder   int    `json:"sort_order"`
+	Status      string `json:"status"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+// ListBusinessDomains returns all active business domains ordered by sort_order then name.
+func ListBusinessDomains() ([]BusinessDomain, error) {
+	rows, err := DB.Query(`SELECT id, name, COALESCE(description,''), sort_order, status, created_at, updated_at
+		FROM business_domains WHERE status = 'active' ORDER BY sort_order, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []BusinessDomain
+	for rows.Next() {
+		var d BusinessDomain
+		if err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.SortOrder, &d.Status, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, d)
+	}
+	return list, rows.Err()
+}
+
+// ListAllBusinessDomains returns all domains including inactive (for admin management).
+func ListAllBusinessDomains() ([]BusinessDomain, error) {
+	rows, err := DB.Query(`SELECT id, name, COALESCE(description,''), sort_order, status, created_at, updated_at
+		FROM business_domains ORDER BY sort_order, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []BusinessDomain
+	for rows.Next() {
+		var d BusinessDomain
+		if err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.SortOrder, &d.Status, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, d)
+	}
+	return list, rows.Err()
+}
+
+// CreateBusinessDomain inserts a new business domain.
+func CreateBusinessDomain(d *BusinessDomain) error {
+	_, err := DB.Exec(`INSERT INTO business_domains (name, description, sort_order, status) VALUES (?, ?, ?, ?)`,
+		d.Name, d.Description, d.SortOrder, defaultStr(d.Status, "active"))
+	return err
+}
+
+// UpdateBusinessDomain updates an existing business domain by id.
+func UpdateBusinessDomain(d *BusinessDomain) error {
+	_, err := DB.Exec(`UPDATE business_domains SET name = ?, description = ?, sort_order = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		d.Name, d.Description, d.SortOrder, defaultStr(d.Status, "active"), d.ID)
+	return err
+}
+
+// DeleteBusinessDomain removes a business domain by id.
+func DeleteBusinessDomain(id int64) error {
+	_, err := DB.Exec(`DELETE FROM business_domains WHERE id = ?`, id)
+	return err
+}
+
+func defaultStr(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
 }
 
 // IsUserAuthorizedForDomain checks whether the user has permission to manage the specified business domain.

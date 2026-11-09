@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +21,40 @@ import (
 
 	"github.com/openwiki/orchestrator/internal/db"
 )
+
+// maxUDSSocketPathLen is kept safely below the 104-byte (macOS/BSD) and 108-byte (Linux) sun_path limit.
+const maxUDSSocketPathLen = 100
+
+// BuildSocketPath constructs a flat, UDS-safe socket path inside socketDir.
+// Path separators ('/' and '\') in id are replaced with "__" so multi-segment repo IDs
+// (e.g. "bxbank/DEO/xone-auth") do not reference non-existent subdirectories under socketDir.
+// If the resulting path exceeds maxUDSSocketPathLen, the sanitized ID is truncated and
+// suffixed with an 8-character SHA-256 digest of the original id.
+func BuildSocketPath(socketDir, prefix, id string) string {
+	if socketDir == "" {
+		socketDir = os.TempDir()
+	}
+	safeID := strings.ReplaceAll(id, "/", "__")
+	safeID = strings.ReplaceAll(safeID, "\\", "__")
+	safeID = strings.ReplaceAll(safeID, ":", "_")
+
+	fileName := fmt.Sprintf("%s-%s.sock", prefix, safeID)
+	fullPath := filepath.Join(socketDir, fileName)
+	if len(fullPath) <= maxUDSSocketPathLen {
+		return fullPath
+	}
+
+	sum := sha256.Sum256([]byte(id))
+	shortHash := hex.EncodeToString(sum[:4]) // 8 hex chars
+	suffix := fmt.Sprintf("-%s.sock", shortHash)
+	prefixPart := filepath.Join(socketDir, prefix+"-")
+
+	avail := maxUDSSocketPathLen - len(prefixPart) - len(suffix)
+	if avail < 8 {
+		return filepath.Join(socketDir, fmt.Sprintf("%s-%s.sock", prefix, shortHash))
+	}
+	return prefixPart + safeID[:avail] + suffix
+}
 
 // WorkerProcess represents an active repository QA daemon process.
 type WorkerProcess struct {
@@ -109,10 +145,8 @@ func findDaemonScript(customPath string) string {
 }
 
 func findNodeBinary() string {
-	if path, err := exec.LookPath("node"); err == nil {
-		return path
-	}
 	candidates := []string{
+		"/opt/openwiki/node22/bin/node",
 		"/usr/local/bin/node",
 		"/opt/homebrew/bin/node",
 		"/usr/bin/node",
@@ -121,6 +155,9 @@ func findNodeBinary() string {
 		if _, err := os.Stat(c); err == nil {
 			return c
 		}
+	}
+	if path, err := exec.LookPath("node"); err == nil {
+		return path
 	}
 	return "node"
 }
@@ -143,7 +180,7 @@ func (m *Manager) getOrStartWorker(ctx context.Context, repo *db.Repo) (*WorkerP
 	if m.transport != nil {
 		wp := &WorkerProcess{
 			RepoID:     repo.ID,
-			SocketPath: filepath.Join(m.socketDir, fmt.Sprintf("mock-%s.sock", repo.ID)),
+			SocketPath: BuildSocketPath(m.socketDir, "mock", repo.ID),
 			CreatedAt:  time.Now(),
 		}
 		m.workers[repo.ID] = wp
@@ -158,7 +195,8 @@ func (m *Manager) getOrStartWorker(ctx context.Context, repo *db.Repo) (*WorkerP
 	}
 
 	// Create and start new worker
-	socketPath := filepath.Join(m.socketDir, fmt.Sprintf("openwiki-qa-%s.sock", repo.ID))
+	socketPath := BuildSocketPath(m.socketDir, "openwiki-qa", repo.ID)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 	_ = os.Remove(socketPath) // Clean up stale socket if any
 
 	// Locate daemon script and node binary
@@ -177,18 +215,18 @@ func (m *Manager) getOrStartWorker(ctx context.Context, repo *db.Repo) (*WorkerP
 		cmd.Dir = repo.LocalPath
 	}
 
-	// Environment variables - ensure PATH includes common node installation directories
+	// Environment variables - ensure PATH includes node22 and common node installation directories
 	env := os.Environ()
 	hasPath := false
 	for i, e := range env {
 		if strings.HasPrefix(e, "PATH=") {
-			env[i] = e + ":/usr/local/bin:/opt/homebrew/bin"
+			env[i] = "PATH=/opt/openwiki/node22/bin:" + strings.TrimPrefix(e, "PATH=") + ":/usr/local/bin:/opt/homebrew/bin"
 			hasPath = true
 			break
 		}
 	}
 	if !hasPath {
-		env = append(env, "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin")
+		env = append(env, "PATH=/opt/openwiki/node22/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin")
 	}
 	if m.distDir != "" {
 		env = append(env, fmt.Sprintf("OPENWIKI_DIST_DIR=%s", m.distDir))
@@ -464,7 +502,7 @@ func (m *Manager) getOrStartProjectWorker(ctx context.Context, proj *db.Project)
 	if m.transport != nil {
 		wp := &WorkerProcess{
 			RepoID:     workerKey,
-			SocketPath: filepath.Join(m.socketDir, fmt.Sprintf("mock-proj-%s.sock", proj.ID)),
+			SocketPath: BuildSocketPath(m.socketDir, "mock-proj", proj.ID),
 			CreatedAt:  time.Now(),
 		}
 		m.workers[workerKey] = wp
@@ -477,7 +515,8 @@ func (m *Manager) getOrStartProjectWorker(ctx context.Context, proj *db.Project)
 		}
 	}
 
-	socketPath := filepath.Join(m.socketDir, fmt.Sprintf("openwiki-qa-proj-%s.sock", proj.ID))
+	socketPath := BuildSocketPath(m.socketDir, "openwiki-qa-proj", proj.ID)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 	_ = os.Remove(socketPath)
 
 	scriptPath := findDaemonScript(m.daemonScript)

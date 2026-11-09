@@ -28,3 +28,4 @@ __pycache__/
 *.pyc
 deploy/bin/
 deploy/data/
+.pnpm-store/

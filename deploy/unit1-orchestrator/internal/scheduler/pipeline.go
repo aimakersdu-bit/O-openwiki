@@ -293,10 +293,7 @@ func (p *BuildPipeline) Execute(ctx context.Context, repo *db.Repo, force bool, 
 
 	// Persist build log to disk_log file
 	if p.logBaseDir != "" {
-		buildDir := filepath.Join(p.logBaseDir, "builds", "general")
-		_ = os.MkdirAll(buildDir, 0755)
-		logFilePath := filepath.Join(buildDir, fmt.Sprintf("%s.log", repo.ID))
-		_ = os.WriteFile(logFilePath, []byte(fullLog), 0644)
+		_, _ = WriteBuildLogFile(p.logBaseDir, repo.ID, fullLog)
 	}
 
 	today := time.Now().Format("2006-01-02")
@@ -334,4 +331,18 @@ func (p *BuildPipeline) finishBuild(buildID int64, status, buildLog, buildErr st
 	if buildID > 0 {
 		_ = p.db.FinishBuild(buildID, status, buildLog, buildErr)
 	}
+}
+
+// WriteBuildLogFile persists a repository build log to <logBaseDir>/builds/general/<repoID>.log,
+// creating any intermediate subdirectories required when repoID contains slashes (e.g. "bxbank/DEO/xone-auth").
+func WriteBuildLogFile(logBaseDir, repoID, fullLog string) (string, error) {
+	buildDir := filepath.Join(logBaseDir, "builds", "general")
+	logFilePath := filepath.Join(buildDir, fmt.Sprintf("%s.log", repoID))
+	if err := os.MkdirAll(filepath.Dir(logFilePath), 0755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(logFilePath, []byte(fullLog), 0644); err != nil {
+		return "", err
+	}
+	return logFilePath, nil
 }

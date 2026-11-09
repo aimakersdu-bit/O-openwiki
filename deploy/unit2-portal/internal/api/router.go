@@ -72,6 +72,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/portal/users/role", s.handleSetUserRole)
 	s.mux.HandleFunc("/portal/users/grant", s.handleGrantDomain)
 	s.mux.HandleFunc("/portal/users/revoke", s.handleRevokeDomain)
+	s.mux.HandleFunc("/portal/domains", s.handleDomains)
 
 	// Health check
 	s.mux.HandleFunc("/portal/health", func(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +137,11 @@ func (s *Server) handleApiGraph(w http.ResponseWriter, r *http.Request) {
 			if u, err := url.Parse(ref); err == nil {
 				parts := strings.Split(strings.Trim(u.Path, "/"), "/")
 				if len(parts) >= 2 && parts[0] == "wiki" {
-					repoID = parts[1]
+					subParts := parts[1:]
+					if len(subParts) > 1 && strings.HasSuffix(subParts[len(subParts)-1], ".html") {
+						subParts = subParts[:len(subParts)-1]
+					}
+					repoID = strings.Join(subParts, "/")
 				}
 			}
 		}

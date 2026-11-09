@@ -87,7 +87,7 @@ if [[ "$PORTAL_HEALTH" != *"ok"* ]]; then echo "FAILED"; exit 1; fi
 echo "--> [Test 3] Register Repo in Unit 1..."
 REPO_RESP=$(curl -s -X POST "http://localhost:$ORCH_PORT/api/repos" \
     -H "Content-Type: application/json" \
-    -d '{"id":"e2e-repo","name":"E2E Test Repo","git_url":"https://github.com/example/e2e.git","branch":"main","local_path":"/tmp/e2e","schedule":"0 2 * * *"}')
+    -d '{"id":"e2e-repo","name":"E2E Test Repo","git_url":"https://github.com/example/e2e.git","branch":"main","business_domain":"测试","tier":"B","local_path":"/tmp/e2e","schedule":"0 2 * * *"}')
 echo "Result: $REPO_RESP"
 if [[ "$REPO_RESP" != *"e2e-repo"* ]]; then echo "FAILED"; exit 1; fi
 

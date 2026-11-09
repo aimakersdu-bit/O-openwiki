@@ -38,12 +38,14 @@ func (s *Server) listRepos(w http.ResponseWriter, r *http.Request) {
 }
 
 type CreateRepoRequest struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	GitURL    string `json:"git_url"`
-	Branch    string `json:"branch"`
-	LocalPath string `json:"local_path"`
-	Schedule  string `json:"schedule"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	GitURL         string `json:"git_url"`
+	Branch         string `json:"branch"`
+	BusinessDomain string `json:"business_domain"`
+	Tier           string `json:"tier"`
+	LocalPath      string `json:"local_path"`
+	Schedule       string `json:"schedule"`
 }
 
 // createRepo registers a new repository in SQLite and schedules cron job.
@@ -60,6 +62,11 @@ func (s *Server) createRepo(w http.ResponseWriter, r *http.Request) {
 
 	if req.ID == "" || req.GitURL == "" {
 		http.Error(w, "id and git_url are required", http.StatusBadRequest)
+		return
+	}
+	// G2: business_domain is required so repos can be aggregated into domain projects and gated by RBAC.
+	if strings.TrimSpace(req.BusinessDomain) == "" {
+		http.Error(w, "business_domain is required", http.StatusBadRequest)
 		return
 	}
 
@@ -83,13 +90,15 @@ func (s *Server) createRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := &db.Repo{
-		ID:        req.ID,
-		Name:      req.Name,
-		GitURL:    req.GitURL,
-		Branch:    req.Branch,
-		LocalPath: req.LocalPath,
-		Schedule:  req.Schedule,
-		Status:    "active",
+		ID:             req.ID,
+		Name:           req.Name,
+		GitURL:         req.GitURL,
+		Branch:         req.Branch,
+		LocalPath:      req.LocalPath,
+		Schedule:       req.Schedule,
+		Tier:           req.Tier,
+		BusinessDomain: req.BusinessDomain,
+		Status:         "active",
 	}
 
 	if err := db.SaveRepo(repo); err != nil {

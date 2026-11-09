@@ -362,6 +362,40 @@ window.API = {
     return await res.json();
   },
 
+  // Business Domain Dictionary (configurable domain list)
+  async getDomains() {
+    const res = await fetch('/portal/domains');
+    if (!res.ok) throw new Error('获取业务域列表失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async createDomain(data) {
+    const res = await fetch('/portal/domains', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.error || ('创建业务域失败 (' + res.status + ')'));
+    }
+    return await res.json();
+  },
+
+  async updateDomain(data) {
+    const res = await fetch('/portal/domains', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) throw new Error('更新业务域失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async deleteDomain(id) {
+    const res = await fetch(`/portal/domains?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('删除业务域失败 (' + res.status + ')');
+    return await res.json();
+  },
+
   async getAuditLogs(limit = 50) {
     const res = await fetch(`/portal/audit?limit=${limit}`);
     if (!res.ok) throw new Error('获取审计日志失败 (' + res.status + ')');

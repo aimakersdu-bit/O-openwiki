@@ -25,6 +25,91 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (projSubtitle) projSubtitle.textContent = `您当前为开发组长，已授权管理业务域：${(currentUser.authorized_domains || []).join('、') || '暂无授权'}`;
   }
 
+
+  // ==========================================
+  // Tab Navigation Setup
+  // ==========================================
+  const TAB_DEFS = [
+    { id: 'batch',      icon: '🚀', label: '批量调度',   sel: '#batchSection' },
+    { id: 'tokens',     icon: '📊', label: 'Token报表',  sel: '#tokenSection' },
+    { id: 'regrepo',    icon: '➕', label: '仓库注册',   sel: '#registerRepoForm' },
+    { id: 'repos',      icon: '📦', label: '仓库管理',   sel: '#adminRepoTable' },
+    { id: 'projects',   icon: '🏢', label: '微服务项目', sel: '#projectSection' },
+    { id: 'quota',      icon: '⚡', label: 'LLM限流',    sel: '#quotaSection' },
+    { id: 'storage',    icon: '💽', label: '存储资源池', sel: '#storageSection' },
+    { id: 'domains',    icon: '🗂️', label: '业务域字典', sel: '#domainDictSection' },
+    { id: 'rbac',       icon: '👥', label: '用户权限',   sel: '#rbacSection' },
+    { id: 'logs',       icon: '🧹', label: '日志清理',   sel: '#logDiskSection' },
+  ];
+
+  const tabNav = document.getElementById('owAdminTabs');
+  const panelsHost = document.getElementById('owAdminPanels');
+  const visibleTabs = [];
+
+  TAB_DEFS.forEach(def => {
+    const inner = document.querySelector(def.sel);
+    if (!inner) return;
+    // Always resolve the enclosing <section> so the whole card (title + body) moves together.
+    const el = inner.tagName === 'SECTION' ? inner : inner.closest('section');
+    if (!el) return;
+    if (el.style.display === 'none') return; // skip hidden (group_leader gate)
+
+    const panel = document.createElement('div');
+    panel.className = 'ow-tab-panel';
+    panel.dataset.tab = def.id;
+    el.style.display = '';
+    el.style.marginTop = '0';
+    el.parentNode.insertBefore(panel, el);
+    panel.appendChild(el);
+    visibleTabs.push(def);
+  });
+
+  if (tabNav && visibleTabs.length > 0) {
+    tabNav.innerHTML = visibleTabs.map((def, i) =>
+      `<button class="ow-tab${i === 0 ? ' active' : ''}" data-tab="${def.id}" role="tab">${def.icon} ${def.label}</button>`
+    ).join('');
+    const firstPanel = document.querySelector('.ow-tab-panel[data-tab="' + visibleTabs[0].id + '"]');
+    if (firstPanel) firstPanel.classList.add('active');
+    tabNav.addEventListener('click', (e) => {
+      const btn = e.target.closest('.ow-tab');
+      if (!btn) return;
+      const tabId = btn.dataset.tab;
+      tabNav.querySelectorAll('.ow-tab').forEach(b => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('.ow-tab-panel').forEach(p => p.classList.toggle('active', p.dataset.tab === tabId));
+    });
+  }
+
+  // ==========================================
+  // Project Modal: Architecture MD file upload
+  // ==========================================
+  const projArchMDFile = document.getElementById('projArchMDFile');
+  const projArchMDUploadBtn = document.getElementById('projArchMDUploadBtn');
+  const projArchMDClearBtn = document.getElementById('projArchMDClearBtn');
+  const projArchMDTextarea = document.getElementById('projArchitectureMD');
+  const projArchMDFileHint = document.getElementById('projArchMDFileHint');
+
+  if (projArchMDUploadBtn && projArchMDFile) {
+    projArchMDUploadBtn.addEventListener('click', () => projArchMDFile.click());
+    projArchMDFile.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        if (projArchMDTextarea) projArchMDTextarea.value = ev.target.result;
+        if (projArchMDFileHint) projArchMDFileHint.innerHTML = `已载入文件 <strong>${API.escapeHTML(file.name)}</strong> (${(file.size/1024).toFixed(1)} KB)，内容已填入下方编辑框。`;
+      };
+      reader.onerror = () => { alert('读取文件失败'); };
+      reader.readAsText(file, 'UTF-8');
+      projArchMDFile.value = '';
+    });
+  }
+  if (projArchMDClearBtn && projArchMDTextarea) {
+    projArchMDClearBtn.addEventListener('click', () => {
+      projArchMDTextarea.value = '';
+      if (projArchMDFileHint) projArchMDFileHint.textContent = '由域管理员维护，描述各底层仓库的作用与调用关系。构建时写入 _project_hub/openwiki/architecture.md 供聚合 Wiki 引用。可上传 .md 文件自动填充。';
+    });
+  }
+
   const registerForm = document.getElementById('registerRepoForm');
   const adminAlert = document.getElementById('adminAlert');
   const adminTableBody = document.querySelector('#adminRepoTable tbody');
@@ -529,26 +614,48 @@ document.addEventListener('DOMContentLoaded', async () => {
     projReposPicker.innerHTML = html;
   }
 
-  function populateDomainSelect(selectedDomain = '') {
+  let configuredDomainsCache = null;
+
+  // Render the business domain <select>. Loads from the configurable domain dictionary
+  // (/portal/domains) first; falls back to dedup from cached repos for backward compat.
+  async function populateDomainSelect(selectedDomain = '') {
     const domainSelect = document.getElementById('projBusinessDomain');
     if (!domainSelect) return;
 
-    let domains = [];
+    // group_leader: restricted to authorized domains only
     if (isGroupLeader && currentUser && currentUser.authorized_domains) {
-      domains = currentUser.authorized_domains;
-    } else {
-      // Collect unique domains from cached repos
-      const set = new Set();
-      (cachedRepos || []).forEach(r => { if (r.business_domain) set.add(r.business_domain); });
-      if (selectedDomain) set.add(selectedDomain);
-      domains = Array.from(set);
-    }
-
-    if (domains.length === 0) {
-      domainSelect.innerHTML = '<option value="">(未指定业务域)</option>';
+      renderDomainOptions(currentUser.authorized_domains, selectedDomain, domainSelect);
       return;
     }
 
+    // admin/super_admin: load from configurable domain dictionary
+    let domains = [];
+    if (configuredDomainsCache === null) {
+      try {
+        const list = await API.getDomains();
+        configuredDomainsCache = (list || []).map(d => d.name);
+      } catch (e) {
+        configuredDomainsCache = []; // fallback below
+      }
+    }
+    domains = configuredDomainsCache.slice();
+
+    // Backward-compat fallback: if no configured domains yet, dedup from cached repos
+    if (domains.length === 0) {
+      const set = new Set();
+      (cachedRepos || []).forEach(r => { if (r.business_domain) set.add(r.business_domain); });
+      domains = Array.from(set);
+    }
+    if (selectedDomain && !domains.includes(selectedDomain)) domains.push(selectedDomain);
+
+    renderDomainOptions(domains, selectedDomain, domainSelect);
+  }
+
+  function renderDomainOptions(domains, selectedDomain, domainSelect) {
+    if (!domains || domains.length === 0) {
+      domainSelect.innerHTML = '<option value="">(未指定业务域)</option>';
+      return;
+    }
     domainSelect.innerHTML = domains.map(d => `
       <option value="${API.escapeHTML(d)}" ${d === selectedDomain ? 'selected' : ''}>${API.escapeHTML(d)}</option>
     `).join('');
@@ -562,7 +669,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('projId').disabled = false;
     document.getElementById('projName').value = '';
     document.getElementById('projDesc').value = '';
-    populateDomainSelect('');
+    const projArchMD = document.getElementById('projArchitectureMD');
+    if (projArchMD) projArchMD.value = '';
+    populateDomainSelect('').catch(()=>{});
     projAlert.style.display = 'none';
     renderReposPicker([]);
     projectModal.style.display = 'flex';
@@ -599,11 +708,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     });
 
+    const archMDValue = (document.getElementById('projArchitectureMD') || {}).value || '';
     const payload = {
       id: projId,
       name: projName,
       description: projDesc,
       business_domain: projDomain,
+      architecture_md: archMDValue,
       repos: selectedRepos
     };
 
@@ -698,7 +809,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('projId').disabled = true;
         document.getElementById('projName').value = proj.name;
         document.getElementById('projDesc').value = proj.description || '';
-        populateDomainSelect(proj.business_domain || '');
+        const archMDEdit = document.getElementById('projArchitectureMD');
+        if (archMDEdit) archMDEdit.value = proj.architecture_md || '';
+        populateDomainSelect(proj.business_domain || '').catch(()=>{});
         projAlert.style.display = 'none';
 
         renderReposPicker(proj.repos || []);
@@ -1175,13 +1288,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Copy Feishu TSV to Clipboard
+  // Copy Feishu TSV to Clipboard (with fallback for non-secure HTTP contexts)
   if (copyFeishuTSVBtn) {
     copyFeishuTSVBtn.addEventListener('click', async () => {
       try {
         const tsv = await API.getTokensExportTSV();
-        await navigator.clipboard.writeText(tsv);
-        alert('📋 飞书多维表格数据已成功复制到剪贴板！\n\n请直接打开飞书表格或多维表格，在空白处按 Ctrl+V (或 Cmd+V) 即可完整导入！');
+        let copied = false;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          try {
+            await navigator.clipboard.writeText(tsv);
+            copied = true;
+          } catch (e) { /* fall through to legacy */ }
+        }
+        if (!copied) {
+          const ta = document.createElement('textarea');
+          ta.value = tsv;
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          ta.setAttribute('readonly', '');
+          document.body.appendChild(ta);
+          ta.select();
+          copied = document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        if (copied) {
+          alert('📋 飞书多维表格数据已成功复制到剪贴板！\n\n请直接打开飞书表格或多维表格，在空白处按 Ctrl+V (或 Cmd+V) 即可完整导入！');
+        } else {
+          alert('复制失败，请尝试直接点击【下载 CSV】: 剪贴板不可用');
+        }
       } catch (err) {
         alert('复制失败，请尝试直接点击【下载 CSV】: ' + err.message);
       }
@@ -1499,12 +1633,112 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // ==========================================
+  // Business Domain Dictionary Management
+  // ==========================================
+  const domainDictSection = document.getElementById('domainDictSection');
+  const domainsTableBody = document.querySelector('#domainsTable tbody');
+  const refreshDomainsBtn = document.getElementById('refreshDomainsBtn');
+  const addDomainBtn = document.getElementById('addDomainBtn');
+  const domainAlert = document.getElementById('domainAlert');
+
+  function showDomainAlert(msg, type) {
+    if (!domainAlert) return;
+    domainAlert.textContent = msg;
+    domainAlert.className = 'alert alert-' + (type === 'success' ? 'success' : 'error');
+    domainAlert.style.display = 'block';
+    setTimeout(() => { domainAlert.style.display = 'none'; }, 3000);
+  }
+
+  async function loadDomains() {
+    if (!domainsTableBody) return;
+    domainsTableBody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-secondary);">正在加载业务域字典...</td></tr>';
+    try {
+      const list = await API.getDomains();
+      configuredDomainsCache = (list || []).map(d => d.name); // refresh cache
+      if (!list || list.length === 0) {
+        domainsTableBody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-secondary);">尚未配置业务域。新增后将作为仓库导入与项目编排的下拉选项。</td></tr>';
+        return;
+      }
+      domainsTableBody.innerHTML = list.map(d => `
+        <tr data-id="${d.id}">
+          <td><strong>${API.escapeHTML(d.name)}</strong></td>
+          <td>${API.escapeHTML(d.description || '-')}</td>
+          <td class="col-center col-nowrap">${d.sort_order || 0}</td>
+          <td class="col-center col-nowrap">${d.status === 'active' ? '<span style="color:var(--success-color);">启用</span>' : '<span style="color:var(--text-secondary);">停用</span>'}</td>
+          <td class="col-center col-nowrap">
+            <button class="btn btn-secondary btn-sm edit-domain-btn" data-id="${d.id}">✏️ 编辑</button>
+            <button class="btn btn-danger btn-sm delete-domain-btn" data-id="${d.id}" data-name="${API.escapeHTML(d.name)}">🗑️ 删除</button>
+          </td>
+        </tr>
+      `).join('');
+      // wire actions
+      domainsTableBody.querySelectorAll('.delete-domain-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          const id = e.currentTarget.getAttribute('data-id');
+          const name = e.currentTarget.getAttribute('data-name');
+          if (!confirm(`确认删除业务域【${name}】？已绑定该域的仓库/项目不受影响，但下拉选项将移除。`)) return;
+          try {
+            await API.deleteDomain(id);
+            showDomainAlert('业务域已删除', 'success');
+            loadDomains();
+          } catch (err) {
+            showDomainAlert('删除失败: ' + err.message, 'error');
+          }
+        });
+      });
+      domainsTableBody.querySelectorAll('.edit-domain-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const id = e.currentTarget.getAttribute('data-id');
+          const row = list.find(d => String(d.id) === id);
+          if (!row) return;
+          document.getElementById('newDomainName').value = row.name;
+          document.getElementById('newDomainDesc').value = row.description || '';
+          document.getElementById('newDomainOrder').value = row.sort_order || 0;
+          addDomainBtn.dataset.editId = id;
+          addDomainBtn.textContent = '💾 保存修改';
+          document.getElementById('newDomainName').focus();
+        });
+      });
+    } catch (err) {
+      domainsTableBody.innerHTML = `<tr><td colspan="5" style="color:var(--error-color); text-align:center;">加载业务域失败: ${API.escapeHTML(err.message)}</td></tr>`;
+    }
+  }
+
+  if (refreshDomainsBtn) refreshDomainsBtn.addEventListener('click', loadDomains);
+  if (addDomainBtn) {
+    addDomainBtn.addEventListener('click', async () => {
+      const name = document.getElementById('newDomainName').value.trim();
+      const desc = document.getElementById('newDomainDesc').value.trim();
+      const order = parseInt(document.getElementById('newDomainOrder').value || '0', 10);
+      if (!name) { showDomainAlert('业务域名称不能为空', 'error'); return; }
+      try {
+        if (addDomainBtn.dataset.editId) {
+          await API.updateDomain({ id: parseInt(addDomainBtn.dataset.editId, 10), name, description: desc, sort_order: order, status: 'active' });
+          showDomainAlert('业务域已更新', 'success');
+          delete addDomainBtn.dataset.editId;
+          addDomainBtn.textContent = '➕ 新增业务域';
+        } else {
+          await API.createDomain({ name, description: desc, sort_order: order, status: 'active' });
+          showDomainAlert('业务域已新增', 'success');
+        }
+        document.getElementById('newDomainName').value = '';
+        document.getElementById('newDomainDesc').value = '';
+        document.getElementById('newDomainOrder').value = '0';
+        loadDomains();
+      } catch (err) {
+        showDomainAlert('操作失败: ' + err.message, 'error');
+      }
+    });
+  }
+
   // Initial load & Polling
   refreshBatchStatus();
   loadDailyTokens();
   loadLLMQuota();
   loadStorageVolumes();
   loadUsers();
+  if (isSuperAdmin) loadDomains();
   loadLogStats();
   batchPollTimer = setInterval(() => {
     refreshBatchStatus();

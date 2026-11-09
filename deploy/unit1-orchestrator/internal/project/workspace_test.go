@@ -126,3 +126,73 @@ func TestWorkspaceManager(t *testing.T) {
 		t.Fatalf("expected symlink pay-srv to %s, got %s (err: %v)", repo3Dir, dest3, err)
 	}
 }
+
+func TestPrepareWorkspace_AliasWithSlash(t *testing.T) {
+	dir := t.TempDir()
+	m := &WorkspaceManager{BaseProjectsDir: dir}
+
+	// Simulate a repo with group/project style ID/alias containing a slash
+	repoDir := filepath.Join(dir, "phys-aimakers")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	proj := &db.Project{ID: "proj-slash", LocalPath: filepath.Join(dir, "proj-slash")}
+	repos := []db.RepoWithAlias{
+		{Repo: db.Repo{ID: "aimakersdu-bit/health", Name: "health", LocalPath: repoDir}, AliasName: "aimakersdu-bit/health", Role: "service"},
+	}
+
+	wsDir, err := m.PrepareWorkspace(proj, repos)
+	if err != nil {
+		t.Fatalf("PrepareWorkspace failed for slash alias: %v", err)
+	}
+
+	// The symlink should be a single flat segment with "/" replaced by "__"
+	link := filepath.Join(wsDir, "aimakersdu-bit__health")
+	fi, err := os.Lstat(link)
+	if err != nil {
+		// list what actually got created
+		entries, _ := os.ReadDir(wsDir)
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("expected flat symlink %s; workspace contains: %v", link, names)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s should be a symlink, got mode %v", link, fi.Mode())
+	}
+	// It must resolve to the physical repo dir
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if target != repoDir {
+		t.Fatalf("symlink target = %s, want %s", target, repoDir)
+	}
+
+	// Health check should report ok, not unlinked
+	preview, err := m.CheckWorkspaceHealth(proj, repos)
+	if err != nil {
+		t.Fatalf("CheckWorkspaceHealth: %v", err)
+	}
+	if preview.BrokenCount != 0 || preview.HealthyCount != 1 {
+		t.Fatalf("expected 1 healthy / 0 broken, got %d healthy / %d broken", preview.HealthyCount, preview.BrokenCount)
+	}
+}
+
+func TestSanitizeAlias(t *testing.T) {
+	cases := map[string]string{
+		"aimakersdu-bit/health": "aimakersdu-bit__health",
+		"group/sub/deep":        "group__sub__deep",
+		"plain":                 "plain",
+		"":                      "",
+		"a\\b":                  "a__b",
+	}
+	for in, want := range cases {
+		got := sanitizeAlias(in)
+		if got != want {
+			t.Errorf("sanitizeAlias(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

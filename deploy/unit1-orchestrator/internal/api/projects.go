@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -24,6 +25,7 @@ type CreateProjectRequest struct {
 	Name           string             `json:"name"`
 	Description    string             `json:"description"`
 	BusinessDomain string             `json:"business_domain"`
+	ArchitectureMD string             `json:"architecture_md"`
 	LocalPath      string             `json:"local_path,omitempty"`
 	Repos          []ProjectRepoInput `json:"repos,omitempty"`
 }
@@ -128,6 +130,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		Name:           req.Name,
 		Description:    req.Description,
 		BusinessDomain: req.BusinessDomain,
+		ArchitectureMD: req.ArchitectureMD,
 		LocalPath:      localPath,
 		Status:         "active",
 	}
@@ -217,6 +220,7 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
 	if req.BusinessDomain != "" {
 		existing.BusinessDomain = req.BusinessDomain
 	}
+	existing.ArchitectureMD = req.ArchitectureMD
 	if req.LocalPath != "" {
 		existing.LocalPath = req.LocalPath
 	}
@@ -400,12 +404,69 @@ func (s *Server) BuildProjectWorkspace(projectID string) error {
 
 	_ = os.WriteFile(filepath.Join(hubOpenwikiDir, "quickstart.md"), []byte(quickstartContent), 0644)
 
-	// Link or sync to StaticOutputDir/projects/<projectID> if static dir is configured
+	// === P2.3: Write architecture.md (domain-maintained architecture description) ===
+	archPath := filepath.Join(hubOpenwikiDir, "architecture.md")
+	if strings.TrimSpace(proj.ArchitectureMD) != "" {
+		_ = os.WriteFile(archPath, []byte(proj.ArchitectureMD), 0644)
+	} else {
+		tmpl := fmt.Sprintf("# %s 架构描述\n\n> 请域管理员维护此文档，描述各底层仓库的作用与调用关系。\n\n## 服务职责\n\n## 调用关系\n", proj.Name)
+		_ = os.WriteFile(archPath, []byte(tmpl), 0644)
+	}
+
+	// === P2.4: Multi-repo full openwiki build (skip Git; sub-repos have independent builds) ===
+	if s.scheduler != nil && s.scheduler.GetBuilder() != nil {
+		builder := s.scheduler.GetBuilder()
+		wikiDir := hubOpenwikiDir
+		buildID, _ := db.CreateBuild(projectID, "", "running")
+		log.Printf("[project-build][%s] starting multi-repo openwiki build (buildID=%d, wsDir=%s)", projectID, buildID, wsDir)
+
+		repoTarget := filepath.Join("projects", projectID)
+		buildRes := builder.BuildRepoWithBuildID(buildID, repoTarget, wsDir, wikiDir,
+			func(currentLog string) {
+				_ = db.GetDB().UpdateBuildLog(buildID, currentLog, "")
+			})
+
+		buildStatus := "completed"
+		if !buildRes.Success {
+			buildStatus = "failed"
+		}
+
+		// Token accounting via LLMProxy
+		var prompt, completion, total, saved int64
+		var retries int
+		if s.llmProxy != nil {
+			if usage, ok := s.llmProxy.PopBuildUsage(fmt.Sprintf("%d", buildID)); ok {
+				prompt = int64(usage.PromptTokens)
+				completion = int64(usage.CompletionTokens)
+				total = int64(usage.TotalTokens)
+				retries = usage.RateLimitedRetries
+			}
+		}
+		_ = db.FinishBuildWithTokens(buildID, buildStatus, buildRes.Log, buildRes.Error,
+			prompt, completion, total, saved, retries)
+
+		if buildRes.Success {
+			log.Printf("[project-build][%s] multi-repo build completed successfully", projectID)
+		} else {
+			log.Printf("[project-build][%s] multi-repo build FAILED: %s", projectID, buildRes.Error)
+			proj.Status = "failed"
+			_ = db.UpdateProject(proj)
+			return fmt.Errorf("multi-repo openwiki build failed: %s", buildRes.Error)
+		}
+	}
+
+	// Ensure visualizer assets (index.html, client.js, vendor) and api/graph are deployed into StaticOutputDir/projects/<projectID>
 	if s.config.StaticOutputDir != "" {
 		staticProjectDir := filepath.Join(s.config.StaticOutputDir, "projects", proj.ID)
-		_ = os.MkdirAll(filepath.Dir(staticProjectDir), 0755)
-		_ = os.Remove(staticProjectDir)
-		_ = os.Symlink(hubOpenwikiDir, staticProjectDir)
+		_ = os.MkdirAll(staticProjectDir, 0755)
+
+		indexPath := filepath.Join(staticProjectDir, "index.html")
+		if _, err := os.Stat(indexPath); os.IsNotExist(err) {
+			if s.scheduler != nil && s.scheduler.GetBuilder() != nil {
+				builder := s.scheduler.GetBuilder()
+				_ = builder.DeployVisualizer(hubOpenwikiDir, staticProjectDir)
+			}
+		}
 	}
 
 	proj.Status = "active"

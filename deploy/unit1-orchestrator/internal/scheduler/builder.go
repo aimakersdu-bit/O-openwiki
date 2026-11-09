@@ -215,7 +215,7 @@ func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir 
 
 	// Resolve static output directory for this repo, and create a staging directory for zero-downtime atomic swap
 	finalStaticDir := filepath.Join(b.StaticOutputDir, repoID)
-	stagingDir := filepath.Join(b.StaticOutputDir, fmt.Sprintf("%s_tmp_%d", repoID, time.Now().UnixNano()))
+	stagingDir := filepath.Join(b.StaticOutputDir, fmt.Sprintf("%s_tmp_%d", strings.ReplaceAll(repoID, "/", "_"), time.Now().UnixNano()))
 	defer func() {
 		// Clean up staging directory if it still exists (e.g. on build failure)
 		if _, err := os.Stat(stagingDir); err == nil {
@@ -240,6 +240,14 @@ func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir 
 			return result
 		}
 		b.logStep(repoID, "openwiki init completed successfully", &logBuf, onProgress...)
+	}
+
+	// Step 0.5: Knowledge Ingestion (doc/knowledge -> openwiki/knowledge, symlink-based, non-invasive)
+	b.logStep(repoID, "=== Step 0.5: Knowledge Ingestion ===", &logBuf, onProgress...)
+	if ingested := b.ingestKnowledge(repoID, repoPath, &logBuf, onProgress...); ingested {
+		b.logStep(repoID, "Knowledge documents linked to openwiki/knowledge/", &logBuf, onProgress...)
+	} else {
+		b.logStep(repoID, "No doc/knowledge directory found, skipping knowledge ingestion", &logBuf, onProgress...)
 	}
 
 	// Step 1: Run openwiki code --update --print --language <lang>
@@ -289,7 +297,7 @@ func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir 
 
 	// Step 5: Atomic Directory Swap (Zero-Downtime Release)
 	b.logStep(repoID, "=== Step 5: Atomic directory swap ===", &logBuf, onProgress...)
-	if err := os.MkdirAll(b.StaticOutputDir, 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(finalStaticDir), 0755); err != nil {
 		b.logStep(repoID, fmt.Sprintf("mkdir static base failed: %v", err), &logBuf, onProgress...)
 	}
 	oldDir := finalStaticDir + "_old"
@@ -316,6 +324,15 @@ func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir 
 	result.Log = logBuf.String()
 	b.logStep(repoID, "=== BUILD SUCCESSFUL ===", &logBuf, onProgress...)
 	return result
+}
+
+// DeployVisualizer populates staticDir with graph.json, index.html, client.js and vendor assets for wikiDir.
+func (b *Builder) DeployVisualizer(wikiDir, staticDir string) error {
+	var logBuf strings.Builder
+	_ = b.exportGraph(wikiDir, staticDir, &logBuf)
+	_ = b.copyVisualizerAssets(staticDir, &logBuf)
+	_ = b.copyVendorAssets(staticDir, &logBuf)
+	return nil
 }
 
 // exportGraph calls node to run buildGraph() and writes the JSON output.
@@ -462,6 +479,48 @@ func copyFile(src, dst string) error {
 
 	_, err = io.Copy(out, in)
 	return err
+}
+
+// ingestKnowledge detects a doc/knowledge directory in the repository and symlinks
+// its Markdown files into openwiki/knowledge/ so the openwiki agent can discover and
+// reference them during wiki generation, static export, and graph building.
+// It is non-invasive: source files remain owned by the repo. Repos without doc/knowledge
+// are silently skipped (returns false).
+func (b *Builder) ingestKnowledge(repoID, repoPath string, logBuf *strings.Builder, onProgress ...func(string)) bool {
+	knowledgeSrcDir := filepath.Join(repoPath, "doc", "knowledge")
+	info, err := os.Stat(knowledgeSrcDir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+
+	knowledgeDstDir := filepath.Join(repoPath, "openwiki", "knowledge")
+	if err := os.MkdirAll(knowledgeDstDir, 0755); err != nil {
+		b.logStep(repoID, fmt.Sprintf("create knowledge dir failed: %v", err), logBuf, onProgress...)
+		return false
+	}
+
+	count := 0
+	_ = filepath.Walk(knowledgeSrcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(info.Name(), ".md") {
+			return nil
+		}
+		relPath, _ := filepath.Rel(knowledgeSrcDir, path)
+		dstFile := filepath.Join(knowledgeDstDir, relPath)
+		_ = os.MkdirAll(filepath.Dir(dstFile), 0755)
+		_ = os.Remove(dstFile) // idempotent: remove then recreate
+		if err := os.Symlink(path, dstFile); err != nil {
+			b.logStep(repoID, fmt.Sprintf("link knowledge %s failed: %v", relPath, err), logBuf, onProgress...)
+			return nil
+		}
+		count++
+		return nil
+	})
+
+	b.logStep(repoID, fmt.Sprintf("Ingested %d knowledge MD files", count), logBuf, onProgress...)
+	return count > 0
 }
 
 // ExportActiveGraph re-exports api/graph for the currently active deployed version of a repo (used after QA creates/updates wiki docs).

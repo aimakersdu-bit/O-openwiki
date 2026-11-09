@@ -180,3 +180,38 @@ func TestSignRequestHelper(t *testing.T) {
 		t.Fatalf("signature mismatch: got %s, expected %s", sig, expected)
 	}
 }
+
+func TestHandleApiGraphMultiSegmentRepoID(t *testing.T) {
+	server, cleanup := setupTestPortalServer(t)
+	defer cleanup()
+
+	staticDir, err := os.MkdirTemp("", "portal_static_graph_*")
+	if err != nil {
+		t.Fatalf("failed to create static temp dir: %v", err)
+	}
+	defer os.RemoveAll(staticDir)
+
+	server.config.StaticOutputDir = staticDir
+
+	repoID := "bxbank/DEO/xone-auth"
+	graphDir := filepath.Join(staticDir, repoID, "api")
+	if err := os.MkdirAll(graphDir, 0755); err != nil {
+		t.Fatalf("failed to create graph dir: %v", err)
+	}
+	expectedGraph := `{"nodes":[{"id":"quickstart"}]}`
+	if err := os.WriteFile(filepath.Join(graphDir, "graph"), []byte(expectedGraph), 0644); err != nil {
+		t.Fatalf("failed to write graph file: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/graph", nil)
+	req.Header.Set("Referer", "http://127.0.0.1:8080/wiki/bxbank/DEO/xone-auth/index.html")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from /api/graph with multi-segment Referer, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != expectedGraph {
+		t.Fatalf("expected graph body %s, got %s", expectedGraph, rec.Body.String())
+	}
+}

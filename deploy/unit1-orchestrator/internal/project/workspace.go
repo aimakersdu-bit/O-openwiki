@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -44,6 +45,20 @@ func NewWorkspaceManager(baseProjectsDir string) *WorkspaceManager {
 	}
 }
 
+// sanitizeAlias normalizes a repo alias so it is safe to use as a single filesystem path
+// segment. Repo IDs often use gitlab group/project notation (e.g. "aimakersdu-bit/health")
+// which would create a nested directory instead of a flat symlink. Path separators and other
+// characters illegal in a single path segment are replaced with "__".
+func sanitizeAlias(alias string) string {
+	if alias == "" {
+		return alias
+	}
+	// Replace OS path separators (already joined by filepath use "/" on linux)
+	alias = strings.ReplaceAll(alias, "/", "__")
+	alias = strings.ReplaceAll(alias, "\\", "__")
+	return alias
+}
+
 // PrepareWorkspace sets up or updates the virtual project workspace directory and symlinks.
 func (m *WorkspaceManager) PrepareWorkspace(project *db.Project, repos []db.RepoWithAlias) (string, error) {
 	wsDir := project.LocalPath
@@ -54,6 +69,14 @@ func (m *WorkspaceManager) PrepareWorkspace(project *db.Project, repos []db.Repo
 	// 1. Ensure project root directory exists
 	if err := os.MkdirAll(wsDir, 0755); err != nil {
 		return "", fmt.Errorf("create workspace dir %s: %w", wsDir, err)
+	}
+
+	// Ensure workspace is a git repository so openwiki CLI can compute source fingerprint
+	gitDir := filepath.Join(wsDir, ".git")
+	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+		cmdInit := exec.Command("git", "init")
+		cmdInit.Dir = wsDir
+		_ = cmdInit.Run()
 	}
 
 	// 2. Ensure _project_hub structure exists
@@ -76,6 +99,7 @@ func (m *WorkspaceManager) PrepareWorkspace(project *db.Project, repos []db.Repo
 		if alias == "" {
 			alias = r.ID
 		}
+		alias = sanitizeAlias(alias)
 		activeAliases[alias] = true
 
 		linkPath := filepath.Join(wsDir, alias)
@@ -130,6 +154,7 @@ func (m *WorkspaceManager) PrepareWorkspace(project *db.Project, repos []db.Repo
 		if alias == "" {
 			alias = r.ID
 		}
+		alias = sanitizeAlias(alias)
 		role := r.Role
 		if role == "" {
 			role = "service"
@@ -211,6 +236,7 @@ func (m *WorkspaceManager) CheckWorkspaceHealth(project *db.Project, repos []db.
 		if alias == "" {
 			alias = r.ID
 		}
+		alias = sanitizeAlias(alias)
 		logicalPath := filepath.Join(wsDir, alias)
 		status := "ok"
 		targetLink := r.LocalPath

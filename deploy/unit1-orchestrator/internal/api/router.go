@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,7 +67,10 @@ func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, ma
 
 	linksDir := "/data/disk0/links/repos"
 	if cfg != nil && cfg.ReposBaseDir != "" {
-		linksDir = filepath.Join(filepath.Dir(cfg.ReposBaseDir), "disk0", "links", "repos")
+		// repos_base_dir points at the logical access layer (links root) per the
+		// multi-repo design doc. Use it directly as the linksBaseDir so physical->logical
+		// symlinks resolve without a nested disk0/links/repos path.
+		linksDir = cfg.ReposBaseDir
 	}
 	s.volumeManager = storage.NewVolumeManager(s.getDB(), linksDir)
 	s.migrator = storage.NewMigrator(s.getDB(), s.volumeManager, manager, linksDir)
