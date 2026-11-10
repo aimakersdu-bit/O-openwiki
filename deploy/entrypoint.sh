@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -e
+umask 0022
 
 # ==============================================================================
 # OpenWiki All-in-One 全家桶容器启动控制脚本 (entrypoint.sh)
@@ -15,13 +16,15 @@ echo "==========================================================================
 echo "🚀 启动 OpenWiki All-in-One 单容器服务环境"
 echo "=============================================================================="
 
-# 1. 确保有状态持久化挂载目录存在
+# 1. 确保有状态持久化挂载目录存在并赋予标准读执行权限 (防止宿主机严格 umask 导致 Nginx 403)
 mkdir -p /data/openwiki/repos \
          /data/openwiki/static \
          /data/openwiki/db \
          /data/openwiki/logs/nginx \
          /data/openwiki/logs/orchestrator \
          /data/openwiki/logs/portal
+chmod 755 /data /data/openwiki /data/openwiki/static 2>/dev/null || true
+chmod -R a+rX /data/openwiki/static /app/public /app/assets 2>/dev/null || true
 
 # 1.5 自动初始化全局 Git HTTP 统一凭据 (若环境变量提供)
 GIT_USER="${GIT_HTTP_USERNAME:-$GIT_USERNAME}"

@@ -18,6 +18,8 @@ import (
 )
 
 func main() {
+	syscall.Umask(0022)
+
 	configPath := flag.String("config", "config.yaml", "Path to configuration file")
 	publicDir := flag.String("public", "public", "Path to public static frontend directory")
 	flag.Parse()

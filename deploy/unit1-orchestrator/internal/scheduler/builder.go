@@ -301,6 +301,7 @@ func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir 
 
 	// Step 5: Atomic Directory Swap (Zero-Downtime Release)
 	b.logStep(repoID, "=== Step 5: Atomic directory swap ===", &logBuf, onProgress...)
+	b.EnsureStaticPermissions(stagingDir)
 	if err := os.MkdirAll(filepath.Dir(finalStaticDir), 0755); err != nil {
 		b.logStep(repoID, fmt.Sprintf("mkdir static base failed: %v", err), &logBuf, onProgress...)
 	}
@@ -321,6 +322,7 @@ func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir 
 		}
 	} else {
 		_ = os.RemoveAll(oldDir)
+		b.EnsureStaticPermissions(finalStaticDir)
 		b.logStep(repoID, "atomic swap completed successfully", &logBuf, onProgress...)
 	}
 
@@ -330,26 +332,65 @@ func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir 
 	return result
 }
 
-// DeployVisualizer populates staticDir with graph.json, index.html, client.js and vendor assets for wikiDir.
+// DeployVisualizer populates staticDir with graph.json, index.html, client.js, client-lib.js and vendor assets for wikiDir.
 func (b *Builder) DeployVisualizer(wikiDir, staticDir string) error {
 	var logBuf strings.Builder
 	_ = b.exportGraph(wikiDir, staticDir, &logBuf)
 	_ = b.copyVisualizerAssets(staticDir, &logBuf)
 	_ = b.copyVendorAssets(staticDir, &logBuf)
+	b.EnsureStaticPermissions(staticDir)
 	return nil
+}
+
+// resolveVisualizerFile locates a visualizer asset (e.g. client.js, client-lib.js, index.html, graph.js)
+// across configured assets/dist directories and standard offline installation paths.
+func (b *Builder) resolveVisualizerFile(filename string) string {
+	assetsDir := filepath.Dir(b.VendorAssetsDir)
+	var candidates []string
+	if assetsDir != "" && assetsDir != "." {
+		candidates = append(candidates, filepath.Join(assetsDir, filename))
+	}
+	if b.OpenwikiDistDir != "" {
+		candidates = append(candidates, filepath.Join(b.OpenwikiDistDir, "visualize", filename))
+	}
+	candidates = append(candidates,
+		filepath.Join("/app/assets", filename),
+		filepath.Join("/opt/openwiki/assets", filename),
+		filepath.Join("/usr/local/lib/node_modules/openwiki/dist/visualize", filename),
+		filepath.Join("/opt/homebrew/lib/node_modules/openwiki/dist/visualize", filename),
+	)
+	for _, c := range candidates {
+		if info, err := os.Stat(c); err == nil && !info.IsDir() {
+			return c
+		}
+	}
+	if assetsDir != "" && assetsDir != "." {
+		return filepath.Join(assetsDir, filename)
+	}
+	return filepath.Join(b.OpenwikiDistDir, "visualize", filename)
 }
 
 // exportGraph calls node to run buildGraph() and writes the JSON output.
 func (b *Builder) exportGraph(wikiDir, staticDir string, log *strings.Builder) error {
+	graphJS := b.resolveVisualizerFile("graph.js")
+	importTarget := "./dist/visualize/graph.js"
+	if absGraphJS, err := filepath.Abs(graphJS); err == nil {
+		if _, statErr := os.Stat(absGraphJS); statErr == nil {
+			importTarget = absGraphJS
+		}
+	}
+
 	script := fmt.Sprintf(`
-		import("./dist/visualize/graph.js")
-			.then(m => m.buildGraph("%s"))
+		import(%q)
+			.then(m => m.buildGraph(%q))
 			.then(g => process.stdout.write(JSON.stringify(g)))
-	`, wikiDir)
+	`, importTarget, wikiDir)
 
 	cmd := exec.Command("node", "--input-type=module", "-e", script)
 	if b.OpenwikiDistDir != "" {
-		cmd.Dir = filepath.Dir(b.OpenwikiDistDir)
+		if info, err := os.Stat(filepath.Dir(b.OpenwikiDistDir)); err == nil && info.IsDir() {
+			cmd.Dir = filepath.Dir(b.OpenwikiDistDir)
+		}
 	}
 	graphJSON, err := cmd.Output()
 	if err != nil {
@@ -361,7 +402,13 @@ func (b *Builder) exportGraph(wikiDir, staticDir string, log *strings.Builder) e
 	if err := os.MkdirAll(apiDir, 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(apiDir, "graph"), graphJSON, 0644)
+	_ = os.Chmod(apiDir, 0755)
+	graphFile := filepath.Join(apiDir, "graph")
+	if err := os.WriteFile(graphFile, graphJSON, 0644); err != nil {
+		return err
+	}
+	_ = os.Chmod(graphFile, 0644)
+	return nil
 }
 
 
@@ -381,24 +428,15 @@ func patchClientJS(content string) string {
 	return content
 }
 
-// copyVisualizerAssets copies the compiled client.js, client-lib.js from openwiki dist.
+// copyVisualizerAssets copies the compiled client.js, client-lib.js from openwiki assets/dist.
 func (b *Builder) copyVisualizerAssets(staticDir string, log *strings.Builder) error {
 	if err := os.MkdirAll(staticDir, 0755); err != nil {
 		return err
 	}
+	_ = os.Chmod(staticDir, 0755)
 
-	distViz := filepath.Join(b.OpenwikiDistDir, "visualize")
-	assetsDir := filepath.Dir(b.VendorAssetsDir)
-
-	clientSrc := filepath.Join(assetsDir, "client.js")
-	if _, err := os.Stat(clientSrc); os.IsNotExist(err) {
-		clientSrc = filepath.Join(distViz, "client.js")
-	}
-
-	clientLibSrc := filepath.Join(assetsDir, "client-lib.js")
-	if _, err := os.Stat(clientLibSrc); os.IsNotExist(err) {
-		clientLibSrc = filepath.Join(distViz, "client-lib.js")
-	}
+	clientSrc := b.resolveVisualizerFile("client.js")
+	clientLibSrc := b.resolveVisualizerFile("client-lib.js")
 
 	assets := map[string]string{
 		"client.js":     clientSrc,
@@ -418,12 +456,13 @@ func (b *Builder) copyVisualizerAssets(staticDir string, log *strings.Builder) e
 	clientDst := filepath.Join(staticDir, "client.js")
 	if data, err := os.ReadFile(clientDst); err == nil {
 		patched := patchClientJS(string(data))
-		os.WriteFile(clientDst, []byte(patched), 0644)
+		_ = os.WriteFile(clientDst, []byte(patched), 0644)
+		_ = os.Chmod(clientDst, 0644)
 	}
 
 	// Always copy index.html template to static output directory
 	indexPath := filepath.Join(staticDir, "index.html")
-	templatePath := filepath.Join(filepath.Dir(b.VendorAssetsDir), "index.html")
+	templatePath := b.resolveVisualizerFile("index.html")
 	if err := copyFile(templatePath, indexPath); err != nil {
 		log.WriteString(fmt.Sprintf("  skip index.html: %v\n", err))
 	} else {
@@ -445,6 +484,7 @@ func (b *Builder) copyVendorAssets(staticDir string, log *strings.Builder) error
 	if err := os.MkdirAll(vendorDst, 0755); err != nil {
 		return err
 	}
+	_ = os.Chmod(vendorDst, 0755)
 
 	entries, err := os.ReadDir(vendorSrc)
 	if err != nil {
@@ -467,7 +507,8 @@ func (b *Builder) copyVendorAssets(staticDir string, log *strings.Builder) error
 	return nil
 }
 
-// copyFile copies a single file from src to dst.
+// copyFile copies a single file from src to dst and explicitly sets 0644 permissions
+// so Nginx worker processes (e.g. www-data/nginx) can always read it regardless of OS umask.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -475,14 +516,108 @@ func copyFile(src, dst string) error {
 	}
 	defer in.Close()
 
-	out, err := os.Create(dst)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 
-	_, err = io.Copy(out, in)
-	return err
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Chmod(dst, 0644)
+}
+
+// EnsureStaticPermissions forces 0755 on all directories (including ancestor directories up to
+// StaticOutputDir and its parent) and 0644 on all regular files under targetDir, bypassing restrictive OS umasks (0027/0077).
+func (b *Builder) EnsureStaticPermissions(targetDir string) {
+	if b.StaticOutputDir != "" {
+		parent := filepath.Dir(b.StaticOutputDir)
+		if parent != "" && parent != "/" && parent != "." {
+			_ = os.Chmod(parent, 0755)
+		}
+		_ = os.Chmod(b.StaticOutputDir, 0755)
+
+		// Also chmod intermediate directories between StaticOutputDir and targetDir (e.g. org/group subdirs)
+		if rel, err := filepath.Rel(b.StaticOutputDir, targetDir); err == nil && !strings.HasPrefix(rel, "..") {
+			cur := b.StaticOutputDir
+			for _, part := range strings.Split(rel, string(filepath.Separator)) {
+				if part == "" || part == "." {
+					continue
+				}
+				cur = filepath.Join(cur, part)
+				_ = os.Chmod(cur, 0755)
+			}
+		}
+	}
+
+	_ = filepath.Walk(targetDir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if info.IsDir() {
+			_ = os.Chmod(p, 0755)
+		} else {
+			_ = os.Chmod(p, 0644)
+		}
+		return nil
+	})
+}
+
+// RepairStaticOutputDir repairs permissions (0755 for dirs, 0644 for files) across the entire
+// StaticOutputDir and backfills missing client-lib.js into any previously built static wiki directory.
+func (b *Builder) RepairStaticOutputDir() {
+	if b.StaticOutputDir == "" {
+		return
+	}
+	if _, err := os.Stat(b.StaticOutputDir); os.IsNotExist(err) {
+		return
+	}
+
+	clientLibSrc := b.resolveVisualizerFile("client-lib.js")
+	hasClientLibSrc := false
+	if info, err := os.Stat(clientLibSrc); err == nil && !info.IsDir() {
+		hasClientLibSrc = true
+	}
+
+	_ = filepath.Walk(b.StaticOutputDir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if info.IsDir() {
+			_ = os.Chmod(p, 0755)
+			if hasClientLibSrc {
+				clientJS := filepath.Join(p, "client.js")
+				clientLibDst := filepath.Join(p, "client-lib.js")
+				if _, err := os.Stat(clientJS); err == nil {
+					if _, err := os.Stat(clientLibDst); os.IsNotExist(err) {
+						if err := copyFile(clientLibSrc, clientLibDst); err == nil {
+							log.Printf("[builder] Backfilled missing client-lib.js into %s", p)
+						}
+					}
+				}
+			}
+		} else {
+			_ = os.Chmod(p, 0644)
+		}
+		return nil
+	})
+
+	parent := filepath.Dir(b.StaticOutputDir)
+	if parent != "" && parent != "/" && parent != "." {
+		_ = os.Chmod(parent, 0755)
+	}
+	_ = os.Chmod(b.StaticOutputDir, 0755)
 }
 
 // ingestKnowledge detects a doc/knowledge directory in the repository and symlinks

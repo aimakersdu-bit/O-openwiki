@@ -455,17 +455,13 @@ func (s *Server) BuildProjectWorkspace(projectID string) error {
 		}
 	}
 
-	// Ensure visualizer assets (index.html, client.js, vendor) and api/graph are deployed into StaticOutputDir/projects/<projectID>
+	// Ensure visualizer assets (index.html, client.js, client-lib.js, vendor) and api/graph are deployed into StaticOutputDir/projects/<projectID>
 	if s.config.StaticOutputDir != "" {
 		staticProjectDir := filepath.Join(s.config.StaticOutputDir, "projects", proj.ID)
 		_ = os.MkdirAll(staticProjectDir, 0755)
-
-		indexPath := filepath.Join(staticProjectDir, "index.html")
-		if _, err := os.Stat(indexPath); os.IsNotExist(err) {
-			if s.scheduler != nil && s.scheduler.GetBuilder() != nil {
-				builder := s.scheduler.GetBuilder()
-				_ = builder.DeployVisualizer(hubOpenwikiDir, staticProjectDir)
-			}
+		if s.scheduler != nil && s.scheduler.GetBuilder() != nil {
+			builder := s.scheduler.GetBuilder()
+			_ = builder.DeployVisualizer(hubOpenwikiDir, staticProjectDir)
 		}
 	}
 

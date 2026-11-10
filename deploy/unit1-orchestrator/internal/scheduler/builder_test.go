@@ -2,7 +2,9 @@ package scheduler
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -150,5 +152,108 @@ func TestIngestKnowledge_IdempotentRelink(t *testing.T) {
 	}
 	if !strings.HasSuffix(target, "/doc/knowledge/a.md") {
 		t.Fatalf("symlink target unexpected: %s", target)
+	}
+}
+
+func TestVisualizerAssetsAndPermissions_WithRestrictiveUmask(t *testing.T) {
+	oldMask := syscall.Umask(0077)
+	defer syscall.Umask(oldMask)
+
+	tmp := t.TempDir()
+	staticOut := filepath.Join(tmp, "static")
+	repoStatic := filepath.Join(staticOut, "bxbank/DEO/demo-repo")
+
+	// Point VendorAssetsDir to the real deploy/unit1-orchestrator/assets/vendor directory,
+	// with OpenwikiDistDir intentionally empty ("") to simulate intranet standalone deployment.
+	assetsVendorDir, err := filepath.Abs("../../assets/vendor")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := NewBuilder("openwiki", assetsVendorDir, "", staticOut)
+	var logBuf strings.Builder
+	if err := b.copyVisualizerAssets(repoStatic, &logBuf); err != nil {
+		t.Fatalf("copyVisualizerAssets failed: %v", err)
+	}
+	if err := b.copyVendorAssets(repoStatic, &logBuf); err != nil {
+		t.Fatalf("copyVendorAssets failed: %v", err)
+	}
+	b.EnsureStaticPermissions(repoStatic)
+
+	if strings.Contains(logBuf.String(), "skip client-lib.js") {
+		t.Fatalf("expected client-lib.js to be copied, got log:\n%s", logBuf.String())
+	}
+
+	// Verify all required static files exist and have 0644 permissions (world-readable for Nginx)
+	for _, relFile := range []string{"index.html", "client.js", "client-lib.js", "vendor/marked.min.js"} {
+		fp := filepath.Join(repoStatic, relFile)
+		info, err := os.Stat(fp)
+		if err != nil {
+			t.Fatalf("expected file %s to exist: %v", fp, err)
+		}
+		if info.Mode().Perm() != 0644 {
+			t.Errorf("expected file %s perm 0644, got %04o", relFile, info.Mode().Perm())
+		}
+	}
+
+	// Verify directories have 0755 permissions (other has rx for Nginx traversal)
+	for _, dir := range []string{
+		staticOut,
+		filepath.Join(staticOut, "bxbank"),
+		filepath.Join(staticOut, "bxbank/DEO"),
+		repoStatic,
+		filepath.Join(repoStatic, "vendor"),
+	} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("expected dir %s to exist: %v", dir, err)
+		}
+		if info.Mode().Perm() != 0755 {
+			t.Errorf("expected dir %s perm 0755, got %04o", dir, info.Mode().Perm())
+		}
+	}
+}
+
+func TestRepairStaticOutputDir_BackfillsClientLibAndFixesPerms(t *testing.T) {
+	tmp := t.TempDir()
+	staticOut := filepath.Join(tmp, "static")
+	repoDir := filepath.Join(staticOut, "legacy-repo")
+	if err := os.MkdirAll(repoDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chmod(staticOut, 0700)
+	_ = os.Chmod(repoDir, 0700)
+
+	clientJS := filepath.Join(repoDir, "client.js")
+	if err := os.WriteFile(clientJS, []byte("// client"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chmod(clientJS, 0600)
+
+	assetsVendorDir, err := filepath.Abs("../../assets/vendor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBuilder("openwiki", assetsVendorDir, "", staticOut)
+	b.RepairStaticOutputDir()
+
+	// Verify client-lib.js was backfilled and has 0644 permissions
+	clientLib := filepath.Join(repoDir, "client-lib.js")
+	info, err := os.Stat(clientLib)
+	if err != nil {
+		t.Fatalf("expected client-lib.js to be backfilled: %v", err)
+	}
+	if info.Mode().Perm() != 0644 {
+		t.Errorf("expected client-lib.js perm 0644, got %04o", info.Mode().Perm())
+	}
+
+	// Verify directory and file permissions were repaired to 0755 / 0644
+	dirInfo, _ := os.Stat(repoDir)
+	if dirInfo.Mode().Perm() != 0755 {
+		t.Errorf("expected repaired dir perm 0755, got %04o", dirInfo.Mode().Perm())
+	}
+	fileInfo, _ := os.Stat(clientJS)
+	if fileInfo.Mode().Perm() != 0644 {
+		t.Errorf("expected repaired file perm 0644, got %04o", fileInfo.Mode().Perm())
 	}
 }

@@ -19,6 +19,8 @@ import (
 )
 
 func main() {
+	syscall.Umask(0022)
+
 	configPath := flag.String("config", "config.yaml", "Path to configuration file")
 	flag.Parse()
 
@@ -40,6 +42,7 @@ func main() {
 
 	// Create builder, runner, pool, scheduler
 	builder := scheduler.NewBuilder(cfg.OpenwikiCLI, cfg.VendorAssetsDir, cfg.OpenwikiDistDir, cfg.StaticOutputDir, cfg.DefaultLanguage)
+	builder.RepairStaticOutputDir()
 	sched := scheduler.NewScheduler(builder)
 
 	qaRunner := qa.NewRunner(cfg.OpenwikiCLI, time.Duration(cfg.QATimeoutSec)*time.Second)
