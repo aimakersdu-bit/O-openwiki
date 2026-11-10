@@ -310,6 +310,30 @@ window.API = {
     return await res.json();
   },
 
+  async registerStorageVolume(data) {
+    const res = await fetch('/api/storage/volumes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err || '注册存储卷失败 (' + res.status + ')');
+    }
+    return await res.json();
+  },
+
+  async deleteStorageVolume(id) {
+    const res = await fetch(`/api/storage/volumes?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err || '删除存储卷失败 (' + res.status + ')');
+    }
+    return await res.json();
+  },
+
   async getRebalancePlan() {
     const res = await fetch('/api/storage/rebalance/plan');
     if (!res.ok) throw new Error('生成均衡计划失败 (' + res.status + ')');

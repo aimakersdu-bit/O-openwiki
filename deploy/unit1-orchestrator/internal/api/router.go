@@ -368,6 +368,17 @@ func (s *Server) handleStorageVolumes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf(`{"error":"list volumes: %v"}`, err), http.StatusInternalServerError)
 			return
 		}
+		// Probe real-time statfs disk usage for each volume
+		if s.volumeManager != nil {
+			for i := range volumes {
+				total, used, err := s.volumeManager.Statfs(volumes[i].MountPoint)
+				if err == nil && total > 0 {
+					volumes[i].TotalBytes = total
+					volumes[i].UsedBytes = used
+					_ = database.UpdateVolumeUsage(volumes[i].ID, used, total)
+				}
+			}
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"volumes": volumes,
 		})
@@ -406,6 +417,21 @@ func (s *Server) handleStorageVolumes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(v)
+
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, `{"error":"id parameter is required"}`, http.StatusBadRequest)
+			return
+		}
+		if err := database.DeleteVolume(id); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"delete volume: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":    true,
+			"deleted_id": id,
+		})
 
 	default:
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)

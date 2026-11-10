@@ -1527,6 +1527,75 @@ document.addEventListener('DOMContentLoaded', async () => {
   const applyRebalancePlanBtn = document.getElementById('applyRebalancePlanBtn');
   let currentRebalancePlan = [];
 
+  // Storage Volume Modal elements
+  const openAddVolumeModalBtn = document.getElementById('openAddVolumeModalBtn');
+  const addVolumeModal = document.getElementById('addVolumeModal');
+  const closeAddVolumeModalBtn = document.getElementById('closeAddVolumeModalBtn');
+  const cancelAddVolumeBtn = document.getElementById('cancelAddVolumeBtn');
+  const addVolumeForm = document.getElementById('addVolumeForm');
+  const volumeIdInput = document.getElementById('volumeIdInput');
+  const volumeMountPointInput = document.getElementById('volumeMountPointInput');
+  const volumeModalTitle = document.getElementById('volumeModalTitle');
+  const volumeAlert = document.getElementById('volumeAlert');
+
+  function showVolumeAlert(msg, type = 'error') {
+    if (!volumeAlert) return;
+    volumeAlert.textContent = msg;
+    volumeAlert.className = `alert alert-${type}`;
+    volumeAlert.style.display = 'block';
+  }
+
+  function hideVolumeAlert() {
+    if (volumeAlert) volumeAlert.style.display = 'none';
+  }
+
+  if (openAddVolumeModalBtn) {
+    openAddVolumeModalBtn.addEventListener('click', () => {
+      if (volumeModalTitle) volumeModalTitle.textContent = '➕ 注册新存储卷挂载点';
+      if (volumeIdInput) {
+        volumeIdInput.value = '';
+        volumeIdInput.disabled = false;
+        volumeIdInput.readOnly = false;
+      }
+      if (volumeMountPointInput) volumeMountPointInput.value = '';
+      hideVolumeAlert();
+      if (addVolumeModal) addVolumeModal.style.display = 'flex';
+      setTimeout(() => volumeIdInput && volumeIdInput.focus(), 50);
+    });
+  }
+
+  if (closeAddVolumeModalBtn) {
+    closeAddVolumeModalBtn.addEventListener('click', () => {
+      if (addVolumeModal) addVolumeModal.style.display = 'none';
+    });
+  }
+
+  if (cancelAddVolumeBtn) {
+    cancelAddVolumeBtn.addEventListener('click', () => {
+      if (addVolumeModal) addVolumeModal.style.display = 'none';
+    });
+  }
+
+  if (addVolumeForm) {
+    addVolumeForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const id = volumeIdInput ? volumeIdInput.value.trim() : '';
+      const mount_point = volumeMountPointInput ? volumeMountPointInput.value.trim() : '';
+      if (!id || !mount_point) {
+        showVolumeAlert('卷 ID 与挂载路径均为必填项', 'error');
+        return;
+      }
+      try {
+        await API.registerStorageVolume({ id, mount_point });
+        if (addVolumeModal) addVolumeModal.style.display = 'none';
+        showAlert(`存储卷 [${id}] 配置已保存并成功自动探测水位！`, 'success');
+        loadStorageVolumes();
+      } catch (err) {
+        showVolumeAlert('保存存储卷失败: ' + err.message, 'error');
+      }
+    });
+  }
+
   async function loadStorageVolumes() {
     if (!isSuperAdmin) return;
     try {
@@ -1545,24 +1614,64 @@ document.addEventListener('DOMContentLoaded', async () => {
         const usedGB = (used / (1024*1024*1024)).toFixed(1);
 
         return `
-          <div style="background:var(--bg-secondary); padding:1rem; border-radius:8px; border:1px solid var(--border-color);">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <strong>💽 ${API.escapeHTML(v.id)}</strong>
-              <span class="badge" style="background:${color}; color:#fff; font-size:0.75rem;">${usedPct.toFixed(1)}% 水位</span>
+          <div style="background:var(--bg-secondary); padding:1rem; border-radius:8px; border:1px solid var(--border-color); display:flex; flex-direction:column; justify-content:space-between;">
+            <div>
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <strong>💽 ${API.escapeHTML(v.id)}</strong>
+                <span class="badge" style="background:${color}; color:#fff; font-size:0.75rem;">${usedPct.toFixed(1)}% 水位</span>
+              </div>
+              <div style="font-size:0.8rem; color:var(--text-secondary); margin:0.35rem 0; word-break:break-all;">
+                挂载路径: <code>${API.escapeHTML(v.mount_point)}</code>
+              </div>
+              <div style="width:100%; height:6px; background:#334155; border-radius:3px; overflow:hidden; margin:0.5rem 0;">
+                <div style="width:${Math.min(100, usedPct)}%; height:100%; background:${color};"></div>
+              </div>
+              <div style="font-size:0.8rem; color:var(--text-secondary); display:flex; justify-content:space-between;">
+                <span>已用: ${usedGB} GB / ${capGB} GB</span>
+                <span>状态: <span style="color:${v.status === 'active' ? 'var(--success-color)' : 'var(--text-secondary)'}; font-weight:600;">${v.status || 'active'}</span></span>
+              </div>
             </div>
-            <div style="font-size:0.8rem; color:var(--text-secondary); margin:0.35rem 0;">
-              挂载路径: <code>${API.escapeHTML(v.mount_point)}</code>
-            </div>
-            <div style="width:100%; height:6px; background:#334155; border-radius:3px; overflow:hidden; margin:0.5rem 0;">
-              <div style="width:${Math.min(100, usedPct)}%; height:100%; background:${color};"></div>
-            </div>
-            <div style="font-size:0.8rem; color:var(--text-secondary); display:flex; justify-content:space-between;">
-              <span>已用: ${usedGB} GB / ${capGB} GB</span>
-              <span>状态: <span style="color:${v.status === 'active' ? 'var(--success-color)' : 'var(--text-secondary)'}; font-weight:600;">${v.status || 'active'}</span></span>
+            <div style="margin-top:0.75rem; padding-top:0.5rem; border-top:1px dashed var(--border-color); display:flex; justify-content:flex-end; gap:0.5rem;">
+              <button class="btn btn-secondary btn-sm edit-volume-btn" data-id="${API.escapeHTML(v.id)}" data-mount="${API.escapeHTML(v.mount_point)}">✏️ 修改路径</button>
+              <button class="btn btn-danger btn-sm delete-volume-btn" data-id="${API.escapeHTML(v.id)}">🗑️ 删除卷</button>
             </div>
           </div>
         `;
       }).join('');
+
+      // Wire up edit and delete buttons
+      volumesGrid.querySelectorAll('.edit-volume-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const id = e.currentTarget.getAttribute('data-id');
+          const mount = e.currentTarget.getAttribute('data-mount');
+          if (volumeModalTitle) volumeModalTitle.textContent = `✏️ 修改存储卷挂载路径 [${id}]`;
+          if (volumeIdInput) {
+            volumeIdInput.value = id;
+            volumeIdInput.disabled = true;
+            volumeIdInput.readOnly = true;
+          }
+          if (volumeMountPointInput) volumeMountPointInput.value = mount || '';
+          hideVolumeAlert();
+          if (addVolumeModal) addVolumeModal.style.display = 'flex';
+          setTimeout(() => volumeMountPointInput && volumeMountPointInput.focus(), 50);
+        });
+      });
+
+      volumesGrid.querySelectorAll('.delete-volume-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          const id = e.currentTarget.getAttribute('data-id');
+          if (!confirm(`确定要从存储池删除卷【${id}】吗？\n\n提示：此操作不会删除物理磁盘上的任何文件或目录，但会将关联到该卷的仓库重置为未指定卷。`)) {
+            return;
+          }
+          try {
+            await API.deleteStorageVolume(id);
+            showAlert(`存储卷 [${id}] 已成功从存储池移除！`, 'success');
+            loadStorageVolumes();
+          } catch (err) {
+            alert('删除存储卷失败: ' + err.message);
+          }
+        });
+      });
     } catch (e) {
       console.warn('loadStorageVolumes error', e);
       if (volumesGrid) {

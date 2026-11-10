@@ -360,6 +360,43 @@ func TestStorageVolumesAndBatchPlacement(t *testing.T) {
 	if repo.VolumeID != "vol1" {
 		t.Fatalf("expected repo placed on vol1, got %s", repo.VolumeID)
 	}
+
+	// 4. Update volume mount point via POST
+	newVolDir := filepath.Join(tmpDir, "data_vol1_updated")
+	_ = os.MkdirAll(newVolDir, 0755)
+	updatePayload := fmt.Sprintf(`{"id":"vol1","mount_point":%q}`, newVolDir)
+	reqUpdate := httptest.NewRequest(http.MethodPost, "/api/storage/volumes", strings.NewReader(updatePayload))
+	reqUpdate.Header.Set("Content-Type", "application/json")
+	wUpdate := httptest.NewRecorder()
+	server.ServeHTTP(wUpdate, reqUpdate)
+	if wUpdate.Code != http.StatusOK {
+		t.Fatalf("expected 200 on update, got %d: %s", wUpdate.Code, wUpdate.Body.String())
+	}
+	vUpdated, err := database.GetVolume("vol1")
+	if err != nil || vUpdated == nil || vUpdated.MountPoint != newVolDir {
+		t.Fatalf("expected mount_point updated to %s, got %+v (err: %v)", newVolDir, vUpdated, err)
+	}
+
+	// 5. Delete volume via DELETE /api/storage/volumes?id=vol1
+	reqDel := httptest.NewRequest(http.MethodDelete, "/api/storage/volumes?id=vol1", nil)
+	wDel := httptest.NewRecorder()
+	server.ServeHTTP(wDel, reqDel)
+	if wDel.Code != http.StatusOK {
+		t.Fatalf("expected 200 on delete, got %d: %s", wDel.Code, wDel.Body.String())
+	}
+
+	vDeleted, _ := database.GetVolume("vol1")
+	if vDeleted != nil {
+		t.Fatalf("expected volume vol1 to be deleted, got %+v", vDeleted)
+	}
+
+	repoAfterDel, err := database.GetRepo("trade-gateway")
+	if err != nil || repoAfterDel == nil {
+		t.Fatalf("failed to query repo after volume delete: %v", err)
+	}
+	if repoAfterDel.VolumeID != "" {
+		t.Fatalf("expected repo volume_id reset to empty, got %q", repoAfterDel.VolumeID)
+	}
 }
 
 func TestMigrationAndRebalanceAPI(t *testing.T) {

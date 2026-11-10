@@ -54,6 +54,14 @@ func (vm *VolumeManager) SetStatfsFunc(fn StatfsFunc) {
 	vm.statfs = fn
 }
 
+// Statfs queries the disk capacity of a given mount point using the configured statfs function.
+func (vm *VolumeManager) Statfs(mountPoint string) (int64, int64, error) {
+	if vm.statfs == nil {
+		return DefaultStatfs(mountPoint)
+	}
+	return vm.statfs(mountPoint)
+}
+
 // SetTaskBusy updates the busy build count for a given volume.
 func (vm *VolumeManager) SetTaskBusy(volumeID string, delta int) {
 	vm.mu.Lock()
@@ -75,8 +83,7 @@ func (vm *VolumeManager) RegisterVolume(id, mountPoint string) (*db.Volume, erro
 		Status:     "active",
 	}
 	if err := vm.db.CreateVolume(v); err != nil {
-		// Update if already exists
-		_ = vm.db.UpdateVolumeUsage(id, used, total)
+		return nil, fmt.Errorf("register volume %s: %w", id, err)
 	}
 	return vm.db.GetVolume(id)
 }

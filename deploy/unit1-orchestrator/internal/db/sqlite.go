@@ -1382,14 +1382,27 @@ type VolumeMigration struct {
 	UpdatedAt    string `json:"updated_at"`
 }
 
-// CreateVolume inserts a storage volume.
+// CreateVolume inserts or updates a storage volume.
 func (db *DB) CreateVolume(v *Volume) error {
 	status := v.Status
 	if status == "" {
 		status = "active"
 	}
 	_, err := db.conn.Exec(`INSERT INTO volumes (id, mount_point, total_bytes, used_bytes, status)
-		VALUES (?, ?, ?, ?, ?)`, v.ID, v.MountPoint, v.TotalBytes, v.UsedBytes, status)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			mount_point = excluded.mount_point,
+			total_bytes = excluded.total_bytes,
+			used_bytes = excluded.used_bytes,
+			status = excluded.status,
+			updated_at = CURRENT_TIMESTAMP`, v.ID, v.MountPoint, v.TotalBytes, v.UsedBytes, status)
+	return err
+}
+
+// DeleteVolume removes a storage volume and resets volume_id on mapped repositories.
+func (db *DB) DeleteVolume(id string) error {
+	_, _ = db.conn.Exec(`UPDATE repos SET volume_id = '', updated_at = CURRENT_TIMESTAMP WHERE volume_id = ?`, id)
+	_, err := db.conn.Exec(`DELETE FROM volumes WHERE id = ?`, id)
 	return err
 }
 
