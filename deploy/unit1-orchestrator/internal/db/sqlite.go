@@ -1166,6 +1166,31 @@ func (db *DB) GetBatchRun(id string) (*BatchRun, error) {
 	return &r, nil
 }
 
+// GetLatestActiveBatchRun retrieves the latest batch run, prioritizing active/running/pending ones.
+func (db *DB) GetLatestActiveBatchRun() (*BatchRun, error) {
+	row := db.conn.QueryRow(`SELECT id, name, total_count, processed_count, success_count, skipped_count, failed_count, 
+		status, max_concurrency, night_mode_only, COALESCE(started_at,''), COALESCE(finished_at,''), created_at 
+		FROM batch_runs ORDER BY 
+		CASE WHEN status IN ('running', 'pending', 'paused') THEN 0 ELSE 1 END,
+		created_at DESC LIMIT 1`)
+	var r BatchRun
+	err := row.Scan(&r.ID, &r.Name, &r.TotalCount, &r.ProcessedCount, &r.SuccessCount, &r.SkippedCount, &r.FailedCount,
+		&r.Status, &r.MaxConcurrency, &r.NightModeOnly, &r.StartedAt, &r.FinishedAt, &r.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// SetBatchNightMode updates the night_mode_only setting for a batch run.
+func (db *DB) SetBatchNightMode(batchID string, nightMode bool) error {
+	_, err := db.conn.Exec(`UPDATE batch_runs SET night_mode_only = ? WHERE id = ?`, nightMode, batchID)
+	return err
+}
+
 func (db *DB) CreateBatchTask(t *BatchTask) error {
 	_, err := db.conn.Exec(`INSERT INTO batch_tasks (batch_id, repo_id, status, duration_sec, prompt_tokens, completion_tokens, total_tokens) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		t.BatchID, t.RepoID, t.Status, t.DurationSec, t.PromptTokens, t.CompletionTokens, t.TotalTokens)

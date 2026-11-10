@@ -242,7 +242,8 @@ window.API = {
 
   // Get Detailed Batch Status & ETA
   async getBatchStatus(batchId) {
-    const res = await fetch(`/portal/batch/status?batch_id=${encodeURIComponent(batchId)}`);
+    const url = batchId ? `/portal/batch/status?batch_id=${encodeURIComponent(batchId)}` : '/portal/batch/status';
+    const res = await fetch(url);
     if (!res.ok) throw new Error('无法获取批跑进度 (' + res.status + ')');
     return await res.json();
   },

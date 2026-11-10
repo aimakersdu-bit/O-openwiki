@@ -268,9 +268,16 @@ func (s *Server) handleBatchStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	database := s.getDB()
 	batchID := r.URL.Query().Get("batch_id")
+	if batchID == "" && database != nil {
+		latest, err := database.GetLatestActiveBatchRun()
+		if err == nil && latest != nil {
+			batchID = latest.ID
+		}
+	}
 	if batchID == "" {
-		http.Error(w, "batch_id parameter is required", http.StatusBadRequest)
+		http.Error(w, "batch_id parameter is required and no active batch found", http.StatusBadRequest)
 		return
 	}
 
@@ -289,15 +296,22 @@ func (s *Server) handleBatchStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(status)
 }
 
-// handleBatchControl manages pause, resume, and cancel commands.
+// handleBatchControl manages start, pause, resume, cancel, and disable-night-mode commands.
 func (s *Server) handleBatchControl(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	action := filepath.Base(r.URL.Path) // pause, resume, cancel
+	database := s.getDB()
+	action := filepath.Base(r.URL.Path) // start, pause, resume, cancel, disable-night-mode
 	batchID := r.URL.Query().Get("batch_id")
+	if batchID == "" && database != nil {
+		latest, err := database.GetLatestActiveBatchRun()
+		if err == nil && latest != nil {
+			batchID = latest.ID
+		}
+	}
 	if batchID == "" {
 		http.Error(w, "batch_id parameter is required", http.StatusBadRequest)
 		return
@@ -311,12 +325,17 @@ func (s *Server) handleBatchControl(w http.ResponseWriter, r *http.Request) {
 	bs := s.scheduler.GetBatchScheduler()
 	var err error
 	switch action {
+	case "start", "resume":
+		err = bs.ResumeBatch(batchID)
 	case "pause":
 		err = bs.PauseBatch(batchID)
-	case "resume":
-		err = bs.ResumeBatch(batchID)
 	case "cancel":
 		err = bs.CancelBatch(batchID)
+	case "disable-night-mode":
+		if database != nil {
+			_ = database.SetBatchNightMode(batchID, false)
+		}
+		err = bs.ResumeBatch(batchID)
 	default:
 		http.Error(w, "Unknown batch action: "+action, http.StatusBadRequest)
 		return

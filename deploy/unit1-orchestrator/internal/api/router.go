@@ -150,9 +150,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/repos/batch-import", s.handleBatchImport)
 	s.mux.HandleFunc("/api/batch/concurrency", s.handleBatchConcurrency)
 	s.mux.HandleFunc("/api/batch/status", s.handleBatchStatus)
+	s.mux.HandleFunc("/api/batch/start", s.handleBatchControl)
 	s.mux.HandleFunc("/api/batch/pause", s.handleBatchControl)
 	s.mux.HandleFunc("/api/batch/resume", s.handleBatchControl)
 	s.mux.HandleFunc("/api/batch/cancel", s.handleBatchControl)
+	s.mux.HandleFunc("/api/batch/disable-night-mode", s.handleBatchControl)
 
 	// Daily Token Telemetry & Feishu/Lark Multi-dimensional Table Export
 	s.mux.HandleFunc("/api/telemetry/tokens/daily", s.handleDailyTokens)

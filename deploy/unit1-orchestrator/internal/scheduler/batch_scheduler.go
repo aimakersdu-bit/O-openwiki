@@ -123,13 +123,29 @@ func (bs *BatchScheduler) PauseBatch(batchID string) error {
 	return bs.db.UpdateBatchRunStatus(batchID, "paused")
 }
 
-// ResumeBatch resumes execution of paused tasks.
+// ResumeBatch resumes execution of paused tasks, or initiates execution if not already running.
 func (bs *BatchScheduler) ResumeBatch(batchID string) error {
 	bs.mu.Lock()
+	if bs.runningBatchID == "" {
+		bs.mu.Unlock()
+		return bs.StartBatch(context.Background(), batchID)
+	}
 	bs.isPaused = false
 	bs.pauseCond.Broadcast()
 	bs.mu.Unlock()
 	return bs.db.UpdateBatchRunStatus(batchID, "running")
+}
+
+// AutoResumeLatestBatch checks on startup if there is an active running or pending batch, and starts it.
+func (bs *BatchScheduler) AutoResumeLatestBatch() {
+	if bs.db == nil {
+		return
+	}
+	run, err := bs.db.GetLatestActiveBatchRun()
+	if err == nil && run != nil && (run.Status == "running" || run.Status == "pending") {
+		log.Printf("[batch_scheduler] Auto-resuming active batch %s (%s)", run.ID, run.Name)
+		_ = bs.StartBatch(context.Background(), run.ID)
+	}
 }
 
 // CancelBatch terminates the currently running batch.
@@ -220,7 +236,15 @@ func (bs *BatchScheduler) GetDetailedStatus(batchID string) (*BatchStatusRespons
 // StartBatch begins asynchronous execution of all pending tasks in the given batch.
 func (bs *BatchScheduler) StartBatch(ctx context.Context, batchID string) error {
 	bs.mu.Lock()
-	if bs.runningBatchID != "" && bs.runningBatchID != batchID {
+	if bs.runningBatchID == batchID {
+		// Already assigned to this batch, ensure unpaused
+		bs.isPaused = false
+		bs.pauseCond.Broadcast()
+		bs.mu.Unlock()
+		_ = bs.db.UpdateBatchRunStatus(batchID, "running")
+		return nil
+	}
+	if bs.runningBatchID != "" {
 		bs.mu.Unlock()
 		return fmt.Errorf("another batch (%s) is already running", bs.runningBatchID)
 	}

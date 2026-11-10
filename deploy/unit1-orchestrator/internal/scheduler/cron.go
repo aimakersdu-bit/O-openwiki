@@ -117,6 +117,10 @@ func (s *Scheduler) Start() error {
 
 	s.cron.Start()
 	log.Printf("[scheduler] started with %d active repo jobs", len(s.entries))
+
+	if s.batchSched != nil {
+		s.batchSched.AutoResumeLatestBatch()
+	}
 	return nil
 }
 

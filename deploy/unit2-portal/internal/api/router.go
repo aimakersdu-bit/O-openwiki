@@ -61,9 +61,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/portal/repos/batch-import", s.handlePortalBatchImport)
 	s.mux.HandleFunc("/portal/batch/concurrency", s.handlePortalBatchConcurrency)
 	s.mux.HandleFunc("/portal/batch/status", s.handlePortalBatchStatus)
+	s.mux.HandleFunc("/portal/batch/start", s.handlePortalBatchControl)
 	s.mux.HandleFunc("/portal/batch/pause", s.handlePortalBatchControl)
 	s.mux.HandleFunc("/portal/batch/resume", s.handlePortalBatchControl)
 	s.mux.HandleFunc("/portal/batch/cancel", s.handlePortalBatchControl)
+	s.mux.HandleFunc("/portal/batch/disable-night-mode", s.handlePortalBatchControl)
 	s.mux.HandleFunc("/portal/telemetry/tokens/daily", s.handlePortalDailyTokens)
 	s.mux.HandleFunc("/portal/telemetry/tokens/export", s.handlePortalTokensExport)
 

@@ -60,7 +60,9 @@
             <div style="font-size: 0.85rem; color: var(--text-secondary, #94a3b8); margin-bottom: 0.25rem;">任务完成度</div>
             <div id="batchProgressText" style="font-size: 1.1rem; font-weight: bold; color: var(--text-primary, #f8fafc);">0 / 0 (0%)</div>
           </div>
-          <div style="display: flex; gap: 0.5rem;" id="batchControlButtons">
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;" id="batchControlButtons">
+            <button id="startBatchBtn" class="btn btn-primary btn-sm" style="display:none;">▶️ 立即开始调度</button>
+            <button id="disableNightModeBtn" class="btn btn-warning btn-sm" style="display:none;">☀️ 关闭夜间限制 (立即跑)</button>
             <button id="pauseBatchBtn" class="btn btn-secondary btn-sm" style="display:none;">⏸️ 暂停调度</button>
             <button id="resumeBatchBtn" class="btn btn-primary btn-sm" style="display:none;">▶️ 恢复调度</button>
             <button id="cancelBatchBtn" class="btn btn-danger btn-sm" style="display:none;">⏹️ 中止批跑</button>
@@ -616,8 +618,8 @@
 
           <div class="form-group" style="display:flex; gap: 1.5rem; align-items: center; margin: 0.5rem 0;">
             <label style="display:flex; align-items: center; gap: 0.4rem; cursor: pointer;">
-              <input type="checkbox" id="batchNightMode" checked>
-              <span>🌙 启用夜间算力窗口 (仅在 22:00 ~ 07:00 运行构建)</span>
+              <input type="checkbox" id="batchNightMode">
+              <span>🌙 启用夜间算力窗口 (仅在 22:00 ~ 07:00 运行构建，白天测试请勿勾选)</span>
             </label>
             <label style="display:flex; align-items: center; gap: 0.4rem; cursor: pointer;">
               <input type="checkbox" id="batchAutoStart" checked>

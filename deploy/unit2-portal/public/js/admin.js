@@ -1053,6 +1053,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const batchETABadge = document.getElementById('batchETABadge');
   const batchProgressText = document.getElementById('batchProgressText');
   const batchProgressBar = document.getElementById('batchProgressBar');
+  const startBatchBtn = document.getElementById('startBatchBtn');
+  const disableNightModeBtn = document.getElementById('disableNightModeBtn');
   const pauseBatchBtn = document.getElementById('pauseBatchBtn');
   const resumeBatchBtn = document.getElementById('resumeBatchBtn');
   const cancelBatchBtn = document.getElementById('cancelBatchBtn');
@@ -1109,6 +1111,32 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Batch Control Buttons
+  if (startBatchBtn) {
+    startBatchBtn.addEventListener('click', async () => {
+      if (!activeBatchId) return;
+      try {
+        await API.controlBatch(activeBatchId, 'start');
+        showAlert('批跑调度已正式启动！', 'success');
+        refreshBatchStatus();
+      } catch (err) {
+        showAlert(`启动批跑失败: ${err.message}`, 'error');
+      }
+    });
+  }
+
+  if (disableNightModeBtn) {
+    disableNightModeBtn.addEventListener('click', async () => {
+      if (!activeBatchId) return;
+      try {
+        await API.controlBatch(activeBatchId, 'disable-night-mode');
+        showAlert('已解除夜间算力窗口限制，立即开始白天调度构建！', 'success');
+        refreshBatchStatus();
+      } catch (err) {
+        showAlert(`解除夜间限制失败: ${err.message}`, 'error');
+      }
+    });
+  }
+
   if (pauseBatchBtn) {
     pauseBatchBtn.addEventListener('click', async () => {
       if (!activeBatchId) return;
@@ -1238,14 +1266,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Refresh and Render Batch Status
   async function refreshBatchStatus() {
     if (!activeBatchId) {
+      try {
+        const autoData = await API.getBatchStatus('');
+        if (autoData && autoData.batch_run && autoData.batch_run.id) {
+          activeBatchId = autoData.batch_run.id;
+          localStorage.setItem('openwiki_active_batch_id', activeBatchId);
+        }
+      } catch (_) {}
+    }
+
+    if (!activeBatchId) {
       batchStatusBadge.textContent = '无正在运行的批跑';
       batchStatusBadge.style.background = '#64748b';
       batchETABadge.textContent = '-';
       batchProgressText.textContent = '0 / 0 (0%)';
       batchProgressBar.style.width = '0%';
-      pauseBatchBtn.style.display = 'none';
-      resumeBatchBtn.style.display = 'none';
-      cancelBatchBtn.style.display = 'none';
+      if (startBatchBtn) startBatchBtn.style.display = 'none';
+      if (disableNightModeBtn) disableNightModeBtn.style.display = 'none';
+      if (pauseBatchBtn) pauseBatchBtn.style.display = 'none';
+      if (resumeBatchBtn) resumeBatchBtn.style.display = 'none';
+      if (cancelBatchBtn) cancelBatchBtn.style.display = 'none';
       slotIndicators.innerHTML = '';
       return;
     }
@@ -1302,18 +1342,25 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       // Buttons
+      if (startBatchBtn) startBatchBtn.style.display = 'none';
+      if (disableNightModeBtn) disableNightModeBtn.style.display = 'none';
+      if (pauseBatchBtn) pauseBatchBtn.style.display = 'none';
+      if (resumeBatchBtn) resumeBatchBtn.style.display = 'none';
+      if (cancelBatchBtn) cancelBatchBtn.style.display = 'none';
+
+      if (run.night_mode_only && !data.is_window_open && run.status !== 'completed' && run.status !== 'failed') {
+        if (disableNightModeBtn) disableNightModeBtn.style.display = 'inline-block';
+      }
+
       if (run.status === 'running') {
-        pauseBatchBtn.style.display = 'inline-block';
-        resumeBatchBtn.style.display = 'none';
-        cancelBatchBtn.style.display = 'inline-block';
+        if (pauseBatchBtn) pauseBatchBtn.style.display = 'inline-block';
+        if (cancelBatchBtn) cancelBatchBtn.style.display = 'inline-block';
       } else if (run.status === 'paused') {
-        pauseBatchBtn.style.display = 'none';
-        resumeBatchBtn.style.display = 'inline-block';
-        cancelBatchBtn.style.display = 'inline-block';
-      } else {
-        pauseBatchBtn.style.display = 'none';
-        resumeBatchBtn.style.display = 'none';
-        cancelBatchBtn.style.display = 'none';
+        if (resumeBatchBtn) resumeBatchBtn.style.display = 'inline-block';
+        if (cancelBatchBtn) cancelBatchBtn.style.display = 'inline-block';
+      } else if (run.status === 'pending') {
+        if (startBatchBtn) startBatchBtn.style.display = 'inline-block';
+        if (cancelBatchBtn) cancelBatchBtn.style.display = 'inline-block';
       }
 
       // Slot Indicators
