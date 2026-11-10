@@ -79,7 +79,7 @@ cat << 'EOF' > "$OUTPUT_DIR/config.json"
 {
   "listen_addr": ":3000",
   "openwiki_cli": "openwiki",
-  "openwiki_dist_dir": "",
+  "openwiki_dist_dir": "/app/dist",
   "static_output_dir": "/data/openwiki/static",
   "vendor_assets_dir": "/app/assets/vendor",
   "repos_base_dir": "/data/openwiki/repos",
