@@ -25,8 +25,11 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	if err := db.InitDB(cfg.DBPath); err != nil {
-		log.Fatalf("Failed to initialize database at %s: %v", cfg.DBPath, err)
+	if cfg.DBDSN == "" {
+		log.Fatalf("DB_DSN is required (MySQL DSN)")
+	}
+	if err := db.InitDB(cfg.DBDSN); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.CloseDB()
 

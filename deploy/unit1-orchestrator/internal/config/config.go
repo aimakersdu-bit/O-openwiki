@@ -21,7 +21,8 @@ type Config struct {
 	ReposBaseDir    string `json:"repos_base_dir"`     // base directory for cloned repositories
 	ProjectsBaseDir string `json:"projects_base_dir"`  // base directory for virtual project workspaces
 	LogBaseDir      string `json:"log_base_dir"`       // base directory for logs (e.g. /data/disk_log)
-	DBPath          string `json:"db_path"`             // path to SQLite database file
+	DBPath          string `json:"db_path"`             // legacy SQLite path (unused with MySQL)
+	DBDSN           string `json:"db_dsn"`              // MySQL DSN, e.g. "openwiki:pass@tcp(127.0.0.1:3306)/openwiki?parseTime=true"
 
 	// OpenWiki provider settings
 	OpenwikiProvider   string `json:"openwiki_provider"`     // e.g. "openai", "gemini"
@@ -66,6 +67,7 @@ func DefaultConfig() *Config {
 		ProjectsBaseDir:  filepath.Join(home, ".openwiki", "projects"),
 		LogBaseDir:       filepath.Join(home, ".openwiki", "disk_log"),
 		DBPath:             "orchestrator.db",
+		DBDSN:              "",
 		LLMTimeoutSec:      600,
 		LLMProxyMaxRetries: 6,
 		MaxConcurrentQA:    5,
@@ -113,6 +115,9 @@ func overrideEnv(cfg *Config) {
 	}
 	if envDB := os.Getenv("DB_PATH"); envDB != "" {
 		cfg.DBPath = envDB
+	}
+	if envDSN := os.Getenv("DB_DSN"); envDSN != "" {
+		cfg.DBDSN = envDSN
 	}
 	if envStatic := os.Getenv("STATIC_OUTPUT_DIR"); envStatic != "" {
 		cfg.StaticOutputDir = envStatic

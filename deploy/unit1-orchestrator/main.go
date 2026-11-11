@@ -33,12 +33,16 @@ func main() {
 		cfg = config.DefaultConfig()
 	}
 
-	// Initialize SQLite Database
-	if err := db.InitDB(cfg.DBPath); err != nil {
-		log.Fatalf("Failed to initialize database at %s: %v", cfg.DBPath, err)
+	// Initialize MySQL Database
+	dbDSN := cfg.DBDSN
+	if dbDSN == "" {
+		log.Fatalf("DB_DSN is required (MySQL DSN, e.g. openwiki:pass@tcp(127.0.0.1:3306)/openwiki?parseTime=true)")
+	}
+	if err := db.InitDB(dbDSN); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.CloseDB()
-	log.Printf("Database initialized at %s", cfg.DBPath)
+	log.Printf("Database initialized (MySQL)")
 
 	// Create builder, runner, pool, scheduler
 	builder := scheduler.NewBuilder(cfg.OpenwikiCLI, cfg.VendorAssetsDir, cfg.OpenwikiDistDir, cfg.StaticOutputDir, cfg.DefaultLanguage)

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/go-sql-driver/mysql"
 )
 
 var DB *sql.DB
@@ -20,82 +20,78 @@ type Session struct {
 	ExpiresAt   time.Time `json:"expires_at"`
 }
 
-// InitDB opens SQLite connection and creates sessions table.
-func InitDB(dbPath string) error {
+// InitDB opens MySQL connection and creates tables.
+func InitDB(dsn string) error {
 	var err error
-	sep := "?"
-	if strings.Contains(dbPath, "?") {
-		sep = "&"
-	}
-	dsn := dbPath + sep + "_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=10000&_txlock=immediate"
-	DB, err = sql.Open("sqlite3", dsn)
+	DB, err = sql.Open("mysql", dsn)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
-	// Serialize SQLite operations via a single pooled connection in Go to prevent
-	// intra-process write lock contention ("database is locked").
-	DB.SetMaxOpenConns(1)
-	DB.SetMaxIdleConns(1)
-	DB.SetConnMaxLifetime(0)
+	DB.SetMaxOpenConns(25)
+	DB.SetMaxIdleConns(10)
+	DB.SetConnMaxLifetime(5 * time.Minute)
 
-	schema := `
-	CREATE TABLE IF NOT EXISTS sessions (
-		token TEXT PRIMARY KEY,
-		user_id TEXT NOT NULL,
-		display_name TEXT,
-		role TEXT DEFAULT 'user',
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		expires_at DATETIME NOT NULL
-	);
-	CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
-
-	CREATE TABLE IF NOT EXISTS users (
-		username TEXT PRIMARY KEY,
-		display_name TEXT,
-		role TEXT NOT NULL DEFAULT 'user',
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE TABLE IF NOT EXISTS user_domain_grants (
-		username TEXT NOT NULL,
-		business_domain TEXT NOT NULL,
-		granted_by TEXT NOT NULL,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		PRIMARY KEY (username, business_domain)
-	);
-	CREATE INDEX IF NOT EXISTS idx_grants_user ON user_domain_grants(username);
-
-	CREATE TABLE IF NOT EXISTS audit_logs (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		operator TEXT NOT NULL,
-		action TEXT NOT NULL,
-		target_type TEXT NOT NULL,
-		target_id TEXT NOT NULL,
-		details TEXT,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-	CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
-
-	CREATE TABLE IF NOT EXISTS business_domains (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		name TEXT NOT NULL UNIQUE,
-		code TEXT DEFAULT '',
-		description TEXT DEFAULT '',
-		sort_order INTEGER DEFAULT 0,
-		status TEXT NOT NULL DEFAULT 'active',
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-	CREATE INDEX IF NOT EXISTS idx_business_domains_name ON business_domains(name);
-	`
-	if _, err := DB.Exec(schema); err != nil {
-		return fmt.Errorf("failed to execute schema: %w", err)
+	tables := []string{
+		`CREATE TABLE IF NOT EXISTS sessions (
+			token VARCHAR(255) PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			display_name TEXT,
+			role TEXT DEFAULT 'user',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			expires_at DATETIME NOT NULL
+		) ENGINE=InnoDB`,
+		`CREATE TABLE IF NOT EXISTS users (
+			username VARCHAR(255) PRIMARY KEY,
+			display_name TEXT,
+			role TEXT NOT NULL DEFAULT 'user',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		) ENGINE=InnoDB`,
+		`CREATE TABLE IF NOT EXISTS user_domain_grants (
+			username VARCHAR(255) NOT NULL,
+			business_domain VARCHAR(255) NOT NULL,
+			granted_by TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (username, business_domain)
+		) ENGINE=InnoDB`,
+		`CREATE TABLE IF NOT EXISTS audit_logs (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			operator TEXT NOT NULL,
+			action TEXT NOT NULL,
+			target_type TEXT NOT NULL,
+			target_id TEXT NOT NULL,
+			details TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		) ENGINE=InnoDB`,
+		`CREATE TABLE IF NOT EXISTS business_domains (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			name VARCHAR(255) NOT NULL UNIQUE,
+			code TEXT DEFAULT '',
+			description TEXT DEFAULT '',
+			sort_order INT DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		) ENGINE=InnoDB`,
 	}
-
-	// Migration: add role column if missing in older schema
-	_, _ = DB.Exec("ALTER TABLE sessions ADD COLUMN role TEXT DEFAULT 'user';")
-	_, _ = DB.Exec("ALTER TABLE business_domains ADD COLUMN code TEXT DEFAULT '';")
+	for _, t := range tables {
+		if _, err := DB.Exec(t); err != nil {
+			return fmt.Errorf("failed to execute schema: %w", err)
+		}
+	}
+	indices := []string{
+		`CREATE INDEX idx_sessions_user ON sessions(user_id)`,
+		`CREATE INDEX idx_grants_user ON user_domain_grants(username)`,
+		`CREATE INDEX idx_audit_created ON audit_logs(created_at)`,
+		`CREATE INDEX idx_business_domains_name ON business_domains(name)`,
+	}
+	for _, idx := range indices {
+		if _, err := DB.Exec(idx); err != nil {
+			if !strings.Contains(err.Error(), "1061") {
+				return fmt.Errorf("failed to create index: %w", err)
+			}
+		}
+	}
 
 	return nil
 }
@@ -111,9 +107,9 @@ func SaveSession(s *Session) error {
 	query := `
 	INSERT INTO sessions (token, user_id, display_name, role, created_at, expires_at)
 	VALUES (?, ?, ?, ?, ?, ?)
-	ON CONFLICT(token) DO UPDATE SET
-		role = excluded.role,
-		expires_at = excluded.expires_at;
+	ON DUPLICATE KEY UPDATE
+		role = VALUES(role),
+		expires_at = VALUES(expires_at)
 	`
 	timeFormat := "2006-01-02 15:04:05"
 	createdAtStr := time.Now().UTC().Format(timeFormat)
@@ -193,9 +189,9 @@ func UpsertUser(u *User) error {
 	query := `
 	INSERT INTO users (username, display_name, role, updated_at)
 	VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-	ON CONFLICT(username) DO UPDATE SET
-		display_name = excluded.display_name,
-		updated_at = CURRENT_TIMESTAMP;
+	ON DUPLICATE KEY UPDATE
+		display_name = VALUES(display_name),
+		updated_at = CURRENT_TIMESTAMP
 	`
 	_, err := DB.Exec(query, u.Username, u.DisplayName, u.Role)
 	return err
@@ -206,9 +202,9 @@ func SetUserRole(username, role string) error {
 	query := `
 	INSERT INTO users (username, role, updated_at)
 	VALUES (?, ?, CURRENT_TIMESTAMP)
-	ON CONFLICT(username) DO UPDATE SET
-		role = excluded.role,
-		updated_at = CURRENT_TIMESTAMP;
+	ON DUPLICATE KEY UPDATE
+		role = VALUES(role),
+		updated_at = CURRENT_TIMESTAMP
 	`
 	_, err := DB.Exec(query, username, role)
 	return err
@@ -270,7 +266,7 @@ func ListUsers() ([]User, error) {
 // GrantDomain authorizes a user (group leader) for a specific business domain.
 func GrantDomain(username, domain, operator string) error {
 	query := `
-	INSERT OR IGNORE INTO user_domain_grants (username, business_domain, granted_by, created_at)
+	INSERT IGNORE INTO user_domain_grants (username, business_domain, granted_by, created_at)
 	VALUES (?, ?, ?, CURRENT_TIMESTAMP);
 	`
 	_, err := DB.Exec(query, username, domain, operator)

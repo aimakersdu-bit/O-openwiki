@@ -8,32 +8,22 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/go-sql-driver/mysql"
 )
 
 type DB struct {
 	conn *sql.DB
 }
 
-func buildSQLiteDSN(path string) string {
-	sep := "?"
-	if strings.Contains(path, "?") {
-		sep = "&"
-	}
-	return path + sep + "_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=10000&_txlock=immediate"
-}
-
-// Open opens (or creates) the SQLite database and runs migrations.
-func Open(path string) (*DB, error) {
-	conn, err := sql.Open("sqlite3", buildSQLiteDSN(path))
+// Open opens (or creates) the MySQL database and runs migrations.
+func Open(dsn string) (*DB, error) {
+	conn, err := sql.Open("mysql", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open db %s: %w", path, err)
+		return nil, fmt.Errorf("open mysql db %s: %w", dsn, err)
 	}
-	// Serialize all SQLite operations through a single pooled connection in Go
-	// to eliminate intra-process writer lock contention ("database is locked").
-	conn.SetMaxOpenConns(1)
-	conn.SetMaxIdleConns(1)
-	conn.SetConnMaxLifetime(0)
+	conn.SetMaxOpenConns(25)
+	conn.SetMaxIdleConns(10)
+	conn.SetConnMaxLifetime(5 * time.Minute)
 
 	db := &DB{conn: conn}
 	if err := db.migrate(); err != nil {
@@ -52,9 +42,9 @@ func (db *DB) Close() error {
 var globalDB *DB
 
 // InitDB initializes the global database connection.
-func InitDB(path string) error {
+func InitDB(dsn string) error {
 	var err error
-	globalDB, err = Open(path)
+	globalDB, err = Open(dsn)
 	return err
 }
 
@@ -200,7 +190,7 @@ func GetProjectRepos(projectID string) ([]RepoWithAlias, error) {
 func (db *DB) migrate() error {
 	tables := []string{
 		`CREATE TABLE IF NOT EXISTS repos (
-			id          TEXT PRIMARY KEY,
+			id          VARCHAR(255) PRIMARY KEY,
 			name        TEXT NOT NULL,
 			git_url     TEXT NOT NULL,
 			branch      TEXT NOT NULL DEFAULT 'main',
@@ -211,28 +201,30 @@ func (db *DB) migrate() error {
 			status      TEXT NOT NULL DEFAULT 'active',
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
+		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS builds (
-			id          INTEGER PRIMARY KEY AUTOINCREMENT,
-			repo_id     TEXT NOT NULL REFERENCES repos(id),
+			id          INT AUTO_INCREMENT PRIMARY KEY,
+			repo_id     VARCHAR(255) NOT NULL,
 			git_head    TEXT,
 			status      TEXT NOT NULL DEFAULT 'pending',
 			started_at  DATETIME,
 			finished_at DATETIME,
-			log         TEXT,
-			error       TEXT
-		)`,
+			log         LONGTEXT,
+			error       TEXT,
+			FOREIGN KEY (repo_id) REFERENCES repos(id)
+		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS qa_sessions (
-			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			id          INT AUTO_INCREMENT PRIMARY KEY,
 			session_id  TEXT,
-			repo_id     TEXT NOT NULL REFERENCES repos(id),
+			repo_id     VARCHAR(255) NOT NULL,
 			user_id     TEXT NOT NULL,
 			question    TEXT NOT NULL,
 			answer      TEXT,
-			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (repo_id) REFERENCES repos(id)
+		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS projects (
-			id              TEXT PRIMARY KEY,
+			id              VARCHAR(255) PRIMARY KEY,
 			name            TEXT NOT NULL,
 			tri_code        TEXT NOT NULL DEFAULT '',
 			description     TEXT,
@@ -242,26 +234,29 @@ func (db *DB) migrate() error {
 			status          TEXT NOT NULL DEFAULT 'active',
 			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
+		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS project_repos (
-			id          INTEGER PRIMARY KEY AUTOINCREMENT,
-			project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-			repo_id     TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+			id          INT AUTO_INCREMENT PRIMARY KEY,
+			project_id  VARCHAR(255) NOT NULL,
+			repo_id     VARCHAR(255) NOT NULL,
 			alias_name  TEXT NOT NULL,
 			role        TEXT DEFAULT 'service',
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(project_id, repo_id),
-			UNIQUE(project_id, alias_name)
-		)`,
+			UNIQUE(project_id, alias_name),
+			FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+			FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE CASCADE
+		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS project_qa_sessions (
-			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			id          INT AUTO_INCREMENT PRIMARY KEY,
 			session_id  TEXT,
-			project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			project_id  VARCHAR(255) NOT NULL,
 			user_id     TEXT NOT NULL,
 			question    TEXT NOT NULL,
 			answer      TEXT,
-			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+		) ENGINE=InnoDB`,
 	}
 
 	for _, t := range tables {
@@ -286,7 +281,7 @@ func (db *DB) migrate() error {
 
 	batchTables := []string{
 		`CREATE TABLE IF NOT EXISTS batch_runs (
-			id              TEXT PRIMARY KEY,
+			id              VARCHAR(255) PRIMARY KEY,
 			name            TEXT NOT NULL,
 			total_count     INTEGER DEFAULT 0,
 			processed_count INTEGER DEFAULT 0,
@@ -295,26 +290,28 @@ func (db *DB) migrate() error {
 			failed_count    INTEGER DEFAULT 0,
 			status          TEXT NOT NULL DEFAULT 'pending',
 			max_concurrency INTEGER DEFAULT 2,
-			night_mode_only BOOLEAN DEFAULT 0,
+			night_mode_only TINYINT(1) DEFAULT 0,
 			started_at      DATETIME,
 			finished_at     DATETIME,
 			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
+		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS batch_tasks (
-			id                INTEGER PRIMARY KEY AUTOINCREMENT,
-			batch_id          TEXT NOT NULL REFERENCES batch_runs(id) ON DELETE CASCADE,
-			repo_id           TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+			id                INT AUTO_INCREMENT PRIMARY KEY,
+			batch_id          VARCHAR(255) NOT NULL,
+			repo_id           VARCHAR(255) NOT NULL,
 			status            TEXT NOT NULL DEFAULT 'pending',
 			duration_sec      INTEGER DEFAULT 0,
-			prompt_tokens     INTEGER DEFAULT 0,
-			completion_tokens INTEGER DEFAULT 0,
-			total_tokens      INTEGER DEFAULT 0,
+			prompt_tokens     BIGINT DEFAULT 0,
+			completion_tokens BIGINT DEFAULT 0,
+			total_tokens      BIGINT DEFAULT 0,
 			summary           TEXT,
 			error             TEXT,
 			started_at        DATETIME,
 			finished_at       DATETIME,
-			UNIQUE(batch_id, repo_id)
-		)`,
+			UNIQUE(batch_id, repo_id),
+			FOREIGN KEY (batch_id) REFERENCES batch_runs(id) ON DELETE CASCADE,
+			FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE CASCADE
+		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS daily_token_usage (
 			date               TEXT NOT NULL,
 			business_domain    TEXT NOT NULL DEFAULT '',
@@ -328,23 +325,19 @@ func (db *DB) migrate() error {
 			total_duration_sec INTEGER DEFAULT 0,
 			updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (date, business_domain)
-		)`,
-		`CREATE TABLE IF NOT EXISTS system_settings (
-			key        TEXT PRIMARY KEY,
-			value      TEXT NOT NULL,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
+		) ENGINE=InnoDB`,
+		"CREATE TABLE IF NOT EXISTS system_settings (\n\t\t\t`key`      VARCHAR(255) PRIMARY KEY,\n\t\t\tvalue      TEXT NOT NULL,\n\t\t\tupdated_at DATETIME DEFAULT CURRENT_TIMESTAMP\n\t\t) ENGINE=InnoDB",
 		`CREATE TABLE IF NOT EXISTS volumes (
-			id          TEXT PRIMARY KEY,
+			id          VARCHAR(255) PRIMARY KEY,
 			mount_point TEXT NOT NULL,
 			total_bytes INTEGER NOT NULL DEFAULT 0,
 			used_bytes  INTEGER NOT NULL DEFAULT 0,
 			status      TEXT NOT NULL DEFAULT 'active',
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
+		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS volume_migrations (
-			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			id             INT AUTO_INCREMENT PRIMARY KEY,
 			repo_id        TEXT NOT NULL,
 			from_volume_id TEXT NOT NULL,
 			to_volume_id   TEXT NOT NULL,
@@ -354,7 +347,7 @@ func (db *DB) migrate() error {
 			finished_at    DATETIME,
 			created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
+		) ENGINE=InnoDB`,
 	}
 
 	for _, bt := range batchTables {
@@ -369,7 +362,7 @@ func (db *DB) migrate() error {
 	_, _ = db.conn.Exec(`ALTER TABLE daily_token_usage ADD COLUMN business_domain TEXT DEFAULT ''`)
 	_, _ = db.conn.Exec(`ALTER TABLE daily_token_usage ADD COLUMN throttled_count INTEGER DEFAULT 0`)
 	_, _ = db.conn.Exec(`ALTER TABLE daily_token_usage ADD COLUMN total_duration_sec INTEGER DEFAULT 0`)
-	_, _ = db.conn.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_tokens_pk ON daily_token_usage(date, business_domain)`)
+	_, _ = db.conn.Exec(`CREATE UNIQUE INDEX idx_daily_tokens_pk ON daily_token_usage(date, business_domain)`)
 
 	defaultSettings := map[string]string{
 		"max_tpm":               "0",
@@ -380,23 +373,27 @@ func (db *DB) migrate() error {
 		"llm_proxy_max_retries": "6",
 	}
 	for k, v := range defaultSettings {
-		db.conn.Exec(`INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)`, k, v)
+		db.conn.Exec("INSERT IGNORE INTO system_settings (`key`, value) VALUES (?, ?)", k, v)
 	}
 
 	indices := []string{
-		`CREATE INDEX IF NOT EXISTS idx_builds_repo ON builds(repo_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_qa_repo_user ON qa_sessions(repo_id, user_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_qa_session_id ON qa_sessions(session_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_project_repos_proj ON project_repos(project_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_project_qa_proj ON project_qa_sessions(project_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_project_qa_sess ON project_qa_sessions(session_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_batch_tasks_batch ON batch_tasks(batch_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_batch_tasks_status ON batch_tasks(batch_id, status)`,
+		`CREATE INDEX idx_builds_repo ON builds(repo_id)`,
+		`CREATE INDEX idx_qa_repo_user ON qa_sessions(repo_id, user_id)`,
+		`CREATE INDEX idx_qa_session_id ON qa_sessions(session_id)`,
+		`CREATE INDEX idx_project_repos_proj ON project_repos(project_id)`,
+		`CREATE INDEX idx_project_qa_proj ON project_qa_sessions(project_id)`,
+		`CREATE INDEX idx_project_qa_sess ON project_qa_sessions(session_id)`,
+		`CREATE INDEX idx_batch_tasks_batch ON batch_tasks(batch_id)`,
+		`CREATE INDEX idx_batch_tasks_status ON batch_tasks(batch_id, status)`,
 	}
 
 	for _, idx := range indices {
+		// Ignore duplicate-index errors for idempotent migration
 		if _, err := db.conn.Exec(idx); err != nil {
-			return fmt.Errorf("exec index creation: %w", err)
+			// MySQL error 1061: Duplicate key name
+			if !strings.Contains(err.Error(), "1061") {
+				return fmt.Errorf("exec index creation: %w", err)
+			}
 		}
 	}
 
@@ -1346,15 +1343,15 @@ func (db *DB) RecordDailyTokenUsage(u *DailyTokenUsage) error {
 	domain := u.BusinessDomain
 	_, err := db.conn.Exec(`INSERT INTO daily_token_usage (date, business_domain, prompt_tokens, completion_tokens, total_tokens, saved_tokens, build_count, skipped_count, throttled_count, total_duration_sec, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(date, business_domain) DO UPDATE SET
-			prompt_tokens = prompt_tokens + excluded.prompt_tokens,
-			completion_tokens = completion_tokens + excluded.completion_tokens,
-			total_tokens = total_tokens + excluded.total_tokens,
-			saved_tokens = saved_tokens + excluded.saved_tokens,
-			build_count = build_count + excluded.build_count,
-			skipped_count = skipped_count + excluded.skipped_count,
-			throttled_count = throttled_count + excluded.throttled_count,
-			total_duration_sec = total_duration_sec + excluded.total_duration_sec,
+		ON DUPLICATE KEY UPDATE
+			prompt_tokens = prompt_tokens + VALUES(prompt_tokens),
+			completion_tokens = completion_tokens + VALUES(completion_tokens),
+			total_tokens = total_tokens + VALUES(total_tokens),
+			saved_tokens = saved_tokens + VALUES(saved_tokens),
+			build_count = build_count + VALUES(build_count),
+			skipped_count = skipped_count + VALUES(skipped_count),
+			throttled_count = throttled_count + VALUES(throttled_count),
+			total_duration_sec = total_duration_sec + VALUES(total_duration_sec),
 			updated_at = CURRENT_TIMESTAMP`,
 		u.Date, domain, u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.SavedTokens, u.BuildCount, u.SkippedCount, u.ThrottledCount, u.TotalDurationSec)
 	return err
@@ -1475,7 +1472,7 @@ func (db *DB) ResetBatchFailedTasks(batchID string, repoIDs []string, includeSta
 // GetSetting retrieves a setting value by key, or returns defaultVal if not found.
 func (db *DB) GetSetting(key string, defaultVal ...string) (string, error) {
 	var val string
-	err := db.conn.QueryRow(`SELECT value FROM system_settings WHERE key = ?`, key).Scan(&val)
+	err := db.conn.QueryRow("SELECT value FROM system_settings WHERE `key` = ?", key).Scan(&val)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) && len(defaultVal) > 0 {
 			return defaultVal[0], nil
@@ -1487,14 +1484,13 @@ func (db *DB) GetSetting(key string, defaultVal ...string) (string, error) {
 
 // SetSetting upserts a setting key/value.
 func (db *DB) SetSetting(key, val string) error {
-	_, err := db.conn.Exec(`INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`, key, val)
+	_, err := db.conn.Exec("INSERT INTO system_settings (`key`, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)\n\t\tON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = CURRENT_TIMESTAMP", key, val)
 	return err
 }
 
 // GetAllSettings returns all key/value pairs from system_settings.
 func (db *DB) GetAllSettings() (map[string]string, error) {
-	rows, err := db.conn.Query(`SELECT key, value FROM system_settings`)
+	rows, err := db.conn.Query("SELECT `key`, value FROM system_settings")
 	if err != nil {
 		return nil, err
 	}
@@ -1556,11 +1552,11 @@ func (db *DB) CreateVolume(v *Volume) error {
 	}
 	_, err := db.conn.Exec(`INSERT INTO volumes (id, mount_point, total_bytes, used_bytes, status)
 		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-			mount_point = excluded.mount_point,
-			total_bytes = excluded.total_bytes,
-			used_bytes = excluded.used_bytes,
-			status = excluded.status,
+		ON DUPLICATE KEY UPDATE
+			mount_point = VALUES(mount_point),
+			total_bytes = VALUES(total_bytes),
+			used_bytes = VALUES(used_bytes),
+			status = VALUES(status),
 			updated_at = CURRENT_TIMESTAMP`, v.ID, v.MountPoint, v.TotalBytes, v.UsedBytes, status)
 	return err
 }

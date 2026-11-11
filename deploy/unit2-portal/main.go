@@ -33,12 +33,15 @@ func main() {
 		cfg = config.DefaultConfig()
 	}
 
-	// Initialize SQLite Database
-	if err := db.InitDB(cfg.DBPath); err != nil {
-		log.Fatalf("Failed to initialize portal database at %s: %v", cfg.DBPath, err)
+	// Initialize MySQL Database
+	if cfg.DBDSN == "" {
+		log.Fatalf("PORTAL_DB_DSN is required (MySQL DSN, e.g. openwiki:pass@tcp(127.0.0.1:3306)/openwiki?parseTime=true)")
+	}
+	if err := db.InitDB(cfg.DBDSN); err != nil {
+		log.Fatalf("Failed to initialize portal database: %v", err)
 	}
 	defer db.CloseDB()
-	log.Printf("Portal database initialized at %s", cfg.DBPath)
+	log.Printf("Portal database initialized (MySQL)")
 
 	// Resolve public static frontend directory dynamically with fallback candidates
 	publicPath := *publicDir
