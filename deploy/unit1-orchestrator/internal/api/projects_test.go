@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/openwiki/orchestrator/internal/config"
 	"github.com/openwiki/orchestrator/internal/db"
@@ -211,5 +213,105 @@ func TestProjectLinksPreviewHealthAndRepair(t *testing.T) {
 	json.NewDecoder(wRepair.Body).Decode(&repairRes)
 	if repairRes.HealthyCount != 1 || repairRes.BrokenCount != 0 {
 		t.Fatalf("expected 1 healthy symlink after repair, got %d healthy, %d broken", repairRes.HealthyCount, repairRes.BrokenCount)
+	}
+}
+
+func TestProjectTaskStatusLifecycleAndBatchHook(t *testing.T) {
+	server, cleanup := setupTestProjectServer(t)
+	defer cleanup()
+
+	tmpRepoDir := filepath.Join(filepath.Dir(server.config.ProjectsBaseDir), "repos", "xone-auth")
+	if err := os.MkdirAll(tmpRepoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(tmpRepoDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0644)
+
+	if err := db.SaveRepo(&db.Repo{
+		ID:             "xone-auth",
+		Name:           "数字员工鉴权",
+		GitURL:         "https://git.bank.local/bxbank/DEO/xone-auth.git",
+		Branch:         "master",
+		LocalPath:      tmpRepoDir,
+		BusinessDomain: "数字员工",
+		Status:         "active",
+	}); err != nil {
+		t.Fatalf("SaveRepo failed: %v", err)
+	}
+
+	projReq := CreateProjectRequest{
+		ID:             "proj-deo",
+		TriCode:        "DEO",
+		Name:           "DEO-数字员工微服务集群",
+		BusinessDomain: "数字员工",
+		Repos:          []ProjectRepoInput{{RepoID: "xone-auth", AliasName: "xone-auth", Role: "service"}},
+	}
+	body, _ := json.Marshal(projReq)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects", bytes.NewReader(body)))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create project status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// 1. Initial GET /api/projects reports never_built + query_key="DEO"
+	wList1 := httptest.NewRecorder()
+	server.ServeHTTP(wList1, httptest.NewRequest(http.MethodGet, "/api/projects", nil))
+	var list1 []ProjectResponse
+	if err := json.Unmarshal(wList1.Body.Bytes(), &list1); err != nil {
+		t.Fatal(err)
+	}
+	if len(list1) != 1 || list1[0].TaskStatus != "never_built" || list1[0].QueryKey != "DEO" {
+		t.Fatalf("unexpected initial project status: %+v", list1)
+	}
+
+	// 2. BuildProjectWorkspace records a build and transitions task_status -> completed
+	if err := server.BuildProjectWorkspace("proj-deo"); err != nil {
+		t.Fatalf("BuildProjectWorkspace failed: %v", err)
+	}
+
+	wList2 := httptest.NewRecorder()
+	server.ServeHTTP(wList2, httptest.NewRequest(http.MethodGet, "/api/projects", nil))
+	var list2 []ProjectResponse
+	if err := json.Unmarshal(wList2.Body.Bytes(), &list2); err != nil {
+		t.Fatal(err)
+	}
+	if len(list2) != 1 || list2[0].TaskStatus != "completed" || list2[0].LatestBuild == nil {
+		t.Fatalf("expected task_status=completed with latest_build, got %+v", list2)
+	}
+
+	// Verify /api/build/status?repo_id=proj-deo returns project build logs
+	fetchBuilds := func() []db.Build {
+		wb := httptest.NewRecorder()
+		server.ServeHTTP(wb, httptest.NewRequest(http.MethodGet, "/api/build/status?repo_id=proj-deo", nil))
+		if wb.Code != http.StatusOK {
+			t.Fatalf("GET /api/build/status status=%d body=%s", wb.Code, wb.Body.String())
+		}
+		var builds []db.Build
+		_ = json.Unmarshal(wb.Body.Bytes(), &builds)
+		return builds
+	}
+
+	buildsAfterWorkspace := fetchBuilds()
+	if len(buildsAfterWorkspace) == 0 || !strings.Contains(buildsAfterWorkspace[0].Log, "=== 开始构建微服务聚合项目:") {
+		t.Fatalf("expected project build logs in /api/build/status?repo_id=proj-deo, got %+v", buildsAfterWorkspace)
+	}
+
+	// 3. Batch completion callback triggers linked project build
+	beforeCount := len(buildsAfterWorkspace)
+	server.handleBatchCompletedProjects("batch-test-1", []db.BatchTask{
+		{BatchID: "batch-test-1", RepoID: "xone-auth", Status: "success"},
+	})
+
+	deadline := time.Now().Add(3 * time.Second)
+	triggered := false
+	for time.Now().Before(deadline) {
+		bList := fetchBuilds()
+		if len(bList) > beforeCount && bList[0].Status == "completed" {
+			triggered = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !triggered {
+		t.Fatalf("expected handleBatchCompletedProjects to trigger and complete a new build for proj-deo")
 	}
 }

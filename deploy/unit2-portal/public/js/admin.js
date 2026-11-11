@@ -36,6 +36,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     { id: 'repos',      icon: '📦', label: '仓库管理',   sel: '#adminRepoTable' },
     { id: 'projects',   icon: '🏢', label: '微服务项目', sel: '#projectSection' },
     { id: 'quota',      icon: '⚡', label: 'LLM限流',    sel: '#quotaSection' },
+    { id: 'gitauth',    icon: '🔑', label: 'Git认证',    sel: '#gitCredsSection' },
     { id: 'storage',    icon: '💽', label: '存储资源池', sel: '#storageSection' },
     { id: 'domains',    icon: '🗂️', label: '业务域字典', sel: '#domainDictSection' },
     { id: 'rbac',       icon: '👥', label: '用户权限',   sel: '#rbacSection' },
@@ -159,6 +160,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   let cachedRepos = [];
   let cachedBuildsMap = new Map();
   let configuredDomainsCache = null;
+  let domainCodeByNameMap = new Map();
+  let projectPollTimer = null;
 
   // Business Domain Selection Elements
   const repoDomainSelect = document.getElementById('repoBusinessDomain');
@@ -525,6 +528,41 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Open shared build log modal for either a repository ID or a microservice project ID
+  async function openBuildLogModal(targetId, displayLabel) {
+    logModalTitle.textContent = `📋 构建日志详情: ${displayLabel || targetId}`;
+    logModalMeta.textContent = '加载日志中...';
+    logModalContent.textContent = '';
+    logModal.style.display = 'flex';
+
+    try {
+      const builds = await API.getBuildHistory(targetId);
+      if (!builds || builds.length === 0) {
+        logModalMeta.textContent = '暂无历史构建记录';
+        logModalContent.textContent = '无构建日志信息';
+        return;
+      }
+
+      const latest = builds[0];
+      logModalMeta.innerHTML = `
+        <div><strong>构建状态:</strong> ${API.escapeHTML(latest.status || '-')}</div>
+        <div><strong>Git Commit HEAD:</strong> ${API.escapeHTML(latest.git_head || '无')}</div>
+        <div><strong>开始时间:</strong> ${API.formatDate(latest.started_at)}</div>
+        <div><strong>完成时间:</strong> ${API.formatDate(latest.finished_at)}</div>
+      `;
+
+      let fullLog = '';
+      if (latest.log) fullLog += `=== 构建标准日志 ===\n${latest.log}\n\n`;
+      if (latest.error) fullLog += `=== 异常与错误信息 ===\n${latest.error}\n\n`;
+      if (!fullLog) fullLog = '暂无详细文本日志输出。';
+
+      logModalContent.textContent = fullLog;
+    } catch (err) {
+      logModalMeta.textContent = '获取日志失败';
+      logModalContent.textContent = err.message;
+    }
+  }
+
   // Bind Action Buttons
   function bindActionButtons() {
     // Attach trigger build listeners
@@ -555,39 +593,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Attach view log listeners
     document.querySelectorAll('.view-log-btn').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
+      btn.addEventListener('click', (e) => {
         const repoId = e.currentTarget.getAttribute('data-id');
-        logModalTitle.textContent = `📋 构建日志详情: ${repoId}`;
-        logModalMeta.textContent = '加载日志中...';
-        logModalContent.textContent = '';
-        logModal.style.display = 'flex';
-
-        try {
-          const builds = await API.getBuildHistory(repoId);
-          if (!builds || builds.length === 0) {
-            logModalMeta.textContent = '该仓库暂无历史构建记录';
-            logModalContent.textContent = '无构建日志信息';
-            return;
-          }
-
-          const latest = builds[0];
-          logModalMeta.innerHTML = `
-            <div><strong>构建状态:</strong> ${latest.status}</div>
-            <div><strong>Git Commit HEAD:</strong> ${API.escapeHTML(latest.git_head || '无')}</div>
-            <div><strong>开始时间:</strong> ${API.formatDate(latest.started_at)}</div>
-            <div><strong>完成时间:</strong> ${API.formatDate(latest.finished_at)}</div>
-          `;
-
-          let fullLog = '';
-          if (latest.log) fullLog += `=== 构建标准日志 ===\n${latest.log}\n\n`;
-          if (latest.error) fullLog += `=== 异常与错误信息 ===\n${latest.error}\n\n`;
-          if (!fullLog) fullLog = '暂无详细文本日志输出。';
-
-          logModalContent.textContent = fullLog;
-        } catch (err) {
-          logModalMeta.textContent = '获取日志失败';
-          logModalContent.textContent = err.message;
-        }
+        openBuildLogModal(repoId, repoId);
       });
     });
 
@@ -767,6 +775,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('projId').value = '';
     document.getElementById('projId').disabled = false;
     document.getElementById('projName').value = '';
+    const projTriCodeInput = document.getElementById('projTriCode');
+    if (projTriCodeInput) projTriCodeInput.value = '';
     document.getElementById('projDesc').value = '';
     const projArchMD = document.getElementById('projArchitectureMD');
     if (projArchMD) projArchMD.value = '';
@@ -791,6 +801,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const isEdit = document.getElementById('projIsEdit').value === '1';
     const projId = document.getElementById('projId').value.trim();
     const projName = document.getElementById('projName').value.trim();
+    const projTriCode = ((document.getElementById('projTriCode') || {}).value || '').trim().toUpperCase();
     const projDesc = document.getElementById('projDesc').value.trim();
     const projDomain = document.getElementById('projBusinessDomain').value.trim();
 
@@ -811,6 +822,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const payload = {
       id: projId,
       name: projName,
+      tri_code: projTriCode,
       description: projDesc,
       business_domain: projDomain,
       architecture_md: archMDValue,
@@ -832,6 +844,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  const PROJECT_TASK_STATUS_BADGES = {
+    queued: '<span class="badge" style="background:rgba(245,158,11,0.18); color:#f59e0b; border:1px solid rgba(245,158,11,0.4);">⏳ 排队聚合中</span>',
+    running: '<span class="badge" style="background:rgba(56,189,248,0.18); color:#38bdf8; border:1px solid rgba(56,189,248,0.4);">🔄 聚合构建中</span>',
+    building: '<span class="badge" style="background:rgba(56,189,248,0.18); color:#38bdf8; border:1px solid rgba(56,189,248,0.4);">🔄 聚合构建中</span>',
+    completed: '<span class="badge" style="background:rgba(34,197,94,0.18); color:#22c55e; border:1px solid rgba(34,197,94,0.4);">✅ 构建成功</span>',
+    failed: '<span class="badge" style="background:rgba(239,68,68,0.18); color:#ef4444; border:1px solid rgba(239,68,68,0.4);">❌ 构建失败</span>',
+    interrupted: '<span class="badge" style="background:rgba(251,146,60,0.18); color:#fb923c; border:1px solid rgba(251,146,60,0.4);">⚠️ 已中断</span>',
+    never_built: '<span class="badge" style="background:rgba(148,163,184,0.15); color:var(--text-secondary); border:1px solid rgba(148,163,184,0.35);">⚪ 未构建</span>'
+  };
+
+  function formatProjectTaskStatusCell(proj) {
+    const taskStatus = proj.task_status || (proj.status === 'building' ? 'running' : (proj.status === 'queued' ? 'queued' : (proj.status === 'failed' ? 'failed' : 'never_built')));
+    const badge = PROJECT_TASK_STATUS_BADGES[taskStatus] || PROJECT_TASK_STATUS_BADGES.never_built;
+    const lb = proj.latest_build;
+    let detailHtml = '';
+    if (lb) {
+      const ts = lb.finished_at || lb.started_at;
+      if (ts) {
+        detailHtml += `<div style="font-size:0.72rem; color:var(--text-secondary); margin-top:4px;">${API.formatDate(ts)}</div>`;
+      }
+      if ((taskStatus === 'failed' || taskStatus === 'interrupted') && lb.error) {
+        const snippet = lb.error.length > 48 ? lb.error.slice(0, 48) + '...' : lb.error;
+        detailHtml += `<div style="font-size:0.72rem; color:#ef4444; margin-top:2px; max-width:170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${API.escapeHTML(lb.error)}">${API.escapeHTML(snippet)}</div>`;
+      }
+    }
+    return `${badge}${detailHtml}`;
+  }
+
   // Render Projects Table
   function renderProjectTable(projects = []) {
     if (!projects || projects.length === 0) {
@@ -847,24 +887,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         </span>
       `).join('') || '<span style="color:var(--text-secondary);">尚未绑定仓库</span>';
 
-      const statusBadge = proj.status === 'building'
-        ? '<span style="color:var(--accent-color);">⚡ 聚合构建中...</span>'
-        : '<span style="color:var(--success-color);">✅ 就绪</span>';
+      const taskStatus = proj.task_status || proj.status || 'never_built';
+      const isBusy = taskStatus === 'queued' || taskStatus === 'running' || taskStatus === 'building';
+      const queryKey = proj.query_key || proj.tri_code || proj.id;
+      const triBadge = proj.tri_code
+        ? `<span class="badge" style="background:rgba(99,102,241,0.18); color:#818cf8; border:1px solid rgba(99,102,241,0.4); font-size:0.72rem; margin-left:6px;" title="MCP 查询三字码">${API.escapeHTML(proj.tri_code)}</span>`
+        : '';
 
       return `
         <tr>
           <td>
-            <strong>${API.escapeHTML(proj.name)}</strong>
-            <div style="font-size:0.75rem; color:var(--text-secondary);">${API.escapeHTML(proj.id)}</div>
+            <div style="display:flex; align-items:center; flex-wrap:wrap; gap:2px;">
+              <strong>${API.escapeHTML(proj.name)}</strong>${triBadge}
+            </div>
+            <div style="font-size:0.75rem; color:var(--text-secondary);">ID: <code>${API.escapeHTML(proj.id)}</code> · MCP Key: <code>${API.escapeHTML(queryKey)}</code></div>
             ${proj.description ? `<div style="font-size:0.75rem; color:var(--text-secondary); margin-top:2px;">${API.escapeHTML(proj.description)}</div>` : ''}
           </td>
           <td><span class="badge" style="background:#1e293b; border:1px solid #475569;">${API.escapeHTML(proj.business_domain || '-')}</span></td>
           <td>${reposBadges}</td>
           <td style="font-family:monospace; font-size:0.8rem; word-break:break-all;">${API.escapeHTML(proj.local_path || '-')}</td>
-          <td class="col-center col-nowrap">${statusBadge}</td>
+          <td class="col-center col-nowrap">${formatProjectTaskStatusCell(proj)}</td>
           <td class="col-center col-nowrap" style="font-size:0.8rem;">${API.formatDate(proj.updated_at)}</td>
           <td class="col-center col-nowrap">
-            <button class="btn btn-primary btn-sm trigger-project-build-btn" data-id="${proj.id}" data-name="${API.escapeHTML(proj.name)}">🛠️ 聚合构建</button>
+            <button class="btn btn-primary btn-sm trigger-project-build-btn" data-id="${proj.id}" data-name="${API.escapeHTML(proj.name)}" ${isBusy ? 'disabled' : ''}>${isBusy ? '⏳ 构建中...' : '🛠️ 聚合构建'}</button>
+            <button class="btn btn-secondary btn-sm view-project-log-btn" data-id="${proj.id}" data-name="${API.escapeHTML(proj.name)}">📋 日志</button>
             <button class="btn btn-secondary btn-sm inspect-links-btn" data-id="${proj.id}" data-name="${API.escapeHTML(proj.name)}">🔗 软链巡检</button>
             <button class="btn btn-secondary btn-sm edit-project-btn" data-id="${proj.id}">✏️ 编辑</button>
             <button class="btn btn-danger btn-sm delete-project-btn" data-id="${proj.id}">🗑️ 删除</button>
@@ -888,6 +934,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     });
 
+    document.querySelectorAll('.view-project-log-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const projId = e.currentTarget.getAttribute('data-id');
+        const projName = e.currentTarget.getAttribute('data-name');
+        openBuildLogModal(projId, `微服务项目 [${projName || projId}]`);
+      });
+    });
+
     document.querySelectorAll('.inspect-links-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         const projId = e.currentTarget.getAttribute('data-id');
@@ -907,6 +961,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('projId').value = proj.id;
         document.getElementById('projId').disabled = true;
         document.getElementById('projName').value = proj.name;
+        const projTriCodeEdit = document.getElementById('projTriCode');
+        if (projTriCodeEdit) projTriCodeEdit.value = proj.tri_code || '';
         document.getElementById('projDesc').value = proj.description || '';
         const archMDEdit = document.getElementById('projArchitectureMD');
         if (archMDEdit) archMDEdit.value = proj.architecture_md || '';
@@ -1017,14 +1073,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Load Projects
+  // Load Projects & keep auto-polling while any project build is queued/running
   async function loadAdminProjects() {
     try {
       const projects = await API.getProjects();
       cachedProjects = projects || [];
       renderProjectTable(cachedProjects);
+      const hasActiveProjectBuild = cachedProjects.some(p => {
+        const st = p.task_status || p.status;
+        return st === 'queued' || st === 'running' || st === 'building';
+      });
+      if (hasActiveProjectBuild && !projectPollTimer) {
+        projectPollTimer = setInterval(loadAdminProjects, 4000);
+      } else if (!hasActiveProjectBuild && projectPollTimer) {
+        clearInterval(projectPollTimer);
+        projectPollTimer = null;
+      }
     } catch (err) {
-      adminProjectTableBody.innerHTML = `<tr><td colspan="6" style="color:var(--error-color);">加载微服务项目失败: ${err.message}</td></tr>`;
+      adminProjectTableBody.innerHTML = `<tr><td colspan="7" style="color:var(--error-color);">加载微服务项目失败: ${err.message}</td></tr>`;
     }
   }
 
@@ -1057,7 +1123,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const disableNightModeBtn = document.getElementById('disableNightModeBtn');
   const pauseBatchBtn = document.getElementById('pauseBatchBtn');
   const resumeBatchBtn = document.getElementById('resumeBatchBtn');
+  const retryFailedBatchBtn = document.getElementById('retryFailedBatchBtn');
   const cancelBatchBtn = document.getElementById('cancelBatchBtn');
+  const batchFailedPanel = document.getElementById('batchFailedPanel');
+  const batchFailedCountText = document.getElementById('batchFailedCountText');
+  const batchFailedList = document.getElementById('batchFailedList');
+  const retryAllFailedPanelBtn = document.getElementById('retryAllFailedPanelBtn');
   const concurrencySlider = document.getElementById('concurrencySlider');
   const concurrencyVal = document.getElementById('concurrencyVal');
   const applyConcurrencyBtn = document.getElementById('applyConcurrencyBtn');
@@ -1163,6 +1234,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  async function triggerRetryFailedBatch(repoIds = []) {
+    if (!activeBatchId) return;
+    try {
+      const payload = repoIds && repoIds.length > 0 ? { repo_ids: repoIds } : null;
+      const res = await API.controlBatch(activeBatchId, 'retry-failed', payload);
+      const count = res && typeof res.retried_count === 'number' ? res.retried_count : (repoIds.length || '所有');
+      showAlert(`已将 ${count} 个失败/未完成任务重新投入批量调度队列！`, 'success');
+      refreshBatchStatus();
+    } catch (err) {
+      showAlert(`失败任务重跑发起失败: ${err.message}`, 'error');
+    }
+  }
+
+  if (retryFailedBatchBtn) {
+    retryFailedBatchBtn.addEventListener('click', () => triggerRetryFailedBatch([]));
+  }
+  if (retryAllFailedPanelBtn) {
+    retryAllFailedPanelBtn.addEventListener('click', () => triggerRetryFailedBatch([]));
+  }
+
   if (cancelBatchBtn) {
     cancelBatchBtn.addEventListener('click', async () => {
       if (!activeBatchId) return;
@@ -1204,7 +1295,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           branch: parts[3] || 'master',
           tier: parts[4] || 'A',
           business_domain: parts[5] || '',
-          last_release_at: parts[6] || ''
+          last_release_at: parts[6] || '',
+          tri_code: (parts[7] || '').toUpperCase()
         });
       }
     }
@@ -1233,6 +1325,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         batchAlert.style.display = 'block';
         return;
       }
+
+      // Enrich missing tri_code from Business Domain dictionary cache if available
+      if (domainCodeByNameMap.size === 0) {
+        try {
+          const domains = await API.getDomains();
+          (domains || []).forEach(d => {
+            if (d.name && d.code) domainCodeByNameMap.set(d.name, String(d.code).toUpperCase());
+          });
+        } catch (_) {}
+      }
+      repos = repos.map(r => {
+        if (!r.tri_code && r.business_domain && domainCodeByNameMap.has(r.business_domain)) {
+          return { ...r, tri_code: domainCodeByNameMap.get(r.business_domain) };
+        }
+        return r;
+      });
 
       const payload = {
         batch_name: document.getElementById('batchName').value.trim() || '生产基线批量调度',
@@ -1285,7 +1393,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (disableNightModeBtn) disableNightModeBtn.style.display = 'none';
       if (pauseBatchBtn) pauseBatchBtn.style.display = 'none';
       if (resumeBatchBtn) resumeBatchBtn.style.display = 'none';
+      if (retryFailedBatchBtn) retryFailedBatchBtn.style.display = 'none';
       if (cancelBatchBtn) cancelBatchBtn.style.display = 'none';
+      if (batchFailedPanel) batchFailedPanel.style.display = 'none';
       slotIndicators.innerHTML = '';
       return;
     }
@@ -1346,6 +1456,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (disableNightModeBtn) disableNightModeBtn.style.display = 'none';
       if (pauseBatchBtn) pauseBatchBtn.style.display = 'none';
       if (resumeBatchBtn) resumeBatchBtn.style.display = 'none';
+      if (retryFailedBatchBtn) retryFailedBatchBtn.style.display = 'none';
       if (cancelBatchBtn) cancelBatchBtn.style.display = 'none';
 
       if (run.night_mode_only && !data.is_window_open && run.status !== 'completed' && run.status !== 'failed') {
@@ -1361,6 +1472,44 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else if (run.status === 'pending') {
         if (startBatchBtn) startBatchBtn.style.display = 'inline-block';
         if (cancelBatchBtn) cancelBatchBtn.style.display = 'inline-block';
+      }
+
+      const failedTasks = data.failed_tasks || [];
+      const hasRetryable = (run.failed_count || 0) > 0 || (run.status === 'failed' && (data.pending_count || 0) > 0);
+      if (hasRetryable && retryFailedBatchBtn) {
+        retryFailedBatchBtn.textContent = (run.failed_count || 0) > 0
+          ? `🔁 失败任务批量重跑 (${run.failed_count})`
+          : `🔁 重新投入调度 (${data.pending_count || 0})`;
+        retryFailedBatchBtn.style.display = 'inline-block';
+      }
+
+      if (batchFailedPanel && batchFailedList && batchFailedCountText) {
+        if (failedTasks.length > 0) {
+          batchFailedCountText.textContent = String(failedTasks.length);
+          batchFailedList.innerHTML = failedTasks.map(ft => {
+            const errText = ft.error || ft.summary || '执行失败';
+            const snippet = errText.length > 90 ? errText.slice(0, 90) + '...' : errText;
+            return `
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:0.75rem; padding:0.35rem 0.6rem; border-radius:4px; background:rgba(15, 23, 42, 0.55); border:1px solid rgba(239, 68, 68, 0.25); font-size:0.82rem;">
+                <div style="min-width:0; flex:1;">
+                  <strong style="color:#f8fafc;">${API.escapeHTML(ft.repo_id)}</strong>
+                  <span style="color:#fca5a5; margin-left:0.5rem;" title="${API.escapeHTML(errText)}">${API.escapeHTML(snippet)}</span>
+                </div>
+                <button class="btn btn-secondary btn-sm retry-single-batch-task-btn" data-repo-id="${API.escapeHTML(ft.repo_id)}">🔁 重跑此项</button>
+              </div>
+            `;
+          }).join('');
+          batchFailedList.querySelectorAll('.retry-single-batch-task-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+              const repoId = e.currentTarget.getAttribute('data-repo-id');
+              if (repoId) triggerRetryFailedBatch([repoId]);
+            });
+          });
+          batchFailedPanel.style.display = 'block';
+        } else {
+          batchFailedPanel.style.display = 'none';
+          batchFailedList.innerHTML = '';
+        }
       }
 
       // Slot Indicators
@@ -1512,6 +1661,170 @@ document.addEventListener('DOMContentLoaded', async () => {
         loadLLMQuota();
       } catch (err) {
         alert('更新配额失败: ' + err.message);
+      }
+    });
+  }
+
+  // ==========================================
+  // Super Admin: Unified Git Credentials
+  // ==========================================
+  const gitCredsForm = document.getElementById('gitCredsForm');
+  const refreshGitCredsBtn = document.getElementById('refreshGitCredsBtn');
+  const gitAuthEnabledInput = document.getElementById('gitAuthEnabled');
+  const gitOverrideInlineInput = document.getElementById('gitOverrideInline');
+  const gitSslNoVerifyInput = document.getElementById('gitSslNoVerify');
+  const gitAuthTypeSelect = document.getElementById('gitAuthType');
+  const gitHttpHostInput = document.getElementById('gitHttpHost');
+  const gitHttpUsernameInput = document.getElementById('gitHttpUsername');
+  const gitHttpSecretInput = document.getElementById('gitHttpSecret');
+  const gitSecretLabel = document.getElementById('gitSecretLabel');
+  const gitUsernameHint = document.getElementById('gitUsernameHint');
+  const gitSecretState = document.getElementById('gitSecretState');
+  const gitClearSecretWrap = document.getElementById('gitClearSecretWrap');
+  const gitClearSecretInput = document.getElementById('gitClearSecret');
+  const gitCredsSourceBadge = document.getElementById('gitCredsSourceBadge');
+  const gitTestUrlInput = document.getElementById('gitTestUrl');
+  const testGitCredsBtn = document.getElementById('testGitCredsBtn');
+  const gitCredsAlert = document.getElementById('gitCredsAlert');
+
+  let gitCredsState = { has_token: false, has_password: false, masked_secret: '' };
+
+  function showGitCredsAlert(msg, type = 'success') {
+    if (!gitCredsAlert) return;
+    gitCredsAlert.textContent = msg;
+    gitCredsAlert.className = 'alert alert-' + (type === 'success' ? 'success' : 'error');
+    gitCredsAlert.style.display = 'block';
+    setTimeout(() => {
+      gitCredsAlert.style.display = 'none';
+    }, 5000);
+  }
+
+  function updateGitAuthTypeUI() {
+    if (!gitAuthTypeSelect) return;
+    const isPassword = gitAuthTypeSelect.value === 'password';
+    if (gitSecretLabel) gitSecretLabel.textContent = isPassword ? '登录密码' : 'Access Token';
+    if (gitUsernameHint) gitUsernameHint.textContent = isPassword ? '(账号密码模式必填)' : '(Token 模式留空默认 oauth2)';
+    const hasSaved = isPassword ? gitCredsState.has_password : gitCredsState.has_token;
+    if (gitSecretState) {
+      if (hasSaved && gitCredsState.masked_secret) {
+        gitSecretState.textContent = `已配置 (${gitCredsState.masked_secret})`;
+        gitSecretState.style.color = '#10b981';
+      } else if (hasSaved) {
+        gitSecretState.textContent = '已配置';
+        gitSecretState.style.color = '#10b981';
+      } else {
+        gitSecretState.textContent = '未设置';
+        gitSecretState.style.color = '#f59e0b';
+      }
+    }
+    if (gitClearSecretWrap) {
+      gitClearSecretWrap.style.display = hasSaved ? 'inline-flex' : 'none';
+    }
+    if (gitHttpSecretInput) {
+      gitHttpSecretInput.placeholder = hasSaved
+        ? '已保存凭据；留空保持不变，输入新值则覆盖'
+        : (isPassword ? '请输入 Git 登录密码' : '请输入 Access Token');
+    }
+  }
+
+  function applyGitCredsResponse(data) {
+    if (!data) return;
+    gitCredsState = {
+      has_token: !!data.has_token,
+      has_password: !!data.has_password,
+      masked_secret: data.masked_secret || ''
+    };
+    if (gitAuthEnabledInput) gitAuthEnabledInput.checked = !!data.enabled;
+    if (gitOverrideInlineInput) gitOverrideInlineInput.checked = data.override_inline !== false;
+    if (gitSslNoVerifyInput) gitSslNoVerifyInput.checked = !!data.ssl_no_verify;
+    if (gitAuthTypeSelect) gitAuthTypeSelect.value = data.auth_type === 'password' ? 'password' : 'token';
+    if (gitHttpHostInput) gitHttpHostInput.value = data.host || '';
+    if (gitHttpUsernameInput) gitHttpUsernameInput.value = data.username || '';
+    if (gitHttpSecretInput) gitHttpSecretInput.value = '';
+    if (gitClearSecretInput) gitClearSecretInput.checked = false;
+
+    if (gitCredsSourceBadge) {
+      const srcMap = {
+        database: { text: data.enabled ? '已启用 · 数据库配置' : '已禁用 · 数据库配置', bg: data.enabled ? '#065f46' : '#475569' },
+        env: { text: '来自环境变量默认值', bg: '#1d4ed8' },
+        config: { text: '来自 config.yaml 默认值', bg: '#1d4ed8' },
+        none: { text: '未配置', bg: '#334155' }
+      };
+      const meta = srcMap[data.source] || srcMap.none;
+      gitCredsSourceBadge.textContent = meta.text;
+      gitCredsSourceBadge.style.background = meta.bg;
+    }
+    updateGitAuthTypeUI();
+  }
+
+  async function loadGitCredentials() {
+    if (!isSuperAdmin || !gitCredsForm) return;
+    try {
+      const data = await API.getGitCredentials();
+      applyGitCredsResponse(data);
+    } catch (e) {
+      console.warn('loadGitCredentials error', e);
+    }
+  }
+
+  function buildGitCredsPayload() {
+    const authType = gitAuthTypeSelect ? gitAuthTypeSelect.value : 'token';
+    const secretVal = gitHttpSecretInput ? gitHttpSecretInput.value : '';
+    const clearSecret = gitClearSecretInput ? gitClearSecretInput.checked : false;
+    const payload = {
+      enabled: gitAuthEnabledInput ? gitAuthEnabledInput.checked : true,
+      auth_type: authType,
+      host: gitHttpHostInput ? gitHttpHostInput.value.trim() : '',
+      username: gitHttpUsernameInput ? gitHttpUsernameInput.value.trim() : '',
+      override_inline: gitOverrideInlineInput ? gitOverrideInlineInput.checked : true,
+      ssl_no_verify: gitSslNoVerifyInput ? gitSslNoVerifyInput.checked : false,
+    };
+    if (authType === 'password') {
+      if (clearSecret) payload.clear_password = true;
+      else if (secretVal !== '') payload.password = secretVal;
+    } else {
+      if (clearSecret) payload.clear_token = true;
+      else if (secretVal !== '') payload.token = secretVal;
+    }
+    return payload;
+  }
+
+  if (gitAuthTypeSelect) gitAuthTypeSelect.addEventListener('change', updateGitAuthTypeUI);
+  if (refreshGitCredsBtn) refreshGitCredsBtn.addEventListener('click', loadGitCredentials);
+
+  if (gitCredsForm) {
+    gitCredsForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const res = await API.updateGitCredentials(buildGitCredsPayload());
+        applyGitCredsResponse(res);
+        showGitCredsAlert('全局 Git 认证配置已保存并立即生效！', 'success');
+      } catch (err) {
+        showGitCredsAlert('保存失败: ' + err.message, 'error');
+      }
+    });
+  }
+
+  if (testGitCredsBtn) {
+    testGitCredsBtn.addEventListener('click', async () => {
+      const gitUrl = gitTestUrlInput ? gitTestUrlInput.value.trim() : '';
+      if (!gitUrl) {
+        showGitCredsAlert('请先输入一个仓库 HTTP/HTTPS 地址用于测试连接', 'error');
+        return;
+      }
+      testGitCredsBtn.disabled = true;
+      const origText = testGitCredsBtn.textContent;
+      testGitCredsBtn.textContent = '⏳ 测试中...';
+      try {
+        const payload = buildGitCredsPayload();
+        payload.git_url = gitUrl;
+        const res = await API.testGitCredentials(payload);
+        showGitCredsAlert(res.message || 'Git 仓库认证与连通性校验成功！', 'success');
+      } catch (err) {
+        showGitCredsAlert('连接测试失败: ' + err.message, 'error');
+      } finally {
+        testGitCredsBtn.disabled = false;
+        testGitCredsBtn.textContent = origText;
       }
     });
   }
@@ -1922,18 +2235,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   async function loadDomains() {
     if (!domainsTableBody) return;
-    domainsTableBody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-secondary);">正在加载业务域字典...</td></tr>';
+    domainsTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-secondary);">正在加载业务域字典...</td></tr>';
     try {
       const list = await API.getDomains();
       configuredDomainsCache = (list || []).map(d => d.name); // refresh cache
+      domainCodeByNameMap = new Map();
+      (list || []).forEach(d => {
+        if (d.name && d.code) domainCodeByNameMap.set(d.name, String(d.code).toUpperCase());
+      });
       populateDomainDropdown(repoDomainSelect, repoCustomDomainInput, repoDomainSelect ? repoDomainSelect.value : '', true).catch(() => {});
       if (!list || list.length === 0) {
-        domainsTableBody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-secondary);">尚未配置业务域。新增后将作为仓库导入与项目编排的下拉选项。</td></tr>';
+        domainsTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-secondary);">尚未配置业务域。新增后将作为仓库导入与项目编排的下拉选项。</td></tr>';
         return;
       }
       domainsTableBody.innerHTML = list.map(d => `
         <tr data-id="${d.id}">
           <td><strong>${API.escapeHTML(d.name)}</strong></td>
+          <td class="col-center col-nowrap">${d.code ? `<span class="badge" style="background:rgba(99,102,241,0.18); color:#818cf8; border:1px solid rgba(99,102,241,0.4);">${API.escapeHTML(d.code)}</span>` : '<span style="color:var(--text-secondary);">-</span>'}</td>
           <td>${API.escapeHTML(d.description || '-')}</td>
           <td class="col-center col-nowrap">${d.sort_order || 0}</td>
           <td class="col-center col-nowrap">${d.status === 'active' ? '<span style="color:var(--success-color);">启用</span>' : '<span style="color:var(--text-secondary);">停用</span>'}</td>
@@ -1964,6 +2282,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           const row = list.find(d => String(d.id) === id);
           if (!row) return;
           document.getElementById('newDomainName').value = row.name;
+          const codeEl = document.getElementById('newDomainCode');
+          if (codeEl) codeEl.value = row.code || '';
           document.getElementById('newDomainDesc').value = row.description || '';
           document.getElementById('newDomainOrder').value = row.sort_order || 0;
           addDomainBtn.dataset.editId = id;
@@ -1972,7 +2292,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
       });
     } catch (err) {
-      domainsTableBody.innerHTML = `<tr><td colspan="5" style="color:var(--error-color); text-align:center;">加载业务域失败: ${API.escapeHTML(err.message)}</td></tr>`;
+      domainsTableBody.innerHTML = `<tr><td colspan="6" style="color:var(--error-color); text-align:center;">加载业务域失败: ${API.escapeHTML(err.message)}</td></tr>`;
     }
   }
 
@@ -1980,20 +2300,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (addDomainBtn) {
     addDomainBtn.addEventListener('click', async () => {
       const name = document.getElementById('newDomainName').value.trim();
+      const code = ((document.getElementById('newDomainCode') || {}).value || '').trim().toUpperCase();
       const desc = document.getElementById('newDomainDesc').value.trim();
       const order = parseInt(document.getElementById('newDomainOrder').value || '0', 10);
       if (!name) { showDomainAlert('业务域名称不能为空', 'error'); return; }
       try {
         if (addDomainBtn.dataset.editId) {
-          await API.updateDomain({ id: parseInt(addDomainBtn.dataset.editId, 10), name, description: desc, sort_order: order, status: 'active' });
+          await API.updateDomain({ id: parseInt(addDomainBtn.dataset.editId, 10), name, code, description: desc, sort_order: order, status: 'active' });
           showDomainAlert('业务域已更新', 'success');
           delete addDomainBtn.dataset.editId;
           addDomainBtn.textContent = '➕ 新增业务域';
         } else {
-          await API.createDomain({ name, description: desc, sort_order: order, status: 'active' });
+          await API.createDomain({ name, code, description: desc, sort_order: order, status: 'active' });
           showDomainAlert('业务域已新增', 'success');
         }
         document.getElementById('newDomainName').value = '';
+        const codeEl = document.getElementById('newDomainCode');
+        if (codeEl) codeEl.value = '';
         document.getElementById('newDomainDesc').value = '';
         document.getElementById('newDomainOrder').value = '0';
         loadDomains();
@@ -2007,6 +2330,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   refreshBatchStatus();
   loadDailyTokens();
   loadLLMQuota();
+  loadGitCredentials();
   loadStorageVolumes();
   loadUsers();
   if (isSuperAdmin) loadDomains();
@@ -2014,5 +2338,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   batchPollTimer = setInterval(() => {
     refreshBatchStatus();
     loadDailyTokens();
+    if (activeBatchId) {
+      loadAdminProjects();
+    }
   }, 4000);
 });

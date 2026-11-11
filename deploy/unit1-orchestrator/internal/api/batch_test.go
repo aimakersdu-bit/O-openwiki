@@ -463,3 +463,151 @@ func TestMigrationAndRebalanceAPI(t *testing.T) {
 		t.Fatalf("expected repo volume restored to vol1, got %s", r.VolumeID)
 	}
 }
+
+func TestBatchImportSemanticTriCodeExtraction(t *testing.T) {
+	server, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	payload := `{
+		"batch_name": "三字码聚合语义验证批跑",
+		"concurrency": 2,
+		"night_mode_only": false,
+		"auto_start": false,
+		"repos": [
+			{
+				"id": "xone-auth",
+				"name": "数字员工鉴权服务",
+				"git_url": "https://git.bank.local/bxbank/DEO/xone-auth.git",
+				"branch": "master",
+				"tier": "A",
+				"business_domain": "数字员工",
+				"last_release_at": "2025-11-20"
+			},
+			{
+				"id": "xone-task",
+				"name": "数字员工调度服务",
+				"git_url": "https://git.bank.local/bxbank/DEO/xone-task.git",
+				"branch": "master",
+				"tier": "A",
+				"business_domain": "数字员工",
+				"last_release_at": "2025-11-18"
+			},
+			{
+				"id": "credit-core",
+				"name": "信贷风控核心",
+				"git_url": "https://git.bank.local/org/credit-core.git",
+				"branch": "master",
+				"tier": "B",
+				"business_domain": "CFN-信贷中台",
+				"last_release_at": "2025-10-01"
+			}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/repos/batch-import", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK && w.Code != http.StatusCreated {
+		t.Fatalf("Expected 200/201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		TotalImported       int `json:"total_imported"`
+		AggregatedProjects []struct {
+			ID             string `json:"id"`
+			TriCode        string `json:"tri_code"`
+			Name           string `json:"name"`
+			BusinessDomain string `json:"business_domain"`
+		} `json:"aggregated_projects"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if resp.TotalImported != 3 {
+		t.Fatalf("expected 3 imported repos, got %d", resp.TotalImported)
+	}
+	if len(resp.AggregatedProjects) != 2 {
+		t.Fatalf("expected 2 aggregated projects, got %d", len(resp.AggregatedProjects))
+	}
+
+	deoProj, err := database.GetProject("proj-deo")
+	if err != nil || deoProj == nil {
+		t.Fatalf("expected semantic project proj-deo to be created, err=%v", err)
+	}
+	if deoProj.TriCode != "DEO" || deoProj.Name != "DEO-数字员工微服务集群" || deoProj.BusinessDomain != "数字员工" {
+		t.Fatalf("unexpected proj-deo metadata: %+v", deoProj)
+	}
+
+	cfnProj, err := database.GetProject("proj-cfn")
+	if err != nil || cfnProj == nil {
+		t.Fatalf("expected semantic project proj-cfn to be created, err=%v", err)
+	}
+	if cfnProj.TriCode != "CFN" || cfnProj.Name != "CFN-信贷中台微服务集群" {
+		t.Fatalf("unexpected proj-cfn metadata: %+v", cfnProj)
+	}
+}
+
+func TestBatchRetryFailedAPI(t *testing.T) {
+	server, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	batchID := "batch_api_retry"
+	if err := database.CreateBatchRun(&db.BatchRun{
+		ID:             batchID,
+		Name:           "API失败重跑测试",
+		TotalCount:     2,
+		MaxConcurrency: 1,
+		NightModeOnly:  true, // Keep loop parked after re-queue if needed, or cancel at end
+		Status:         "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = database.CreateBatchTask(&db.BatchTask{BatchID: batchID, RepoID: "repo-ok", Status: "pending"})
+	_ = database.CreateBatchTask(&db.BatchTask{BatchID: batchID, RepoID: "repo-bad", Status: "pending"})
+	_ = database.UpdateBatchTaskStatus(batchID, "repo-ok", "completed", "ok", 2)
+	_ = database.UpdateBatchTaskStatus(batchID, "repo-bad", "failed", "network error", 1)
+
+	// 1. Batch status includes failed_tasks
+	wStatus := httptest.NewRecorder()
+	server.ServeHTTP(wStatus, httptest.NewRequest(http.MethodGet, "/api/batch/status?batch_id="+batchID, nil))
+	if wStatus.Code != http.StatusOK || !strings.Contains(wStatus.Body.String(), `"repo-bad"`) {
+		t.Fatalf("expected failed_tasks in batch status, code=%d body=%s", wStatus.Code, wStatus.Body.String())
+	}
+
+	// 2. POST /api/batch/retry-failed re-queues repo-bad
+	reqRetry := httptest.NewRequest(http.MethodPost, "/api/batch/retry-failed?batch_id="+batchID, strings.NewReader(`{"repo_ids":["repo-bad"]}`))
+	reqRetry.Header.Set("Content-Type", "application/json")
+	wRetry := httptest.NewRecorder()
+	server.ServeHTTP(wRetry, reqRetry)
+	if wRetry.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from retry-failed, got %d: %s", wRetry.Code, wRetry.Body.String())
+	}
+	var retryResp struct {
+		Success      bool   `json:"success"`
+		RetriedCount int64  `json:"retried_count"`
+		BatchID      string `json:"batch_id"`
+	}
+	if err := json.Unmarshal(wRetry.Body.Bytes(), &retryResp); err != nil {
+		t.Fatal(err)
+	}
+	if !retryResp.Success || retryResp.RetriedCount != 1 || retryResp.BatchID != batchID {
+		t.Fatalf("unexpected retry-failed response: %+v", retryResp)
+	}
+
+	// Cleanly cancel the parked night-mode batch loop before closing DB
+	wCancel := httptest.NewRecorder()
+	server.ServeHTTP(wCancel, httptest.NewRequest(http.MethodPost, "/api/batch/cancel?batch_id="+batchID, nil))
+	if wCancel.Code != http.StatusOK {
+		t.Fatalf("cancel failed: %d: %s", wCancel.Code, wCancel.Body.String())
+	}
+
+	// 3. When no failed/pending tasks exist -> 400 Bad Request
+	_ = database.UpdateBatchTaskStatus(batchID, "repo-bad", "completed", "ok", 2)
+	wEmpty := httptest.NewRecorder()
+	server.ServeHTTP(wEmpty, httptest.NewRequest(http.MethodPost, "/api/batch/retry-failed?batch_id="+batchID, nil))
+	if wEmpty.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when nothing to retry, got %d: %s", wEmpty.Code, wEmpty.Body.String())
+	}
+}

@@ -1,8 +1,10 @@
 package db
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -102,5 +104,121 @@ func TestCleanExpiredSessions(t *testing.T) {
 	err = CleanExpiredSessions()
 	if err != nil {
 		t.Fatalf("CleanExpiredSessions failed: %v", err)
+	}
+}
+
+func TestListUsersAndConcurrentWritesNoDeadlockOrLock(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	for i := 0; i < 5; i++ {
+		uname := fmt.Sprintf("leader-%d", i)
+		if err := UpsertUser(&User{Username: uname, DisplayName: uname, Role: "group_leader"}); err != nil {
+			t.Fatalf("UpsertUser failed: %v", err)
+		}
+		if err := GrantDomain(uname, fmt.Sprintf("domain-%d", i), "admin"); err != nil {
+			t.Fatalf("GrantDomain failed: %v", err)
+		}
+	}
+
+	// Verify ListUsers does not deadlock on single-connection pool
+	users, err := ListUsers()
+	if err != nil {
+		t.Fatalf("ListUsers failed: %v", err)
+	}
+	if len(users) != 5 {
+		t.Fatalf("expected 5 users, got %d", len(users))
+	}
+	for _, u := range users {
+		if len(u.AuthorizedDomains) != 1 {
+			t.Fatalf("expected 1 domain for user %s, got %v", u.Username, u.AuthorizedDomains)
+		}
+	}
+
+	errCh := make(chan error, 128)
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < 15; i++ {
+				tok := fmt.Sprintf("tok-%d-%d", id, i)
+				if err := SaveSession(&Session{
+					Token:     tok,
+					UserID:    fmt.Sprintf("leader-%d", id%5),
+					Role:      "group_leader",
+					ExpiresAt: time.Now().Add(time.Hour),
+				}); err != nil {
+					errCh <- fmt.Errorf("SaveSession: %w", err)
+					return
+				}
+				if err := RecordAuditLog("admin", "batch.status", "batch", tok, "{}"); err != nil {
+					errCh <- fmt.Errorf("RecordAuditLog: %w", err)
+					return
+				}
+				if _, err := GetSession(tok); err != nil {
+					errCh <- fmt.Errorf("GetSession: %w", err)
+					return
+				}
+				if _, err := ListUsers(); err != nil {
+					errCh <- fmt.Errorf("ListUsers: %w", err)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Fatalf("concurrent portal DB error: %v", err)
+	}
+}
+
+func TestBusinessDomainCodeCRUD(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	if err := CreateBusinessDomain(&BusinessDomain{
+		Name:        "数字员工",
+		Code:        "DEO",
+		Description: "数字员工业务域",
+		SortOrder:   1,
+		Status:      "active",
+	}); err != nil {
+		t.Fatalf("CreateBusinessDomain failed: %v", err)
+	}
+
+	list, err := ListBusinessDomains()
+	if err != nil {
+		t.Fatalf("ListBusinessDomains failed: %v", err)
+	}
+	var created *BusinessDomain
+	for i := range list {
+		if list[i].Name == "数字员工" {
+			created = &list[i]
+			break
+		}
+	}
+	if created == nil || created.Code != "DEO" {
+		t.Fatalf("expected domain 数字员工 with code DEO, got %+v", list)
+	}
+
+	created.Code = "DE2"
+	if err := UpdateBusinessDomain(created); err != nil {
+		t.Fatalf("UpdateBusinessDomain failed: %v", err)
+	}
+	all, err := ListAllBusinessDomains()
+	if err != nil {
+		t.Fatalf("ListAllBusinessDomains failed: %v", err)
+	}
+	foundUpdated := false
+	for _, d := range all {
+		if d.ID == created.ID && d.Code == "DE2" {
+			foundUpdated = true
+		}
+	}
+	if !foundUpdated {
+		t.Fatalf("expected updated domain code DE2, got %+v", all)
 	}
 }

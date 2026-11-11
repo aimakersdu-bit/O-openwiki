@@ -248,12 +248,18 @@ window.API = {
     return await res.json();
   },
 
-  // Batch Control (pause / resume / cancel)
-  async controlBatch(batchId, action) {
-    const res = await fetch(`/portal/batch/${action}?batch_id=${encodeURIComponent(batchId)}`, {
-      method: 'POST'
-    });
-    if (!res.ok) throw new Error(`操作 ${action} 失败 (${res.status})`);
+  // Batch Control (start / pause / resume / cancel / disable-night-mode / retry-failed)
+  async controlBatch(batchId, action, payload = null) {
+    const opts = { method: 'POST' };
+    if (payload) {
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = JSON.stringify(payload);
+    }
+    const res = await fetch(`/portal/batch/${action}?batch_id=${encodeURIComponent(batchId)}`, opts);
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || `操作 ${action} 失败 (${res.status})`);
+    }
     return await res.json();
   },
 
@@ -301,6 +307,45 @@ window.API = {
     });
     if (!res.ok) throw new Error('更新LLM配额失败 (' + res.status + ')');
     return await res.json();
+  },
+
+  async getGitCredentials() {
+    const res = await fetch('/api/settings/git-credentials');
+    if (!res.ok) {
+      let msg = '获取 Git 认证配置失败 (' + res.status + ')';
+      try {
+        const body = await res.json();
+        if (body && body.error) msg = body.error;
+      } catch (_) {}
+      throw new Error(msg);
+    }
+    return await res.json();
+  },
+
+  async updateGitCredentials(payload) {
+    const res = await fetch('/api/settings/git-credentials', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(body.error || '保存 Git 认证配置失败 (' + res.status + ')');
+    }
+    return body;
+  },
+
+  async testGitCredentials(payload) {
+    const res = await fetch('/api/settings/git-credentials/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(body.error || 'Git 认证测试失败 (' + res.status + ')');
+    }
+    return body;
   },
 
   // Storage Pool & Volumes (Task 17)

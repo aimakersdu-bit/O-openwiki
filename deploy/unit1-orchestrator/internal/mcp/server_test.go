@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/openwiki/orchestrator/internal/config"
 	"github.com/openwiki/orchestrator/internal/db"
+	"github.com/openwiki/orchestrator/internal/qa"
 )
 
 func setupTestServer(t *testing.T) (*Server, func()) {
@@ -394,5 +396,141 @@ func TestStreamableHTTPStreamingResponse(t *testing.T) {
 	bodyStr := w.Body.String()
 	if !strings.Contains(bodyStr, "event: message") {
 		t.Fatalf("expected SSE chunks containing 'event: message', got: %s", bodyStr)
+	}
+}
+
+type mockQATransport struct {
+	lastPayload string
+}
+
+func (m *mockQATransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Body != nil {
+		b, _ := io.ReadAll(req.Body)
+		m.lastPayload = string(b)
+	}
+	sse := "data: {\"text\":\"DEO microservice architecture answer\"}\n\ndata: [DONE]\n\n"
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sse)),
+	}, nil
+}
+
+func TestMCPListProjectsAndAskByTriCode(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "mcp_projects.db")
+	if err := db.InitDB(dbPath); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.CloseDB()
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open failed: %v", err)
+	}
+	defer database.Close()
+
+	mockTr := &mockQATransport{}
+	qaMgr := qa.NewManager("", tmpDir, 0, "")
+	qaMgr.SetTransport(mockTr)
+
+	cfg := config.DefaultConfig()
+	cfg.DBPath = dbPath
+	server := NewServer(cfg, database, qaMgr)
+	defer server.sessions.Stop()
+
+	if err := database.CreateRepo(&db.Repo{
+		ID:             "xone-auth",
+		Name:           "数字员工鉴权",
+		GitURL:         "https://git.bank.local/bxbank/DEO/xone-auth.git",
+		Branch:         "master",
+		LocalPath:      filepath.Join(tmpDir, "xone-auth"),
+		BusinessDomain: "数字员工",
+		Status:         "active",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateProject(&db.Project{
+		ID:             "proj-deo",
+		TriCode:        "DEO",
+		Name:           "DEO-数字员工微服务集群",
+		BusinessDomain: "数字员工",
+		LocalPath:      filepath.Join(tmpDir, "proj-deo"),
+		Status:         "active",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = database.SetProjectRepos("proj-deo", []db.ProjectRepo{{RepoID: "xone-auth", AliasName: "xone-auth", Role: "service"}})
+	buildID, _ := database.CreateBuild("proj-deo", "HEAD", "running")
+	_ = database.FinishBuild(buildID, "completed", "workspace ok", "")
+
+	// 1. tools/list includes list_projects and ask_project
+	listToolsResp, err := server.ProcessJSONRPC(context.Background(), nil, []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	if err != nil || listToolsResp.Error != nil {
+		t.Fatalf("tools/list failed: err=%v resp=%v", err, listToolsResp)
+	}
+	toolsBytes, _ := json.Marshal(listToolsResp.Result)
+	for _, expectedTool := range []string{"list_repositories", "ask_repository", "list_projects", "ask_project"} {
+		if !strings.Contains(string(toolsBytes), expectedTool) {
+			t.Fatalf("expected %s in tools/list result: %s", expectedTool, string(toolsBytes))
+		}
+	}
+
+	// 2. list_projects returns DEO tri_code & query_key & task_status=completed
+	projResp, err := server.ProcessJSONRPC(context.Background(), nil, []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_projects","arguments":{}}}`))
+	if err != nil || projResp.Error != nil {
+		t.Fatalf("list_projects failed: %v %v", err, projResp)
+	}
+	projText := projResp.Result.(*CallToolResult).Content[0].Text
+	if !strings.Contains(projText, `"tri_code": "DEO"`) || !strings.Contains(projText, `"query_key": "DEO"`) || !strings.Contains(projText, `"task_status": "completed"`) {
+		t.Fatalf("unexpected list_projects payload: %s", projText)
+	}
+
+	// 3. list_repositories also surfaces project entries for legacy MCP callers
+	repoResp, err := server.ProcessJSONRPC(context.Background(), nil, []byte(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_repositories","arguments":{}}}`))
+	if err != nil || repoResp.Error != nil {
+		t.Fatalf("list_repositories failed: %v %v", err, repoResp)
+	}
+	repoText := repoResp.Result.(*CallToolResult).Content[0].Text
+	if !strings.Contains(repoText, `"type": "project"`) || !strings.Contains(repoText, `"tri_code": "DEO"`) {
+		t.Fatalf("expected project entry in list_repositories output: %s", repoText)
+	}
+
+	// 4. ask_project resolves by tri_code ("DEO")
+	askProjResp, err := server.ProcessJSONRPC(context.Background(), nil, []byte(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ask_project","arguments":{"project_key":"DEO","user_id":"u1","question":"架构如何设计"}}}`))
+	if err != nil || askProjResp.Error != nil {
+		t.Fatalf("ask_project failed: %v %v", err, askProjResp)
+	}
+	askProjRes := askProjResp.Result.(*CallToolResult)
+	if askProjRes.IsError || !strings.Contains(askProjRes.Content[0].Text, "DEO microservice architecture answer") {
+		t.Fatalf("unexpected ask_project result: %+v", askProjRes)
+	}
+	if !strings.Contains(mockTr.lastPayload, "openwiki-proj-proj-deo-") {
+		t.Fatalf("expected qa request routed to proj-deo worker, got payload %s", mockTr.lastPayload)
+	}
+
+	// 5. ask_repository transparently falls back to microservice project when passed "DEO" or "proj-deo"
+	for _, key := range []string{"DEO", "proj-deo"} {
+		mockTr.lastPayload = ""
+		reqJSON, _ := json.Marshal(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      5,
+			"method":  "tools/call",
+			"params": map[string]interface{}{
+				"name": "ask_repository",
+				"arguments": map[string]interface{}{
+					"repo_name": key,
+					"user_id":   "u2",
+					"question":  "链路拓扑是什么",
+				},
+			},
+		})
+		askRepoResp, err := server.ProcessJSONRPC(context.Background(), nil, reqJSON)
+		if err != nil || askRepoResp.Error != nil {
+			t.Fatalf("ask_repository(%s) failed: %v %v", key, err, askRepoResp)
+		}
+		res := askRepoResp.Result.(*CallToolResult)
+		if res.IsError || !strings.Contains(res.Content[0].Text, "DEO microservice architecture answer") {
+			t.Fatalf("expected ask_repository(%s) fallback to proj-deo, got %+v", key, res)
+		}
 	}
 }

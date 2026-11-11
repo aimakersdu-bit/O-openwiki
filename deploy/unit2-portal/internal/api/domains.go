@@ -55,6 +55,7 @@ func (s *Server) listDomains(w http.ResponseWriter, r *http.Request) {
 type domainRequest struct {
 	ID          int64  `json:"id"`
 	Name        string `json:"name"`
+	Code        string `json:"code"`
 	Description string `json:"description"`
 	SortOrder   int    `json:"sort_order"`
 	Status      string `json:"status"`
@@ -72,12 +73,14 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
+	req.Code = strings.ToUpper(strings.TrimSpace(req.Code))
 	if req.Name == "" {
 		http.Error(w, "name is required", http.StatusBadRequest)
 		return
 	}
 	d := &db.BusinessDomain{
 		Name:        req.Name,
+		Code:        req.Code,
 		Description: req.Description,
 		SortOrder:   req.SortOrder,
 		Status:      req.Status,
@@ -112,6 +115,7 @@ func (s *Server) updateDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
+	req.Code = strings.ToUpper(strings.TrimSpace(req.Code))
 	if req.Name == "" {
 		http.Error(w, "name is required", http.StatusBadRequest)
 		return
@@ -119,6 +123,7 @@ func (s *Server) updateDomain(w http.ResponseWriter, r *http.Request) {
 	d := &db.BusinessDomain{
 		ID:          req.ID,
 		Name:        req.Name,
+		Code:        req.Code,
 		Description: req.Description,
 		SortOrder:   req.SortOrder,
 		Status:      req.Status,

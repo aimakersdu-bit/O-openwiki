@@ -66,6 +66,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/portal/batch/resume", s.handlePortalBatchControl)
 	s.mux.HandleFunc("/portal/batch/cancel", s.handlePortalBatchControl)
 	s.mux.HandleFunc("/portal/batch/disable-night-mode", s.handlePortalBatchControl)
+	s.mux.HandleFunc("/portal/batch/retry-failed", s.handlePortalBatchControl)
 	s.mux.HandleFunc("/portal/telemetry/tokens/daily", s.handlePortalDailyTokens)
 	s.mux.HandleFunc("/portal/telemetry/tokens/export", s.handlePortalTokensExport)
 
@@ -108,6 +109,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/graph", s.handleApiGraph)
 
 	// Reverse proxy /api/ to Orchestrator URL for standalone dev execution
+	var apiProxy *httputil.ReverseProxy
 	if orchURL, err := url.Parse(s.config.OrchestratorURL); err == nil && orchURL.Scheme != "" {
 		proxy := httputil.NewSingleHostReverseProxy(orchURL)
 		origDirector := proxy.Director
@@ -123,7 +125,33 @@ func (s *Server) routes() {
 			}
 		}
 		proxy.FlushInterval = -1 // Immediate flush for SSE streaming
-		s.mux.Handle("/api/", proxy)
+		apiProxy = proxy
+	}
+
+	gitCredsGuard := func(w http.ResponseWriter, r *http.Request) {
+		user := s.getSessionUser(r)
+		if user == nil {
+			http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		if !isSuperAdmin(user.Role) {
+			http.Error(w, `{"error":"Forbidden: 仅超级管理员可访问全局 Git 认证配置"}`, http.StatusForbidden)
+			return
+		}
+		if r.URL.Path == "/api/settings/git-credentials" && (r.Method == http.MethodPut || r.Method == http.MethodPost) {
+			s.RecordAudit(r, "settings.git_credentials.update", "git_credentials", nil)
+		}
+		if apiProxy == nil {
+			http.Error(w, `{"error":"Orchestrator upstream not configured"}`, http.StatusServiceUnavailable)
+			return
+		}
+		apiProxy.ServeHTTP(w, r)
+	}
+	s.mux.HandleFunc("/api/settings/git-credentials", gitCredsGuard)
+	s.mux.HandleFunc("/api/settings/git-credentials/test", gitCredsGuard)
+
+	if apiProxy != nil {
+		s.mux.Handle("/api/", apiProxy)
 	}
 }
 

@@ -215,3 +215,135 @@ func TestHandleApiGraphMultiSegmentRepoID(t *testing.T) {
 		t.Fatalf("expected graph body %s, got %s", expectedGraph, rec.Body.String())
 	}
 }
+
+func TestPortalGitCredentialsSuperAdminOnly(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "portal_gitcreds_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "portal_test.db")
+	if err := db.InitDB(dbPath); err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer db.CloseDB()
+
+	var proxiedRole string
+	mockOrch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxiedRole = r.Header.Get("X-OpenWiki-Role")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"enabled":true,"source":"database"}`))
+	}))
+	defer mockOrch.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.DBPath = dbPath
+	cfg.HMACSecret = "portal-test-secret"
+	cfg.OrchestratorURL = mockOrch.URL
+	server := NewServer(cfg, nil)
+
+	adminToken := createTestSession(t, "admin_user", "Super Admin", "super_admin")
+	leaderToken := createTestSession(t, "leader_user", "Group Leader", "group_leader")
+	userToken := createTestSession(t, "regular_user", "Regular User", "user")
+
+	// 1. Unauthenticated -> 401
+	reqAnon := httptest.NewRequest(http.MethodGet, "/api/settings/git-credentials", nil)
+	recAnon := httptest.NewRecorder()
+	server.ServeHTTP(recAnon, reqAnon)
+	if recAnon.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated request, got %d", recAnon.Code)
+	}
+
+	// 2. Regular user -> 403
+	reqUser := httptest.NewRequest(http.MethodGet, "/api/settings/git-credentials", nil)
+	reqUser.AddCookie(&http.Cookie{Name: auth.CookieName, Value: userToken})
+	recUser := httptest.NewRecorder()
+	server.ServeHTTP(recUser, reqUser)
+	if recUser.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for user role, got %d", recUser.Code)
+	}
+
+	// 3. Group leader -> 403 on both GET and test endpoint
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/settings/git-credentials"},
+		{http.MethodPost, "/api/settings/git-credentials/test"},
+	} {
+		reqLeader := httptest.NewRequest(tc.method, tc.path, bytes.NewBufferString(`{}`))
+		reqLeader.AddCookie(&http.Cookie{Name: auth.CookieName, Value: leaderToken})
+		recLeader := httptest.NewRecorder()
+		server.ServeHTTP(recLeader, reqLeader)
+		if recLeader.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for group_leader on %s %s, got %d", tc.method, tc.path, recLeader.Code)
+		}
+	}
+
+	// 4. Super Admin -> proxied 200 with HMAC role header
+	reqAdmin := httptest.NewRequest(http.MethodPut, "/api/settings/git-credentials", bytes.NewBufferString(`{"enabled":true,"auth_type":"token","token":"t"}`))
+	reqAdmin.AddCookie(&http.Cookie{Name: auth.CookieName, Value: adminToken})
+	recAdmin := httptest.NewRecorder()
+	server.ServeHTTP(recAdmin, reqAdmin)
+	if recAdmin.Code != http.StatusOK {
+		t.Fatalf("expected 200 for super_admin, got %d: %s", recAdmin.Code, recAdmin.Body.String())
+	}
+	if proxiedRole != "super_admin" {
+		t.Fatalf("expected X-OpenWiki-Role=super_admin forwarded to orchestrator, got %q", proxiedRole)
+	}
+}
+
+func TestBatchRetryFailedRBACAndProxy(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "portal_batch_retry_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "portal_test.db")
+	if err := db.InitDB(dbPath); err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer db.CloseDB()
+
+	var proxiedPath, proxiedQuery, proxiedRole string
+	mockOrch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxiedPath = r.URL.Path
+		proxiedQuery = r.URL.RawQuery
+		proxiedRole = r.Header.Get("X-OpenWiki-Role")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"action":"retry-failed","retried_count":2}`))
+	}))
+	defer mockOrch.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.DBPath = dbPath
+	cfg.HMACSecret = "portal-test-secret"
+	cfg.OrchestratorURL = mockOrch.URL
+	server := NewServer(cfg, nil)
+
+	adminToken := createTestSession(t, "admin_retry", "Super Admin", "super_admin")
+	leaderToken := createTestSession(t, "leader_retry", "Group Leader", "group_leader")
+
+	// 1. Group leader -> 403 Forbidden
+	reqLeader := httptest.NewRequest(http.MethodPost, "/portal/batch/retry-failed?batch_id=b1", bytes.NewBufferString(`{}`))
+	reqLeader.AddCookie(&http.Cookie{Name: auth.CookieName, Value: leaderToken})
+	recLeader := httptest.NewRecorder()
+	server.ServeHTTP(recLeader, reqLeader)
+	if recLeader.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for group_leader on batch retry-failed, got %d", recLeader.Code)
+	}
+
+	// 2. Super admin -> 200 OK proxied to /api/batch/retry-failed
+	reqAdmin := httptest.NewRequest(http.MethodPost, "/portal/batch/retry-failed?batch_id=b1", bytes.NewBufferString(`{"repo_ids":["r1","r2"]}`))
+	reqAdmin.AddCookie(&http.Cookie{Name: auth.CookieName, Value: adminToken})
+	recAdmin := httptest.NewRecorder()
+	server.ServeHTTP(recAdmin, reqAdmin)
+	if recAdmin.Code != http.StatusOK {
+		t.Fatalf("expected 200 for super_admin, got %d: %s", recAdmin.Code, recAdmin.Body.String())
+	}
+	if proxiedPath != "/api/batch/retry-failed" || proxiedQuery != "batch_id=b1" || proxiedRole != "super_admin" {
+		t.Fatalf("unexpected proxied request: path=%q query=%q role=%q", proxiedPath, proxiedQuery, proxiedRole)
+	}
+}

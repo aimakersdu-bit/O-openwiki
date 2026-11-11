@@ -255,9 +255,19 @@ func (p *BuildPipeline) Execute(ctx context.Context, repo *db.Repo, force bool, 
 		onProgress("building", 0.5, logBuf.String())
 	}
 
+	var logFlushMu sync.Mutex
+	lastLogFlush := time.Now()
 	buildRes := p.builder.BuildRepoWithBuildID(buildID, repo.ID, repo.LocalPath, repo.WikiDir, func(currentLog string) {
 		fullLog := logBuf.String() + "\n" + currentLog
-		_ = p.db.UpdateBuildLog(buildID, fullLog, "")
+		logFlushMu.Lock()
+		shouldFlush := time.Since(lastLogFlush) >= 2*time.Second
+		if shouldFlush {
+			lastLogFlush = time.Now()
+		}
+		logFlushMu.Unlock()
+		if shouldFlush {
+			_ = p.db.UpdateBuildLog(buildID, fullLog, "")
+		}
 		if onProgress != nil {
 			onProgress("building", 0.7, fullLog)
 		}

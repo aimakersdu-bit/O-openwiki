@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -22,10 +23,20 @@ type Session struct {
 // InitDB opens SQLite connection and creates sessions table.
 func InitDB(dbPath string) error {
 	var err error
-	DB, err = sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_synchronous=FULL&_busy_timeout=5000")
+	sep := "?"
+	if strings.Contains(dbPath, "?") {
+		sep = "&"
+	}
+	dsn := dbPath + sep + "_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=10000&_txlock=immediate"
+	DB, err = sql.Open("sqlite3", dsn)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
+	// Serialize SQLite operations via a single pooled connection in Go to prevent
+	// intra-process write lock contention ("database is locked").
+	DB.SetMaxOpenConns(1)
+	DB.SetMaxIdleConns(1)
+	DB.SetConnMaxLifetime(0)
 
 	schema := `
 	CREATE TABLE IF NOT EXISTS sessions (
@@ -69,6 +80,7 @@ func InitDB(dbPath string) error {
 	CREATE TABLE IF NOT EXISTS business_domains (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL UNIQUE,
+		code TEXT DEFAULT '',
 		description TEXT DEFAULT '',
 		sort_order INTEGER DEFAULT 0,
 		status TEXT NOT NULL DEFAULT 'active',
@@ -83,6 +95,7 @@ func InitDB(dbPath string) error {
 
 	// Migration: add role column if missing in older schema
 	_, _ = DB.Exec("ALTER TABLE sessions ADD COLUMN role TEXT DEFAULT 'user';")
+	_, _ = DB.Exec("ALTER TABLE business_domains ADD COLUMN code TEXT DEFAULT '';")
 
 	return nil
 }
@@ -227,19 +240,31 @@ func ListUsers() ([]User, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	var users []User
 	for rows.Next() {
 		var u User
 		if err := rows.Scan(&u.Username, &u.DisplayName, &u.Role, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		domains, _ := GetUserDomains(u.Username)
-		u.AuthorizedDomains = domains
 		users = append(users, u)
 	}
-	return users, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	// Close the cursor before issuing follow-up queries so single-connection pools cannot deadlock.
+	rows.Close()
+
+	for i := range users {
+		domains, err := GetUserDomains(users[i].Username)
+		if err != nil {
+			return nil, err
+		}
+		users[i].AuthorizedDomains = domains
+	}
+	return users, nil
 }
 
 // GrantDomain authorizes a user (group leader) for a specific business domain.
@@ -281,6 +306,7 @@ func GetUserDomains(username string) ([]string, error) {
 type BusinessDomain struct {
 	ID          int64  `json:"id"`
 	Name        string `json:"name"`
+	Code        string `json:"code"`
 	Description string `json:"description"`
 	SortOrder   int    `json:"sort_order"`
 	Status      string `json:"status"`
@@ -290,7 +316,7 @@ type BusinessDomain struct {
 
 // ListBusinessDomains returns all active business domains ordered by sort_order then name.
 func ListBusinessDomains() ([]BusinessDomain, error) {
-	rows, err := DB.Query(`SELECT id, name, COALESCE(description,''), sort_order, status, created_at, updated_at
+	rows, err := DB.Query(`SELECT id, name, COALESCE(code,''), COALESCE(description,''), sort_order, status, created_at, updated_at
 		FROM business_domains WHERE status = 'active' ORDER BY sort_order, name`)
 	if err != nil {
 		return nil, err
@@ -299,7 +325,7 @@ func ListBusinessDomains() ([]BusinessDomain, error) {
 	var list []BusinessDomain
 	for rows.Next() {
 		var d BusinessDomain
-		if err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.SortOrder, &d.Status, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.Name, &d.Code, &d.Description, &d.SortOrder, &d.Status, &d.CreatedAt, &d.UpdatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, d)
@@ -309,7 +335,7 @@ func ListBusinessDomains() ([]BusinessDomain, error) {
 
 // ListAllBusinessDomains returns all domains including inactive (for admin management).
 func ListAllBusinessDomains() ([]BusinessDomain, error) {
-	rows, err := DB.Query(`SELECT id, name, COALESCE(description,''), sort_order, status, created_at, updated_at
+	rows, err := DB.Query(`SELECT id, name, COALESCE(code,''), COALESCE(description,''), sort_order, status, created_at, updated_at
 		FROM business_domains ORDER BY sort_order, name`)
 	if err != nil {
 		return nil, err
@@ -318,7 +344,7 @@ func ListAllBusinessDomains() ([]BusinessDomain, error) {
 	var list []BusinessDomain
 	for rows.Next() {
 		var d BusinessDomain
-		if err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.SortOrder, &d.Status, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.Name, &d.Code, &d.Description, &d.SortOrder, &d.Status, &d.CreatedAt, &d.UpdatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, d)
@@ -328,15 +354,15 @@ func ListAllBusinessDomains() ([]BusinessDomain, error) {
 
 // CreateBusinessDomain inserts a new business domain.
 func CreateBusinessDomain(d *BusinessDomain) error {
-	_, err := DB.Exec(`INSERT INTO business_domains (name, description, sort_order, status) VALUES (?, ?, ?, ?)`,
-		d.Name, d.Description, d.SortOrder, defaultStr(d.Status, "active"))
+	_, err := DB.Exec(`INSERT INTO business_domains (name, code, description, sort_order, status) VALUES (?, ?, ?, ?, ?)`,
+		d.Name, d.Code, d.Description, d.SortOrder, defaultStr(d.Status, "active"))
 	return err
 }
 
 // UpdateBusinessDomain updates an existing business domain by id.
 func UpdateBusinessDomain(d *BusinessDomain) error {
-	_, err := DB.Exec(`UPDATE business_domains SET name = ?, description = ?, sort_order = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		d.Name, d.Description, d.SortOrder, defaultStr(d.Status, "active"), d.ID)
+	_, err := DB.Exec(`UPDATE business_domains SET name = ?, code = ?, description = ?, sort_order = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		d.Name, d.Code, d.Description, d.SortOrder, defaultStr(d.Status, "active"), d.ID)
 	return err
 }
 

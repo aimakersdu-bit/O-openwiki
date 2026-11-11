@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ type BatchImportRepoItem struct {
 	Branch         string `json:"branch"`
 	Tier           string `json:"tier"`
 	BusinessDomain string `json:"business_domain"`
+	TriCode        string `json:"tri_code,omitempty"`
 	LastReleaseAt  string `json:"last_release_at"`
 }
 
@@ -75,7 +77,7 @@ func (s *Server) handleBatchImport(w http.ResponseWriter, r *http.Request) {
 	batchID := fmt.Sprintf("batch_%d", time.Now().UnixNano())
 	database := s.getDB()
 
-	domainRepos := make(map[string][]string)
+	domainItems := make(map[string][]BatchImportRepoItem)
 	importErrors := make([]string, 0)
 	importedCount := 0
 
@@ -126,13 +128,16 @@ func (s *Server) handleBatchImport(w http.ResponseWriter, r *http.Request) {
 			_ = database.UpdateRepo(repo)
 		}
 
-		domainRepos[item.BusinessDomain] = append(domainRepos[item.BusinessDomain], item.ID)
+		domainItems[item.BusinessDomain] = append(domainItems[item.BusinessDomain], item)
 		importedCount++
 	}
 
-	// Auto-aggregate microservices by business domain into virtual projects
-	for domain, repoIDs := range domainRepos {
-		s.aggregateDomainProject(database, domain, repoIDs)
+	// Auto-aggregate microservices by business domain into semantic virtual projects
+	aggregatedProjects := make([]*db.Project, 0, len(domainItems))
+	for domain, items := range domainItems {
+		if proj := s.aggregateDomainProject(database, domain, items); proj != nil {
+			aggregatedProjects = append(aggregatedProjects, proj)
+		}
 	}
 
 	// Create BatchRun and BatchTasks
@@ -161,10 +166,11 @@ func (s *Server) handleBatchImport(w http.ResponseWriter, r *http.Request) {
 
 	skipped := len(req.Repos) - importedCount
 	resp := map[string]interface{}{
-		"success":        true,
-		"batch_id":       batchID,
-		"total_imported": importedCount,
-		"status":         "pending",
+		"success":             true,
+		"batch_id":            batchID,
+		"total_imported":      importedCount,
+		"status":              "pending",
+		"aggregated_projects": aggregatedProjects,
 	}
 	if skipped > 0 {
 		resp["skipped"] = skipped
@@ -175,29 +181,233 @@ func (s *Server) handleBatchImport(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// aggregateDomainProject groups repos belonging to the same domain into a Monorepo Project.
-func (s *Server) aggregateDomainProject(database *db.DB, domain string, repoIDs []string) {
+var (
+	domainPrefixCodeRe  = regexp.MustCompile(`^\s*([A-Za-z][A-Za-z0-9]{1,5})[-_/\s:：]`)
+	domainBracketCodeRe = regexp.MustCompile(`[(\[【]\s*([A-Za-z][A-Za-z0-9]{1,5})\s*[)\]】]`)
+	pureCodeRe          = regexp.MustCompile(`^[A-Za-z]{2,6}$`)
+	triLetterSegRe      = regexp.MustCompile(`^[A-Za-z]{3}$`)
+	flatPrefixCodeRe    = regexp.MustCompile(`^([A-Za-z]{3})[-_]`)
+	genericSegStopWords = map[string]bool{
+		"GIT": true, "COM": true, "ORG": true, "NET": true, "SVC": true,
+		"APP": true, "API": true, "WEB": true, "DEV": true, "UAT": true,
+		"PRD": true, "SRC": true, "LIB": true, "SRV": true, "SYS": true,
+	}
+)
+
+// extractTriCode resolves a domain's three-letter (or short system) code from
+// explicit tri_code, domain naming conventions, or repo ID / Git URL hierarchy (e.g. bxbank/DEO/xone-auth -> DEO).
+func extractTriCode(domain string, items []BatchImportRepoItem) string {
+	for _, it := range items {
+		code := strings.ToUpper(strings.TrimSpace(it.TriCode))
+		if code != "" && pureCodeRe.MatchString(code) {
+			return code
+		}
+	}
+
+	if code := extractTriCodeFromDomainText(domain); code != "" {
+		return code
+	}
+
+	// Count 3-letter hierarchy segments in repo IDs or Git URL paths (e.g. bxbank/DEO/xone-auth -> DEO)
+	segCounts := make(map[string]int)
+	for _, it := range items {
+		for _, candidate := range extractPathTriCodeCandidates(it.ID, it.GitURL) {
+			segCounts[candidate]++
+		}
+	}
+	if best := pickMostFrequentCode(segCounts); best != "" {
+		return best
+	}
+
+	// Fallback: shared 3-letter prefix across all repo IDs in the domain (e.g. cbs-order, cbs-pay -> CBS)
+	var sharedPrefix string
+	for _, it := range items {
+		baseID := it.ID
+		if idx := strings.LastIndex(baseID, "/"); idx != -1 {
+			baseID = baseID[idx+1:]
+		}
+		m := flatPrefixCodeRe.FindStringSubmatch(baseID)
+		if len(m) < 2 {
+			sharedPrefix = ""
+			break
+		}
+		cand := strings.ToUpper(m[1])
+		if genericSegStopWords[cand] {
+			sharedPrefix = ""
+			break
+		}
+		if sharedPrefix == "" {
+			sharedPrefix = cand
+		} else if sharedPrefix != cand {
+			sharedPrefix = ""
+			break
+		}
+	}
+	return sharedPrefix
+}
+
+func extractTriCodeFromDomainText(domain string) string {
+	d := strings.TrimSpace(domain)
+	if d == "" {
+		return ""
+	}
+	if pureCodeRe.MatchString(d) {
+		return strings.ToUpper(d)
+	}
+	if m := domainPrefixCodeRe.FindStringSubmatch(d); len(m) >= 2 {
+		return strings.ToUpper(m[1])
+	}
+	if m := domainBracketCodeRe.FindStringSubmatch(d); len(m) >= 2 {
+		return strings.ToUpper(m[1])
+	}
+	return ""
+}
+
+func extractPathTriCodeCandidates(repoID, gitURL string) []string {
+	seen := make(map[string]bool)
+	var candidates []string
+
+	checkParts := func(raw string, isURL bool) {
+		clean := strings.TrimSpace(raw)
+		if clean == "" {
+			return
+		}
+		if isURL {
+			if idx := strings.Index(clean, "://"); idx != -1 {
+				clean = clean[idx+3:]
+				if slash := strings.Index(clean, "/"); slash != -1 {
+					clean = clean[slash+1:]
+				} else {
+					clean = ""
+				}
+			} else if colon := strings.Index(clean, ":"); colon != -1 {
+				clean = clean[colon+1:]
+			}
+			clean = strings.TrimSuffix(clean, ".git")
+		}
+		parts := strings.Split(strings.Trim(clean, "/"), "/")
+		if len(parts) < 2 {
+			return
+		}
+		// Inspect parent segments (not leaf repo name), checking nearest parent first
+		for i := len(parts) - 2; i >= 0; i-- {
+			seg := strings.TrimSpace(parts[i])
+			if triLetterSegRe.MatchString(seg) {
+				up := strings.ToUpper(seg)
+				if !genericSegStopWords[up] && !seen[up] {
+					seen[up] = true
+					candidates = append(candidates, up)
+				}
+			}
+		}
+	}
+
+	checkParts(repoID, false)
+	checkParts(gitURL, true)
+	return candidates
+}
+
+func pickMostFrequentCode(counts map[string]int) string {
+	bestCode := ""
+	bestCount := 0
+	for code, count := range counts {
+		if count > bestCount || (count == bestCount && (bestCode == "" || code < bestCode)) {
+			bestCode = code
+			bestCount = count
+		}
+	}
+	return bestCode
+}
+
+func cleanDomainLabel(domain, triCode string) string {
+	label := strings.TrimSpace(domain)
+	if triCode == "" || label == "" {
+		return label
+	}
+	upperLabel := strings.ToUpper(label)
+	upperCode := strings.ToUpper(triCode)
+	for _, sep := range []string{"-", "_", "/", ":", "：", " "} {
+		prefix := upperCode + sep
+		if strings.HasPrefix(upperLabel, prefix) {
+			trimmed := strings.TrimSpace(label[len(prefix):])
+			if trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return label
+}
+
+func formatAggregatedProjectMeta(domain, triCode string) (projID, projName, domainLabel string) {
+	domainLabel = cleanDomainLabel(domain, triCode)
+	if triCode != "" {
+		projID = "proj-" + strings.ToLower(triCode)
+		if domainLabel != "" && !strings.EqualFold(domainLabel, triCode) {
+			projName = fmt.Sprintf("%s-%s微服务集群", triCode, domainLabel)
+		} else {
+			projName = fmt.Sprintf("%s微服务集群", triCode)
+		}
+		return projID, projName, domainLabel
+	}
+
+	h := md5.Sum([]byte(domain))
+	slug := hex.EncodeToString(h[:4])
+	projID = fmt.Sprintf("proj-%s", slug)
+	projName = domain + "微服务集群"
+	return projID, projName, domainLabel
+}
+
+// aggregateDomainProject groups repos belonging to the same domain into a Monorepo Project
+// using a semantic tri-code ID/name when available (e.g. proj-deo / DEO-数字员工微服务集群).
+func (s *Server) aggregateDomainProject(database *db.DB, domain string, items []BatchImportRepoItem) *db.Project {
+	triCode := extractTriCode(domain, items)
+	projID, projName, _ := formatAggregatedProjectMeta(domain, triCode)
+
 	projects, _ := database.ListProjects()
 	var targetProject *db.Project
-	for _, p := range projects {
-		if strings.Contains(p.Name, domain) {
-			targetProject = &p
+	for i := range projects {
+		p := projects[i]
+		if (triCode != "" && (strings.EqualFold(p.TriCode, triCode) || p.ID == projID)) ||
+			p.BusinessDomain == domain ||
+			strings.Contains(p.Name, domain) {
+			copyP := p
+			targetProject = &copyP
 			break
 		}
 	}
 
+	mcpKey := projID
+	if triCode != "" {
+		mcpKey = triCode
+	}
+
 	if targetProject == nil {
-		h := md5.Sum([]byte(domain))
-		slug := hex.EncodeToString(h[:4])
-		projID := fmt.Sprintf("proj-%s", slug)
 		targetProject = &db.Project{
-			ID:          projID,
-			Name:        domain + "微服务集群",
-			Description: fmt.Sprintf("由基线发版清单自动聚合的 %s 业务域微服务 Monorepo", domain),
-			LocalPath:   filepath.Join(s.config.ProjectsBaseDir, projID),
-			Status:      "active",
+			ID:             projID,
+			Name:           projName,
+			TriCode:        triCode,
+			BusinessDomain: domain,
+			Description:    fmt.Sprintf("由基线发版清单自动聚合的 %s 业务域微服务 Monorepo (MCP Key: %s)", domain, mcpKey),
+			LocalPath:      filepath.Join(s.config.ProjectsBaseDir, projID),
+			Status:         "active",
 		}
 		_ = database.CreateProject(targetProject)
+	} else {
+		needUpdate := false
+		if targetProject.BusinessDomain == "" && domain != "" {
+			targetProject.BusinessDomain = domain
+			needUpdate = true
+		}
+		if targetProject.TriCode == "" && triCode != "" {
+			targetProject.TriCode = triCode
+			if !strings.Contains(strings.ToUpper(targetProject.Name), triCode) {
+				targetProject.Name = projName
+			}
+			needUpdate = true
+		}
+		if needUpdate {
+			_ = database.UpdateProject(targetProject)
+		}
 	}
 
 	existingRepos, _ := database.GetProjectRepos(targetProject.ID)
@@ -213,7 +423,8 @@ func (s *Server) aggregateDomainProject(database *db.DB, domain string, repoIDs 
 		})
 	}
 
-	for _, rid := range repoIDs {
+	for _, item := range items {
+		rid := item.ID
 		if !seen[rid] {
 			seen[rid] = true
 			mappings = append(mappings, db.ProjectRepo{
@@ -229,6 +440,7 @@ func (s *Server) aggregateDomainProject(database *db.DB, domain string, repoIDs 
 	reposWithAlias, _ := database.GetProjectRepos(targetProject.ID)
 	wsMgr := project.NewWorkspaceManager(s.config.ProjectsBaseDir)
 	_, _ = wsMgr.PrepareWorkspace(targetProject, reposWithAlias)
+	return targetProject
 }
 
 // handleBatchConcurrency dynamically updates concurrency for rate limiting.
@@ -296,7 +508,7 @@ func (s *Server) handleBatchStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(status)
 }
 
-// handleBatchControl manages start, pause, resume, cancel, and disable-night-mode commands.
+// handleBatchControl manages start, pause, resume, cancel, disable-night-mode, and retry-failed commands.
 func (s *Server) handleBatchControl(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -304,7 +516,7 @@ func (s *Server) handleBatchControl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	database := s.getDB()
-	action := filepath.Base(r.URL.Path) // start, pause, resume, cancel, disable-night-mode
+	action := filepath.Base(r.URL.Path) // start, pause, resume, cancel, disable-night-mode, retry-failed
 	batchID := r.URL.Query().Get("batch_id")
 	if batchID == "" && database != nil {
 		latest, err := database.GetLatestActiveBatchRun()
@@ -324,6 +536,7 @@ func (s *Server) handleBatchControl(w http.ResponseWriter, r *http.Request) {
 
 	bs := s.scheduler.GetBatchScheduler()
 	var err error
+	var retriedCount int64
 	switch action {
 	case "start", "resume":
 		err = bs.ResumeBatch(batchID)
@@ -336,22 +549,38 @@ func (s *Server) handleBatchControl(w http.ResponseWriter, r *http.Request) {
 			_ = database.SetBatchNightMode(batchID, false)
 		}
 		err = bs.ResumeBatch(batchID)
+	case "retry-failed":
+		var retryReq struct {
+			RepoIDs []string `json:"repo_ids"`
+		}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&retryReq)
+		}
+		retriedCount, err = bs.RetryFailedTasks(context.Background(), batchID, retryReq.RepoIDs)
 	default:
 		http.Error(w, "Unknown batch action: "+action, http.StatusBadRequest)
 		return
 	}
 
 	if err != nil {
+		if strings.Contains(err.Error(), "no failed or pending tasks") {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "Failed to execute "+action+": "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"action":  action,
+	resp := map[string]interface{}{
+		"success":  true,
+		"action":   action,
 		"batch_id": batchID,
-	})
+	}
+	if action == "retry-failed" {
+		resp["retried_count"] = retriedCount
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 // handleDailyTokens returns aggregated daily token telemetry.

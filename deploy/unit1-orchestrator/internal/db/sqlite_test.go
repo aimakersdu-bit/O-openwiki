@@ -408,3 +408,123 @@ func TestProjectQASessionCRUD(t *testing.T) {
 	}
 }
 
+func TestProjectTriCodeLookupAndStaleCleanup(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	if err := database.CreateRepo(&Repo{
+		ID:        "xone-auth",
+		Name:      "数字员工鉴权",
+		GitURL:    "https://git.bank.local/bxbank/DEO/xone-auth.git",
+		Branch:    "master",
+		LocalPath: "/tmp/xone-auth",
+		Status:    "active",
+	}); err != nil {
+		t.Fatalf("CreateRepo failed: %v", err)
+	}
+
+	if err := database.CreateProject(&Project{
+		ID:             "proj-deo",
+		TriCode:        "DEO",
+		Name:           "DEO-数字员工微服务集群",
+		BusinessDomain: "数字员工",
+		LocalPath:      "/tmp/proj-deo",
+		Status:         "building",
+	}); err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+	if err := database.SetProjectRepos("proj-deo", []ProjectRepo{
+		{RepoID: "xone-auth", AliasName: "xone-auth", Role: "service"},
+	}); err != nil {
+		t.Fatalf("SetProjectRepos failed: %v", err)
+	}
+
+	// Verify lookup by tri_code (case-insensitive), ID, and display name
+	for _, key := range []string{"DEO", "deo", "proj-deo", "DEO-数字员工微服务集群"} {
+		found, err := database.GetProjectByNameOrID(key)
+		if err != nil {
+			t.Fatalf("GetProjectByNameOrID(%q) error: %v", key, err)
+		}
+		if found == nil || found.ID != "proj-deo" || found.TriCode != "DEO" {
+			t.Fatalf("GetProjectByNameOrID(%q) got %+v", key, found)
+		}
+	}
+
+	// Verify GetProjectIDsByRepoIDs
+	projIDs, err := database.GetProjectIDsByRepoIDs([]string{"xone-auth"})
+	if err != nil {
+		t.Fatalf("GetProjectIDsByRepoIDs error: %v", err)
+	}
+	if len(projIDs) != 1 || projIDs[0] != "proj-deo" {
+		t.Fatalf("expected [proj-deo], got %v", projIDs)
+	}
+
+	// Verify CleanStaleBuilds resets stale building project to failed
+	if err := database.CleanStaleBuilds(); err != nil {
+		t.Fatalf("CleanStaleBuilds failed: %v", err)
+	}
+	reloaded, err := database.GetProject("proj-deo")
+	if err != nil {
+		t.Fatalf("GetProject failed: %v", err)
+	}
+	if reloaded.Status != "failed" {
+		t.Fatalf("expected stale building project reset to failed, got %q", reloaded.Status)
+	}
+}
+
+func TestResetBatchFailedTasks(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	batchID := "batch_retry_db_1"
+	if err := database.CreateBatchRun(&BatchRun{
+		ID:             batchID,
+		Name:           "失败任务重跑测试",
+		TotalCount:     3,
+		MaxConcurrency: 2,
+		Status:         "completed",
+	}); err != nil {
+		t.Fatalf("CreateBatchRun failed: %v", err)
+	}
+
+	for _, id := range []string{"r1", "r2", "r3"} {
+		_ = database.CreateBatchTask(&BatchTask{BatchID: batchID, RepoID: id, Status: "pending"})
+	}
+	_ = database.UpdateBatchTaskStatus(batchID, "r1", "completed", "ok", 5)
+	_ = database.UpdateBatchTaskStatus(batchID, "r2", "failed", "git auth error", 2)
+	_ = database.UpdateBatchTaskStatus(batchID, "r3", "failed", "timeout", 3)
+
+	// 1. Selective reset of r2 only
+	reset1, pending1, err := database.ResetBatchFailedTasks(batchID, []string{"r2"}, true)
+	if err != nil {
+		t.Fatalf("ResetBatchFailedTasks selective failed: %v", err)
+	}
+	if reset1 != 1 || pending1 != 1 {
+		t.Fatalf("expected reset=1 pending=1, got reset=%d pending=%d", reset1, pending1)
+	}
+	run, _ := database.GetBatchRun(batchID)
+	if run.Status != "pending" || run.SuccessCount != 1 || run.FailedCount != 1 || run.ProcessedCount != 2 {
+		t.Fatalf("unexpected run counters after partial reset: %+v", run)
+	}
+
+	// 2. Reset remaining failed tasks (r3)
+	reset2, pending2, err := database.ResetBatchFailedTasks(batchID, nil, true)
+	if err != nil {
+		t.Fatalf("ResetBatchFailedTasks all failed: %v", err)
+	}
+	if reset2 != 1 || pending2 != 2 {
+		t.Fatalf("expected reset=1 pending=2, got reset=%d pending=%d", reset2, pending2)
+	}
+	run, _ = database.GetBatchRun(batchID)
+	if run.FailedCount != 0 || run.ProcessedCount != 1 {
+		t.Fatalf("expected failed=0 processed=1, got %+v", run)
+	}
+
+	// 3. No failed/pending tasks left -> error
+	_ = database.UpdateBatchTaskStatus(batchID, "r2", "completed", "ok", 4)
+	_ = database.UpdateBatchTaskStatus(batchID, "r3", "completed", "ok", 4)
+	if _, _, err := database.ResetBatchFailedTasks(batchID, nil, false); err == nil {
+		t.Fatalf("expected error when no failed or pending tasks remain")
+	}
+}
+

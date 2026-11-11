@@ -1,7 +1,9 @@
 package db_test
 
 import (
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/openwiki/orchestrator/internal/db"
@@ -140,5 +142,168 @@ func TestBatchRunAndDailyTokenUsageCRUD(t *testing.T) {
 	builds, err := database.ListBuilds("trade-gateway", 1)
 	if err != nil || len(builds) != 1 || builds[0].TotalTokens != 300 || builds[0].RateLimitedRetries != 2 {
 		t.Fatalf("Unexpected build after FinishBuildWithTokens: %+v", builds)
+	}
+}
+
+func TestConcurrentBatchWritesAndReadsNoLockErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_concurrent_batch.db")
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open db failed: %v", err)
+	}
+	defer database.Close()
+
+	const numWorkers = 10
+	batchID := "batch-concurrent-001"
+
+	if err := database.CreateProject(&db.Project{
+		ID:             "proj-concurrent",
+		Name:           "并发压测域",
+		BusinessDomain: "核心交易",
+		LocalPath:      filepath.Join(tmpDir, "proj-concurrent"),
+		Status:         "active",
+	}); err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+
+	if err := database.CreateBatchRun(&db.BatchRun{
+		ID:             batchID,
+		Name:           "高并发写库压测",
+		TotalCount:     numWorkers,
+		Status:         "running",
+		MaxConcurrency: numWorkers,
+	}); err != nil {
+		t.Fatalf("CreateBatchRun failed: %v", err)
+	}
+
+	for i := 0; i < numWorkers; i++ {
+		repoID := fmt.Sprintf("svc-%d", i)
+		if err := database.CreateRepo(&db.Repo{
+			ID:             repoID,
+			Name:           repoID,
+			GitURL:         fmt.Sprintf("git@gitlab.local:core/%s.git", repoID),
+			Branch:         "master",
+			LocalPath:      filepath.Join(tmpDir, repoID),
+			BusinessDomain: "核心交易",
+			Status:         "active",
+		}); err != nil {
+			t.Fatalf("CreateRepo %s failed: %v", repoID, err)
+		}
+		if err := database.CreateBatchTask(&db.BatchTask{
+			BatchID: batchID,
+			RepoID:  repoID,
+			Status:  "pending",
+		}); err != nil {
+			t.Fatalf("CreateBatchTask %s failed: %v", repoID, err)
+		}
+	}
+
+	errCh := make(chan error, 256)
+	var wg sync.WaitGroup
+
+	// Simulate 10 concurrent batch build workers hammering writes & transactions
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			repoID := fmt.Sprintf("svc-%d", idx)
+			for round := 0; round < 5; round++ {
+				buildID, err := database.CreateBuild(repoID, fmt.Sprintf("head-%d-%d", idx, round), "running")
+				if err != nil {
+					errCh <- fmt.Errorf("worker %d CreateBuild: %w", idx, err)
+					return
+				}
+				for step := 0; step < 5; step++ {
+					if err := database.UpdateBuildLog(buildID, fmt.Sprintf("worker %d round %d step %d", idx, round, step), ""); err != nil {
+						errCh <- fmt.Errorf("worker %d UpdateBuildLog: %w", idx, err)
+						return
+					}
+				}
+				if err := database.FinishBuildWithTokens(buildID, "completed", "done", "", 100, 50, 150, 0, 0); err != nil {
+					errCh <- fmt.Errorf("worker %d FinishBuildWithTokens: %w", idx, err)
+					return
+				}
+				if err := database.RecordDailyTokenUsage(&db.DailyTokenUsage{
+					Date:             "2026-11-11",
+					BusinessDomain:   "核心交易",
+					PromptTokens:     100,
+					CompletionTokens: 50,
+					TotalTokens:      150,
+					BuildCount:       1,
+				}); err != nil {
+					errCh <- fmt.Errorf("worker %d RecordDailyTokenUsage: %w", idx, err)
+					return
+				}
+				if err := database.UpdateRepoStatus(repoID, "active"); err != nil {
+					errCh <- fmt.Errorf("worker %d UpdateRepoStatus: %w", idx, err)
+					return
+				}
+				if err := database.UpdateBatchTaskStatus(batchID, repoID, "completed", "ok", 10, 100, 50, 150); err != nil {
+					errCh <- fmt.Errorf("worker %d UpdateBatchTaskStatus: %w", idx, err)
+					return
+				}
+			}
+		}(i)
+	}
+
+	// Simulate deferred->write transactions (SetProjectRepos) running concurrently
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var mappings []db.ProjectRepo
+		for i := 0; i < numWorkers; i++ {
+			mappings = append(mappings, db.ProjectRepo{
+				ProjectID: "proj-concurrent",
+				RepoID:    fmt.Sprintf("svc-%d", i),
+				AliasName: fmt.Sprintf("svc-%d", i),
+				Role:      "service",
+			})
+		}
+		for round := 0; round < 10; round++ {
+			if err := database.SetProjectRepos("proj-concurrent", mappings); err != nil {
+				errCh <- fmt.Errorf("SetProjectRepos round %d: %w", round, err)
+				return
+			}
+		}
+	}()
+
+	// Simulate 4 concurrent readers polling batch status & repos
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func(readerID int) {
+			defer wg.Done()
+			for i := 0; i < 30; i++ {
+				if _, err := database.GetBatchRun(batchID); err != nil {
+					errCh <- fmt.Errorf("reader %d GetBatchRun: %w", readerID, err)
+					return
+				}
+				if _, err := database.ListBatchTasks(batchID); err != nil {
+					errCh <- fmt.Errorf("reader %d ListBatchTasks: %w", readerID, err)
+					return
+				}
+				if _, err := database.ListRepos(); err != nil {
+					errCh <- fmt.Errorf("reader %d ListRepos: %w", readerID, err)
+					return
+				}
+			}
+		}(r)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Fatalf("Concurrent DB error: %v", err)
+	}
+
+	run, err := database.GetBatchRun(batchID)
+	if err != nil {
+		t.Fatalf("GetBatchRun failed: %v", err)
+	}
+	if run.ProcessedCount != numWorkers || run.SuccessCount != numWorkers {
+		t.Fatalf("Expected processed=%d success=%d, got processed=%d success=%d",
+			numWorkers, numWorkers, run.ProcessedCount, run.SuccessCount)
 	}
 }

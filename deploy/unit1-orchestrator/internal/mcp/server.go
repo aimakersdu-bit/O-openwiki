@@ -38,13 +38,13 @@ func (s *Server) GetTools() []Tool {
 	return []Tool{
 		{
 			Name:        "ask_repository",
-			Description: "向指定代码仓库的架构与代码知识库发起问答，通过 LangGraph 深度检索与推理获取准确解答。必须提供 user_id 进行调用审计。",
+			Description: "向指定代码仓库或微服务聚合项目的知识库发起问答，通过 LangGraph 深度检索与推理获取准确解答。支持传入单仓 ID/名称，或微服务项目三字码（如 DEO）/ 项目 ID（如 proj-deo）。必须提供 user_id 进行调用审计。",
 			InputSchema: ToolInputSchema{
 				Type: "object",
 				Properties: map[string]PropertySchema{
 					"repo_name": {
 						Type:        "string",
-						Description: "目标代码仓库名称或 ID（例如: openwiki）",
+						Description: "目标代码仓库 ID/名称，或微服务项目三字码 / 项目 ID（例如: DEO、proj-deo、bxbank/DEO/xone-auth）",
 					},
 					"user_id": {
 						Type:        "string",
@@ -63,8 +63,42 @@ func (s *Server) GetTools() []Tool {
 			},
 		},
 		{
+			Name:        "ask_project",
+			Description: "向指定微服务聚合项目（虚拟 Monorepo）的系统全景知识库发起问答，解答跨服务调用链路、整体系统架构与业务域职责。支持传入三字码（如 DEO）、项目 ID（如 proj-deo）或项目名称。必须提供 user_id 进行调用审计。",
+			InputSchema: ToolInputSchema{
+				Type: "object",
+				Properties: map[string]PropertySchema{
+					"project_key": {
+						Type:        "string",
+						Description: "微服务项目查询键：支持三字码（如 DEO）、项目 ID（如 proj-deo）或项目名称",
+					},
+					"user_id": {
+						Type:        "string",
+						Description: "调用者的用户标识/工号/用户名（必填，用于审计归属）",
+					},
+					"question": {
+						Type:        "string",
+						Description: "跨微服务调用关系、系统整体架构、业务域职责等问题",
+					},
+					"session_id": {
+						Type:        "string",
+						Description: "可选会话 ID，用于多轮上下文连续问答",
+					},
+				},
+				Required: []string{"project_key", "user_id", "question"},
+			},
+		},
+		{
 			Name:        "list_repositories",
-			Description: "列出当前平台已纳管的所有代码仓库及其知识库构建就绪状态。",
+			Description: "列出当前平台已纳管的所有代码仓库及微服务聚合项目摘要，返回各自的 type、query_key、tri_code（三字码）与知识库构建就绪状态。",
+			InputSchema: ToolInputSchema{
+				Type:       "object",
+				Properties: map[string]PropertySchema{},
+			},
+		},
+		{
+			Name:        "list_projects",
+			Description: "列出当前平台所有微服务聚合项目（虚拟 Monorepo），返回项目 ID、三字码（tri_code）、推荐 MCP 查询 Key（query_key）、所属业务域、子仓列表与任务运行状态。",
 			InputSchema: ToolInputSchema{
 				Type:       "object",
 				Properties: map[string]PropertySchema{},
@@ -78,8 +112,12 @@ func (s *Server) ExecuteTool(ctx context.Context, session *ClientSession, name s
 	switch name {
 	case "ask_repository":
 		return s.handleAskRepository(ctx, session, args, meta, onStreamToken)
+	case "ask_project":
+		return s.handleAskProject(ctx, session, args, meta, onStreamToken)
 	case "list_repositories":
 		return s.handleListRepositories(ctx)
+	case "list_projects":
+		return s.handleListProjects(ctx)
 	default:
 		return &CallToolResult{
 			IsError: true,
@@ -91,17 +129,104 @@ func (s *Server) ExecuteTool(ctx context.Context, session *ClientSession, name s
 	}
 }
 
+func firstStringArg(args map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := args[k].(string); ok {
+			if trimmed := strings.TrimSpace(v); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
+}
+
 func (s *Server) handleAskRepository(ctx context.Context, session *ClientSession, args map[string]any, meta *RequestMeta, onStreamToken func(token string)) (*CallToolResult, error) {
-	repoName, _ := args["repo_name"].(string)
-	userID, _ := args["user_id"].(string)
-	question, _ := args["question"].(string)
-	sessionID, _ := args["session_id"].(string)
+	repoName := firstStringArg(args, "repo_name", "key", "id")
+	userID := firstStringArg(args, "user_id")
+	question := firstStringArg(args, "question")
+	sessionID := firstStringArg(args, "session_id")
 
-	repoName = strings.TrimSpace(repoName)
-	userID = strings.TrimSpace(userID)
-	question = strings.TrimSpace(question)
-	sessionID = strings.TrimSpace(sessionID)
+	if userID == "" {
+		return mcpErrorResult("user_id is required for audit. Please provide your username or employee ID."), nil
+	}
+	if repoName == "" {
+		return mcpErrorResult("repo_name is required."), nil
+	}
+	if question == "" {
+		return mcpErrorResult("question cannot be empty."), nil
+	}
 
+	targetRepo, err := s.database.GetRepoByNameOrID(repoName)
+	if err != nil {
+		return nil, fmt.Errorf("database query failed: %w", err)
+	}
+	if targetRepo != nil {
+		return s.streamQAWithProgress(ctx, session, sessionID, meta, onStreamToken, func(resolvedSessID string, writer *MCPStreamWriter) error {
+			return s.qaManager.StreamChat(ctx, targetRepo, userID, resolvedSessID, question, writer)
+		})
+	}
+
+	// Fallback: match aggregated microservice project by ID, tri_code, or name
+	targetProj, err := s.database.GetProjectByNameOrID(repoName)
+	if err != nil {
+		return nil, fmt.Errorf("database project query failed: %w", err)
+	}
+	if targetProj != nil {
+		return s.streamQAWithProgress(ctx, session, sessionID, meta, onStreamToken, func(resolvedSessID string, writer *MCPStreamWriter) error {
+			return s.qaManager.StreamProjectChat(ctx, targetProj, userID, resolvedSessID, question, writer)
+		})
+	}
+
+	return mcpErrorResult(fmt.Sprintf("repository or project '%s' not found.", repoName)), nil
+}
+
+func (s *Server) handleAskProject(ctx context.Context, session *ClientSession, args map[string]any, meta *RequestMeta, onStreamToken func(token string)) (*CallToolResult, error) {
+	projKey := firstStringArg(args, "project_key", "project_id", "tri_code", "name")
+	userID := firstStringArg(args, "user_id")
+	question := firstStringArg(args, "question")
+	sessionID := firstStringArg(args, "session_id")
+
+	if userID == "" {
+		return mcpErrorResult("user_id is required for audit. Please provide your username or employee ID."), nil
+	}
+	if projKey == "" {
+		return mcpErrorResult("project_key (project_id, tri_code, or name) is required."), nil
+	}
+	if question == "" {
+		return mcpErrorResult("question cannot be empty."), nil
+	}
+
+	targetProj, err := s.database.GetProjectByNameOrID(projKey)
+	if err != nil {
+		return nil, fmt.Errorf("database project query failed: %w", err)
+	}
+	if targetProj == nil {
+		return mcpErrorResult(fmt.Sprintf("microservice project '%s' not found.", projKey)), nil
+	}
+
+	return s.streamQAWithProgress(ctx, session, sessionID, meta, onStreamToken, func(resolvedSessID string, writer *MCPStreamWriter) error {
+		return s.qaManager.StreamProjectChat(ctx, targetProj, userID, resolvedSessID, question, writer)
+	})
+}
+
+func mcpErrorResult(msg string) *CallToolResult {
+	return &CallToolResult{
+		IsError: true,
+		Content: []ContentItem{{
+			Type: "text",
+			Text: msg,
+		}},
+	}
+}
+
+func (s *Server) streamQAWithProgress(
+	ctx context.Context,
+	session *ClientSession,
+	sessionID string,
+	meta *RequestMeta,
+	onStreamToken func(token string),
+	streamFn func(resolvedSessionID string, writer *MCPStreamWriter) error,
+) (*CallToolResult, error) {
 	var progressToken any
 	if meta != nil {
 		progressToken = meta.ProgressToken
@@ -118,60 +243,12 @@ func (s *Server) handleAskRepository(ctx context.Context, session *ClientSession
 		}
 	}
 
-	// Strict user_id audit check
-	if userID == "" {
-		return &CallToolResult{
-			IsError: true,
-			Content: []ContentItem{{
-				Type: "text",
-				Text: "user_id is required for audit. Please provide your username or employee ID.",
-			}},
-		}, nil
-	}
-
-	if repoName == "" {
-		return &CallToolResult{
-			IsError: true,
-			Content: []ContentItem{{
-				Type: "text",
-				Text: "repo_name is required.",
-			}},
-		}, nil
-	}
-
-	if question == "" {
-		return &CallToolResult{
-			IsError: true,
-			Content: []ContentItem{{
-				Type: "text",
-				Text: "question cannot be empty.",
-			}},
-		}, nil
-	}
-
-	// Lookup repository using disambiguated query
-	targetRepo, err := s.database.GetRepoByNameOrID(repoName)
-	if err != nil {
-		return nil, fmt.Errorf("database query failed: %w", err)
-	}
-	if targetRepo == nil {
-		return &CallToolResult{
-			IsError: true,
-			Content: []ContentItem{{
-				Type: "text",
-				Text: fmt.Sprintf("repository '%s' not found.", repoName),
-			}},
-		}, nil
-	}
-
-	// Generate session ID if not provided
 	if sessionID == "" {
 		b := make([]byte, 6)
 		_, _ = rand.Read(b)
 		sessionID = fmt.Sprintf("mcp_sess_%d_%s", time.Now().Unix(), hex.EncodeToString(b))
 	}
 
-	// 1. Initial progress notification if progressToken is present
 	if progressToken != nil {
 		sendNotification(JSONRPCNotification{
 			JSONRPC: "2.0",
@@ -179,12 +256,11 @@ func (s *Server) handleAskRepository(ctx context.Context, session *ClientSession
 			Params: ProgressParams{
 				ProgressToken: progressToken,
 				Progress:      5,
-				Message:       "Connecting to repository knowledge base...",
+				Message:       "Connecting to knowledge base...",
 			},
 		})
 	}
 
-	// 2. Periodic progress heartbeat (every 3 seconds) to ensure client never times out
 	stopHeartbeat := make(chan struct{})
 	defer close(stopHeartbeat)
 	if progressToken != nil {
@@ -214,7 +290,6 @@ func (s *Server) handleAskRepository(ctx context.Context, session *ClientSession
 		}()
 	}
 
-	// Create stream writer adapter to push tokens via MCP notification
 	writer := NewMCPStreamWriter(func(token string) {
 		sendNotification(JSONRPCNotification{
 			JSONRPC: "2.0",
@@ -228,31 +303,16 @@ func (s *Server) handleAskRepository(ctx context.Context, session *ClientSession
 	})
 
 	if s.qaManager == nil {
-		return &CallToolResult{
-			IsError: true,
-			Content: []ContentItem{{
-				Type: "text",
-				Text: "QA Manager is not available.",
-			}},
-		}, nil
+		return mcpErrorResult("QA Manager is not available."), nil
 	}
 
-	// Stream chat with existing QA manager (zero changes to qa.Manager)
-	err = s.qaManager.StreamChat(ctx, targetRepo, userID, sessionID, question, writer)
+	if err := streamFn(sessionID, writer); err != nil {
+		writer.Flush()
+		log.Printf("[MCP] StreamChat execution error: %v", err)
+		return mcpErrorResult(fmt.Sprintf("execution failed: %v", err)), nil
+	}
 	writer.Flush()
 
-	if err != nil {
-		log.Printf("[MCP] StreamChat execution error: %v", err)
-		return &CallToolResult{
-			IsError: true,
-			Content: []ContentItem{{
-				Type: "text",
-				Text: fmt.Sprintf("execution failed: %v", err),
-			}},
-		}, nil
-	}
-
-	// Final progress notification
 	if progressToken != nil {
 		sendNotification(JSONRPCNotification{
 			JSONRPC: "2.0",
@@ -265,14 +325,43 @@ func (s *Server) handleAskRepository(ctx context.Context, session *ClientSession
 		})
 	}
 
-	fullAnswer := writer.FullAnswer()
 	return &CallToolResult{
 		IsError: false,
 		Content: []ContentItem{{
 			Type: "text",
-			Text: fullAnswer,
+			Text: writer.FullAnswer(),
 		}},
 	}, nil
+}
+
+func isProjectWikiReady(p db.Project, latestBuild *db.Build) (taskStatus string, lastBuildStatus string, ready bool) {
+	if p.Status == "queued" {
+		taskStatus = "queued"
+	} else if p.Status == "building" {
+		taskStatus = "running"
+	} else if latestBuild != nil {
+		lastBuildStatus = latestBuild.Status
+		switch latestBuild.Status {
+		case "running":
+			taskStatus = "running"
+		case "completed", "success":
+			taskStatus = "completed"
+			ready = true
+		case "failed", "interrupted":
+			taskStatus = latestBuild.Status
+		default:
+			taskStatus = latestBuild.Status
+		}
+	} else if p.Status == "failed" {
+		taskStatus = "failed"
+	} else {
+		taskStatus = "never_built"
+	}
+	if p.Status == "active" && latestBuild == nil {
+		// Workspace metadata exists even before openwiki CLI build completes
+		ready = false
+	}
+	return taskStatus, lastBuildStatus, ready
 }
 
 func (s *Server) handleListRepositories(ctx context.Context) (*CallToolResult, error) {
@@ -280,34 +369,132 @@ func (s *Server) handleListRepositories(ctx context.Context) (*CallToolResult, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to list repos: %w", err)
 	}
+	projects, _ := s.database.ListProjects()
 
-	type RepoSummary struct {
+	type CatalogEntry struct {
+		Type            string `json:"type"`
 		ID              string `json:"id"`
+		QueryKey        string `json:"query_key"`
+		TriCode         string `json:"tri_code,omitempty"`
 		Name            string `json:"name"`
-		Branch          string `json:"branch"`
+		BusinessDomain  string `json:"business_domain,omitempty"`
+		Branch          string `json:"branch,omitempty"`
 		Status          string `json:"status"`
+		TaskStatus      string `json:"task_status,omitempty"`
 		LastBuildStatus string `json:"last_build_status,omitempty"`
 		WikiReady       bool   `json:"wiki_ready"`
 	}
 
-	var results []RepoSummary
+	var results []CatalogEntry
 	for _, r := range repos {
-		summary := RepoSummary{
-			ID:     r.ID,
-			Name:   r.Name,
-			Branch: r.Branch,
-			Status: r.Status,
+		entry := CatalogEntry{
+			Type:           "repository",
+			ID:             r.ID,
+			QueryKey:       r.ID,
+			Name:           r.Name,
+			BusinessDomain: r.BusinessDomain,
+			Branch:         r.Branch,
+			Status:         r.Status,
 		}
-
-		build, err := s.database.GetLatestBuild(r.ID)
-		if err == nil && build != nil {
-			summary.LastBuildStatus = build.Status
-			if build.Status == "success" {
-				summary.WikiReady = true
+		if build, err := s.database.GetLatestBuild(r.ID); err == nil && build != nil {
+			entry.LastBuildStatus = build.Status
+			if build.Status == "success" || build.Status == "completed" {
+				entry.WikiReady = true
 			}
 		}
+		results = append(results, entry)
+	}
 
-		results = append(results, summary)
+	for _, p := range projects {
+		latestBuild, _ := s.database.GetLatestBuild(p.ID)
+		taskStatus, lastBuildStatus, ready := isProjectWikiReady(p, latestBuild)
+		queryKey := p.ID
+		if strings.TrimSpace(p.TriCode) != "" {
+			queryKey = strings.TrimSpace(p.TriCode)
+		}
+		results = append(results, CatalogEntry{
+			Type:            "project",
+			ID:              p.ID,
+			QueryKey:        queryKey,
+			TriCode:         p.TriCode,
+			Name:            p.Name,
+			BusinessDomain:  p.BusinessDomain,
+			Status:          p.Status,
+			TaskStatus:      taskStatus,
+			LastBuildStatus: lastBuildStatus,
+			WikiReady:       ready,
+		})
+	}
+
+	data, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+
+	return &CallToolResult{
+		IsError: false,
+		Content: []ContentItem{{
+			Type: "text",
+			Text: string(data),
+		}},
+	}, nil
+}
+
+func (s *Server) handleListProjects(ctx context.Context) (*CallToolResult, error) {
+	projects, err := s.database.ListProjects()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list projects: %w", err)
+	}
+
+	type MemberRepoSummary struct {
+		RepoID    string `json:"repo_id"`
+		AliasName string `json:"alias_name"`
+		Role      string `json:"role"`
+	}
+	type ProjectSummary struct {
+		ID              string              `json:"id"`
+		TriCode         string              `json:"tri_code,omitempty"`
+		QueryKey        string              `json:"query_key"`
+		Name            string              `json:"name"`
+		BusinessDomain  string              `json:"business_domain,omitempty"`
+		Description     string              `json:"description,omitempty"`
+		Status          string              `json:"status"`
+		TaskStatus      string              `json:"task_status"`
+		LastBuildStatus string              `json:"last_build_status,omitempty"`
+		WikiReady       bool                `json:"wiki_ready"`
+		MemberRepos     []MemberRepoSummary `json:"member_repos"`
+	}
+
+	results := make([]ProjectSummary, 0, len(projects))
+	for _, p := range projects {
+		latestBuild, _ := s.database.GetLatestBuild(p.ID)
+		taskStatus, lastBuildStatus, ready := isProjectWikiReady(p, latestBuild)
+		queryKey := p.ID
+		if strings.TrimSpace(p.TriCode) != "" {
+			queryKey = strings.TrimSpace(p.TriCode)
+		}
+		repos, _ := s.database.GetProjectRepos(p.ID)
+		members := make([]MemberRepoSummary, 0, len(repos))
+		for _, r := range repos {
+			members = append(members, MemberRepoSummary{
+				RepoID:    r.ID,
+				AliasName: r.AliasName,
+				Role:      r.Role,
+			})
+		}
+		results = append(results, ProjectSummary{
+			ID:              p.ID,
+			TriCode:         p.TriCode,
+			QueryKey:        queryKey,
+			Name:            p.Name,
+			BusinessDomain:  p.BusinessDomain,
+			Description:     p.Description,
+			Status:          p.Status,
+			TaskStatus:      taskStatus,
+			LastBuildStatus: lastBuildStatus,
+			WikiReady:       ready,
+			MemberRepos:     members,
+		})
 	}
 
 	data, err := json.MarshalIndent(results, "", "  ")

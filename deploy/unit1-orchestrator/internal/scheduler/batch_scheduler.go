@@ -28,6 +28,8 @@ type BatchStatusResponse struct {
 	ActiveSlots           []WorkerSlotInfo `json:"active_slots"`
 	BusySlotsCount        int              `json:"busy_slots_count"`
 	IdleSlotsCount        int              `json:"idle_slots_count"`
+	PendingCount          int              `json:"pending_count"`
+	FailedTasks           []db.BatchTask   `json:"failed_tasks,omitempty"`
 	AvgDurationSec        float64          `json:"avg_duration_sec"`
 	EstimatedRemainingSec int              `json:"estimated_remaining_sec"`
 	FormattedETA          string           `json:"formatted_eta"`
@@ -47,6 +49,14 @@ type BatchScheduler struct {
 	isPaused        bool
 	windowStartHour int
 	windowEndHour   int
+	onBatchCompleted func(batchID string, tasks []db.BatchTask)
+}
+
+// SetOnBatchCompleted registers a callback invoked once all tasks in a batch finish.
+func (bs *BatchScheduler) SetOnBatchCompleted(fn func(batchID string, tasks []db.BatchTask)) {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	bs.onBatchCompleted = fn
 }
 
 // NewBatchScheduler constructs a new BatchScheduler.
@@ -148,6 +158,49 @@ func (bs *BatchScheduler) AutoResumeLatestBatch() {
 	}
 }
 
+// RetryFailedTasks resets failed tasks (or specified failed repoIDs) back to pending
+// and re-enters the batch scheduler loop so they are dispatched again.
+func (bs *BatchScheduler) RetryFailedTasks(ctx context.Context, batchID string, repoIDs []string) (int64, error) {
+	run, err := bs.db.GetBatchRun(batchID)
+	if err != nil {
+		return 0, fmt.Errorf("get batch run %s: %w", batchID, err)
+	}
+	if run == nil {
+		return 0, fmt.Errorf("batch run %s not found", batchID)
+	}
+
+	bs.mu.Lock()
+	if bs.runningBatchID != "" && bs.runningBatchID != batchID {
+		running := bs.runningBatchID
+		bs.mu.Unlock()
+		return 0, fmt.Errorf("another batch (%s) is already running", running)
+	}
+
+	alreadyRunning := bs.runningBatchID == batchID
+	resetCount, pendingTotal, err := bs.db.ResetBatchFailedTasks(batchID, repoIDs, !alreadyRunning)
+	if err != nil {
+		bs.mu.Unlock()
+		return 0, err
+	}
+
+	if alreadyRunning {
+		bs.isPaused = false
+		bs.pauseCond.Broadcast()
+		bs.mu.Unlock()
+		_ = bs.db.UpdateBatchRunStatus(batchID, "running")
+	} else {
+		bs.mu.Unlock()
+		if err := bs.StartBatch(ctx, batchID); err != nil {
+			return 0, err
+		}
+	}
+
+	if resetCount == 0 && pendingTotal > 0 {
+		return pendingTotal, nil
+	}
+	return resetCount, nil
+}
+
 // CancelBatch terminates the currently running batch.
 func (bs *BatchScheduler) CancelBatch(batchID string) error {
 	bs.mu.Lock()
@@ -189,7 +242,15 @@ func (bs *BatchScheduler) GetDetailedStatus(batchID string) (*BatchStatusRespons
 
 	var totalSec int
 	var doneCount int
+	var pendingCount int
+	var failedTasks []db.BatchTask
 	for _, t := range tasks {
+		if t.Status == "pending" || t.Status == "running" {
+			pendingCount++
+		}
+		if t.Status == "failed" {
+			failedTasks = append(failedTasks, t)
+		}
 		if t.Status == "completed" || t.Status == "skipped" || t.Status == "failed" {
 			totalSec += t.DurationSec
 			doneCount++
@@ -226,6 +287,8 @@ func (bs *BatchScheduler) GetDetailedStatus(batchID string) (*BatchStatusRespons
 		ActiveSlots:           activeList,
 		BusySlotsCount:        busySlots,
 		IdleSlotsCount:        idleSlots,
+		PendingCount:          pendingCount,
+		FailedTasks:           failedTasks,
 		AvgDurationSec:        avgDuration,
 		EstimatedRemainingSec: estimatedRemainingSec,
 		FormattedETA:          FormatETA(estimatedRemainingSec),
@@ -320,8 +383,37 @@ func (bs *BatchScheduler) runBatchLoop(ctx context.Context, batchID string) {
 		}
 
 		if len(pendingTasks) == 0 {
+			bs.mu.Lock()
+			latestTasks, listErr := bs.db.ListBatchTasks(batchID)
+			hasMorePending := false
+			if listErr == nil {
+				for _, t := range latestTasks {
+					if t.Status == "pending" {
+						hasMorePending = true
+						break
+					}
+				}
+				if hasMorePending {
+					tasks = latestTasks
+				}
+			}
+			if !hasMorePending {
+				bs.runningBatchID = ""
+				bs.cancelFunc = nil
+			}
+			bs.mu.Unlock()
+			if hasMorePending {
+				continue
+			}
+
 			log.Printf("[batch_scheduler][%s] All tasks finished, marking batch completed", batchID)
 			_ = bs.db.UpdateBatchRunStatus(batchID, "completed")
+			bs.mu.RLock()
+			cb := bs.onBatchCompleted
+			bs.mu.RUnlock()
+			if cb != nil {
+				cb(batchID, tasks)
+			}
 			return
 		}
 

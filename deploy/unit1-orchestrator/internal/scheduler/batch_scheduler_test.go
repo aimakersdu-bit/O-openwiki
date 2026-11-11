@@ -1,6 +1,7 @@
 package scheduler_test
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -240,4 +241,63 @@ func TestPipelineWithLLMProxyUsage(t *testing.T) {
 	if !ok || u.TotalTokens != 700 || u.PromptTokens != 500 || u.CompletionTokens != 200 {
 		t.Fatalf("expected tokens 500/200/700, got %+v", u)
 	}
+}
+
+func TestBatchSchedulerRetryFailedTasks(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_batch_retry.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open db failed: %v", err)
+	}
+	defer database.Close()
+
+	builder := scheduler.NewBuilder("openwiki", tmpDir, tmpDir, tmpDir)
+	limiter := scheduler.NewDynamicRateLimiter(2)
+	pipeline := scheduler.NewBuildPipeline(database, builder, limiter)
+	sched := scheduler.NewBatchScheduler(database, pipeline, limiter)
+
+	batchID := "batch_retry_sched"
+	_ = database.CreateBatchRun(&db.BatchRun{
+		ID:             batchID,
+		Name:           "Retry Failed Batch",
+		TotalCount:     2,
+		MaxConcurrency: 2,
+		Status:         "completed",
+	})
+	_ = database.CreateBatchTask(&db.BatchTask{BatchID: batchID, RepoID: "ok-repo", Status: "pending"})
+	_ = database.CreateBatchTask(&db.BatchTask{BatchID: batchID, RepoID: "fail-repo", Status: "pending"})
+	_ = database.UpdateBatchTaskStatus(batchID, "ok-repo", "completed", "done", 3)
+	_ = database.UpdateBatchTaskStatus(batchID, "fail-repo", "failed", "clone failed", 1)
+
+	status, err := sched.GetDetailedStatus(batchID)
+	if err != nil {
+		t.Fatalf("GetDetailedStatus failed: %v", err)
+	}
+	if len(status.FailedTasks) != 1 || status.FailedTasks[0].RepoID != "fail-repo" {
+		t.Fatalf("expected 1 failed task fail-repo, got %+v", status.FailedTasks)
+	}
+
+	// Retry failed task: scheduler marks batch running and dispatches fail-repo again
+	// (fail-repo doesn't exist in repos table so runBatchLoop quickly marks it failed again & finishes cleanly)
+	retried, err := sched.RetryFailedTasks(context.Background(), batchID, nil)
+	if err != nil {
+		t.Fatalf("RetryFailedTasks failed: %v", err)
+	}
+	if retried != 1 {
+		t.Fatalf("expected retried=1, got %d", retried)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		run, _ := database.GetBatchRun(batchID)
+		tasks, _ := database.ListBatchTasks(batchID)
+		if run != nil && run.Status == "completed" && len(tasks) == 2 {
+			if tasks[1].RepoID == "fail-repo" && tasks[1].Status == "failed" && tasks[1].Summary == "repo not found" {
+				return
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for retried task fail-repo to be re-processed by scheduler loop")
 }

@@ -65,6 +65,7 @@
             <button id="disableNightModeBtn" class="btn btn-warning btn-sm" style="display:none;">☀️ 关闭夜间限制 (立即跑)</button>
             <button id="pauseBatchBtn" class="btn btn-secondary btn-sm" style="display:none;">⏸️ 暂停调度</button>
             <button id="resumeBatchBtn" class="btn btn-primary btn-sm" style="display:none;">▶️ 恢复调度</button>
+            <button id="retryFailedBatchBtn" class="btn btn-warning btn-sm" style="display:none;">🔁 失败任务批量重跑</button>
             <button id="cancelBatchBtn" class="btn btn-danger btn-sm" style="display:none;">⏹️ 中止批跑</button>
           </div>
         </div>
@@ -72,6 +73,15 @@
         <!-- Progress Bar -->
         <div style="width: 100%; background: #334155; height: 10px; border-radius: 5px; overflow: hidden; margin-bottom: 1rem;">
           <div id="batchProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #3b82f6, #10b981); transition: width 0.4s ease;"></div>
+        </div>
+
+        <!-- Failed Batch Tasks Summary & One-Click Requeue -->
+        <div id="batchFailedPanel" style="display:none; margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 6px; background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.35);">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.5rem;">
+            <strong style="color:#fca5a5; font-size:0.9rem;">❌ 本批跑存在失败任务（<span id="batchFailedCountText">0</span> 个），可直接批量重跑并重新投入调度：</strong>
+            <button id="retryAllFailedPanelBtn" class="btn btn-warning btn-sm">🔁 全部失败任务重跑</button>
+          </div>
+          <div id="batchFailedList" style="display:flex; flex-direction:column; gap:0.4rem; max-height:180px; overflow-y:auto;"></div>
         </div>
 
         <!-- Dynamic Concurrency Heat Adjustment Slider -->
@@ -276,13 +286,13 @@
         <table class="data-table" id="adminProjectTable">
           <thead>
             <tr>
-              <th style="min-width: 140px;">项目 ID / 名称</th>
+              <th style="min-width: 170px;">项目 ID / 三字码 / 名称</th>
               <th style="min-width: 110px;">业务域</th>
               <th style="min-width: 240px;">包含微服务组件与角色</th>
               <th style="min-width: 180px;">虚拟工作区目录</th>
-              <th class="col-center col-nowrap" style="min-width: 90px;">状态</th>
+              <th class="col-center col-nowrap" style="min-width: 140px;">任务运行状态</th>
               <th class="col-center col-nowrap" style="min-width: 120px;">更新时间</th>
-              <th class="col-center col-nowrap" style="min-width: 240px;">操作</th>
+              <th class="col-center col-nowrap" style="min-width: 260px;">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -331,6 +341,73 @@
       </form>
     </section>
 
+    <!-- Super Admin Section: Unified Git Credentials -->
+    <section class="card super-admin-only" id="gitCredsSection" style="margin-top: 1.5rem; border-left: 4px solid #38bdf8;">
+      <div class="dashboard-header" style="flex-wrap: wrap; gap: 0.75rem;">
+        <div>
+          <h2>🔑 全局统一 Git 仓库认证配置</h2>
+          <p class="subtitle">仅超级管理员可见。配置统一的代码仓库 HTTP/HTTPS 认证凭据，克隆、增量检测与拉取时自动注入，无需逐个仓库填写账号密码</p>
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <span id="gitCredsSourceBadge" class="badge" style="background: #334155; color: #e2e8f0; padding: 0.3rem 0.65rem; border-radius: 4px; font-size: 0.85rem;">未配置</span>
+          <button type="button" id="refreshGitCredsBtn" class="btn btn-secondary">🔄 刷新配置</button>
+        </div>
+      </div>
+
+      <form id="gitCredsForm" style="margin-top: 1rem;">
+        <div style="display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 8px; background: var(--bg-secondary, #1e293b); border: 1px solid var(--border-color, #334155);">
+          <label style="display: inline-flex; align-items: center; gap: 0.5rem; cursor: pointer; font-weight: 600; margin: 0;">
+            <input type="checkbox" id="gitAuthEnabled" checked style="width: 16px; height: 16px;">
+            启用全局统一 Git 认证
+          </label>
+          <label style="display: inline-flex; align-items: center; gap: 0.5rem; cursor: pointer; margin: 0; font-size: 0.9rem; color: var(--text-secondary, #94a3b8);">
+            <input type="checkbox" id="gitOverrideInline" checked style="width: 16px; height: 16px;">
+            覆盖仓库地址中已包含的账号密码（推荐：统一凭据轮换后旧仓库同步生效）
+          </label>
+          <label style="display: inline-flex; align-items: center; gap: 0.5rem; cursor: pointer; margin: 0; font-size: 0.9rem; color: var(--text-secondary, #94a3b8);">
+            <input type="checkbox" id="gitSslNoVerify" style="width: 16px; height: 16px;">
+            跳过 HTTPS SSL 证书校验（自签名仓库使用）
+          </label>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem;">
+          <div class="form-group">
+            <label for="gitAuthType">认证方式</label>
+            <select id="gitAuthType" style="width: 100%; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);">
+              <option value="token">Access Token / OAuth2 Token (推荐)</option>
+              <option value="password">用户名 + 密码</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="gitHttpHost">适用 Git 域名 Host（可选）</label>
+            <input type="text" id="gitHttpHost" placeholder="例如 gitlab.company.com（留空对所有 HTTP/HTTPS 仓库生效）">
+          </div>
+          <div class="form-group">
+            <label for="gitHttpUsername">统一用户名 <span id="gitUsernameHint" style="color:var(--text-secondary); font-weight:normal;">(Token 模式留空默认 oauth2)</span></label>
+            <input type="text" id="gitHttpUsername" autocomplete="off" placeholder="oauth2 或 git 服务账号">
+          </div>
+          <div class="form-group">
+            <label for="gitHttpSecret"><span id="gitSecretLabel">Access Token</span> <span id="gitSecretState" style="color:#10b981; font-weight:normal; font-size:0.85rem;"></span></label>
+            <input type="password" id="gitHttpSecret" autocomplete="new-password" placeholder="输入新的 Token 或密码（留空则保留当前已保存凭据）">
+            <label id="gitClearSecretWrap" style="display:none; align-items:center; gap:0.4rem; margin-top:0.35rem; font-size:0.82rem; color:#f87171; cursor:pointer;">
+              <input type="checkbox" id="gitClearSecret" style="width:14px; height:14px;">
+              清除当前已保存的凭据
+            </label>
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border-color, #334155);">
+          <div style="display: flex; align-items: center; gap: 0.5rem; flex: 1; min-width: 280px;">
+            <input type="text" id="gitTestUrl" placeholder="输入任意仓库 HTTP/HTTPS 地址测试认证，如 https://gitlab.company.com/team/repo.git" style="flex: 1;">
+            <button type="button" id="testGitCredsBtn" class="btn btn-secondary" style="white-space: nowrap;">🔌 测试连接</button>
+          </div>
+          <button type="submit" id="saveGitCredsBtn" class="btn btn-primary" style="white-space: nowrap;">💾 保存全局 Git 认证</button>
+        </div>
+
+        <div id="gitCredsAlert" class="alert" style="display:none; margin-top: 0.75rem;"></div>
+      </form>
+    </section>
+
     <!-- Super Admin Section 2: Storage Volumes & Migration Center -->
     <section class="card super-admin-only" id="storageSection" style="margin-top: 1.5rem; border-left: 4px solid #8b5cf6;">
       <div class="dashboard-header">
@@ -372,11 +449,15 @@
       <div style="display:flex; gap:0.5rem; margin:1rem 0; flex-wrap:wrap; align-items:flex-end;">
         <div class="form-group" style="flex:0 0 180px;">
           <label for="newDomainName">业务域名称</label>
-          <input type="text" id="newDomainName" placeholder="例如：消金" style="width:100%; padding:0.4rem; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary);">
+          <input type="text" id="newDomainName" placeholder="例如：数字员工" style="width:100%; padding:0.4rem; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary);">
+        </div>
+        <div class="form-group" style="flex:0 0 120px;">
+          <label for="newDomainCode">三字码（可选）</label>
+          <input type="text" id="newDomainCode" placeholder="例如：DEO" maxlength="12" style="width:100%; padding:0.4rem; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary); text-transform:uppercase;">
         </div>
         <div class="form-group" style="flex:1; min-width:200px;">
           <label for="newDomainDesc">说明（可选）</label>
-          <input type="text" id="newDomainDesc" placeholder="消费金融业务域" style="width:100%; padding:0.4rem; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary);">
+          <input type="text" id="newDomainDesc" placeholder="数字员工业务域" style="width:100%; padding:0.4rem; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary);">
         </div>
         <div class="form-group" style="flex:0 0 100px;">
           <label for="newDomainOrder">排序</label>
@@ -390,6 +471,7 @@
           <thead>
             <tr>
               <th style="min-width:140px;">业务域名称</th>
+              <th class="col-center col-nowrap" style="min-width:90px;">三字码</th>
               <th>说明</th>
               <th class="col-center col-nowrap" style="min-width:80px;">排序</th>
               <th class="col-center col-nowrap" style="min-width:80px;">状态</th>
@@ -397,7 +479,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr><td colspan="5" style="text-align:center; color:var(--text-secondary);">正在加载业务域字典...</td></tr>
+            <tr><td colspan="6" style="text-align:center; color:var(--text-secondary);">正在加载业务域字典...</td></tr>
           </tbody>
         </table>
       </div>
@@ -546,15 +628,19 @@
           <input type="hidden" id="projIsEdit" value="0">
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
             <div class="form-group">
-              <label for="projId">项目唯一标识 ID (例如 retail-finance)</label>
-              <input type="text" id="projId" placeholder="retail-finance" required>
+              <label for="projId">项目唯一标识 ID (例如 proj-deo)</label>
+              <input type="text" id="projId" placeholder="proj-deo" required>
             </div>
             <div class="form-group">
               <label for="projName">项目显示名称</label>
-              <input type="text" id="projName" placeholder="零售金融微服务平台" required>
+              <input type="text" id="projName" placeholder="DEO-数字员工微服务集群" required>
             </div>
           </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+          <div style="display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 1rem;">
+            <div class="form-group">
+              <label for="projTriCode">业务三字码 (MCP 查询 Key)</label>
+              <input type="text" id="projTriCode" placeholder="DEO (可选)" maxlength="12" style="text-transform:uppercase;">
+            </div>
             <div class="form-group">
               <label for="projBusinessDomain">所属业务域</label>
               <select id="projBusinessDomain" required style="width: 100%; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);">
@@ -632,13 +718,13 @@
             <label for="batchDataInput">
               粘贴 CSV 或 JSON 数据 
               <span style="font-weight:normal; color:var(--text-secondary); font-size:0.85rem;">
-                (支持 CSV 表头: <code>id,name,git_url,branch,tier,business_domain,last_release_at</code> 或 JSON 数组)
+                (支持 CSV 表头: <code>id,name,git_url,branch,tier,business_domain,last_release_at[,tri_code]</code> 或 JSON 数组；也自动从仓库路径提取三字码如 <code>bxbank/DEO/...</code>)
               </span>
             </label>
-            <textarea id="batchDataInput" rows="10" placeholder="id,name,git_url,branch,tier,business_domain,last_release_at
-trade-gateway,交易边缘网关,https://github.com/bank/trade-gateway.git,master,A,消费金融,2025-11-20
-order-service,信贷订单服务,https://github.com/bank/order-service.git,master,A,消费金融,2025-10-15
-credit-audit,信贷风控审批,https://github.com/bank/credit-audit.git,master,B,信贷中台,2025-08-01" style="width: 100%; font-family: monospace; font-size: 0.85rem; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); resize: vertical;" required></textarea>
+            <textarea id="batchDataInput" rows="10" placeholder="id,name,git_url,branch,tier,business_domain,last_release_at,tri_code
+xone-auth,数字员工鉴权,https://git.bank.local/bxbank/DEO/xone-auth.git,master,A,数字员工,2025-11-20,DEO
+xone-task,数字员工调度,https://git.bank.local/bxbank/DEO/xone-task.git,master,A,数字员工,2025-10-15,DEO
+credit-audit,信贷风控审批,https://github.com/bank/credit-audit.git,master,B,CFN-信贷中台,2025-08-01,CFN" style="width: 100%; font-family: monospace; font-size: 0.85rem; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); resize: vertical;" required></textarea>
           </div>
 
           <div id="batchAlert" class="alert" style="display:none;"></div>
@@ -767,8 +853,8 @@ credit-audit,信贷风控审批,https://github.com/bank/credit-audit.git,master,
     </div>
   </div>
 
-  <script src="js/auth.js?v=20261109c"></script>
-  <script src="js/api.js?v=20261109c"></script>
-  <script src="js/admin.js?v=20261109c"></script>
+  <script src="js/auth.js?v=20261111a"></script>
+  <script src="js/api.js?v=20261111c"></script>
+  <script src="js/admin.js?v=20261111c"></script>
 </body>
 </html>

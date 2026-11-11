@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -14,12 +15,25 @@ type DB struct {
 	conn *sql.DB
 }
 
+func buildSQLiteDSN(path string) string {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=10000&_txlock=immediate"
+}
+
 // Open opens (or creates) the SQLite database and runs migrations.
 func Open(path string) (*DB, error) {
-	conn, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_synchronous=FULL&_busy_timeout=5000")
+	conn, err := sql.Open("sqlite3", buildSQLiteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open db %s: %w", path, err)
 	}
+	// Serialize all SQLite operations through a single pooled connection in Go
+	// to eliminate intra-process writer lock contention ("database is locked").
+	conn.SetMaxOpenConns(1)
+	conn.SetMaxIdleConns(1)
+	conn.SetConnMaxLifetime(0)
 
 	db := &DB{conn: conn}
 	if err := db.migrate(); err != nil {
@@ -61,7 +75,11 @@ func (db *DB) CleanStaleBuilds() error {
 	// so freshly created builds (same-second race with Start()) are not clobbered.
 	cutoff := time.Now().Local().Format("2006-01-02 15:04:05")
 	_, err := db.conn.Exec("UPDATE builds SET status = 'interrupted', finished_at = CURRENT_TIMESTAMP, error = 'Interrupted by daemon restart' WHERE status = 'running' AND started_at <= ?", cutoff)
-	return err
+	if err != nil {
+		return err
+	}
+	_, _ = db.conn.Exec("UPDATE projects SET status = 'failed' WHERE status IN ('building', 'queued') AND updated_at <= ?", cutoff)
+	return nil
 }
 
 func CleanStaleBuilds() error {
@@ -154,6 +172,10 @@ func GetProject(id string) (*Project, error) {
 	return globalDB.GetProject(id)
 }
 
+func GetProjectByNameOrID(identifier string) (*Project, error) {
+	return globalDB.GetProjectByNameOrID(identifier)
+}
+
 func CreateProject(p *Project) error {
 	return globalDB.CreateProject(p)
 }
@@ -212,6 +234,7 @@ func (db *DB) migrate() error {
 		`CREATE TABLE IF NOT EXISTS projects (
 			id              TEXT PRIMARY KEY,
 			name            TEXT NOT NULL,
+			tri_code        TEXT NOT NULL DEFAULT '',
 			description     TEXT,
 			business_domain TEXT NOT NULL DEFAULT '',
 			architecture_md TEXT DEFAULT '',
@@ -254,6 +277,7 @@ func (db *DB) migrate() error {
 	db.conn.Exec(`ALTER TABLE repos ADD COLUMN last_release_at DATETIME`)
 	db.conn.Exec(`ALTER TABLE projects ADD COLUMN business_domain TEXT DEFAULT ''`)
 	db.conn.Exec(`ALTER TABLE projects ADD COLUMN architecture_md TEXT DEFAULT ''`)
+	db.conn.Exec(`ALTER TABLE projects ADD COLUMN tri_code TEXT DEFAULT ''`)
 	db.conn.Exec(`ALTER TABLE builds ADD COLUMN rate_limited_retries INTEGER DEFAULT 0`)
 	db.conn.Exec(`ALTER TABLE builds ADD COLUMN prompt_tokens INTEGER DEFAULT 0`)
 	db.conn.Exec(`ALTER TABLE builds ADD COLUMN completion_tokens INTEGER DEFAULT 0`)
@@ -919,6 +943,7 @@ func ListUserProjectQASessions(projectID, userID string, limit int) ([]QASession
 type Project struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
+	TriCode        string `json:"tri_code"`
 	Description    string `json:"description"`
 	BusinessDomain string `json:"business_domain"`
 	ArchitectureMD string `json:"architecture_md"`
@@ -946,7 +971,7 @@ type RepoWithAlias struct {
 
 // ListProjects returns all registered projects.
 func (db *DB) ListProjects() ([]Project, error) {
-	rows, err := db.conn.Query(`SELECT id, name, COALESCE(description,''), COALESCE(business_domain,''), COALESCE(architecture_md,''), local_path, status, created_at, updated_at FROM projects ORDER BY name`)
+	rows, err := db.conn.Query(`SELECT id, name, COALESCE(tri_code,''), COALESCE(description,''), COALESCE(business_domain,''), COALESCE(architecture_md,''), local_path, status, created_at, updated_at FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -955,7 +980,7 @@ func (db *DB) ListProjects() ([]Project, error) {
 	var projects []Project
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.BusinessDomain, &p.ArchitectureMD, &p.LocalPath, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.TriCode, &p.Description, &p.BusinessDomain, &p.ArchitectureMD, &p.LocalPath, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		projects = append(projects, p)
@@ -966,26 +991,89 @@ func (db *DB) ListProjects() ([]Project, error) {
 // GetProject returns a single project by ID.
 func (db *DB) GetProject(id string) (*Project, error) {
 	p := &Project{}
-	err := db.conn.QueryRow(`SELECT id, name, COALESCE(description,''), COALESCE(business_domain,''), COALESCE(architecture_md,''), local_path, status, created_at, updated_at FROM projects WHERE id = ?`, id).
-		Scan(&p.ID, &p.Name, &p.Description, &p.BusinessDomain, &p.ArchitectureMD, &p.LocalPath, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+	err := db.conn.QueryRow(`SELECT id, name, COALESCE(tri_code,''), COALESCE(description,''), COALESCE(business_domain,''), COALESCE(architecture_md,''), local_path, status, created_at, updated_at FROM projects WHERE id = ?`, id).
+		Scan(&p.ID, &p.Name, &p.TriCode, &p.Description, &p.BusinessDomain, &p.ArchitectureMD, &p.LocalPath, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	return p, err
 }
 
+// GetProjectByNameOrID resolves a microservice project by ID, tri_code (three-letter code),
+// semantic proj-<tri_code>, exact name, or business_domain.
+func (db *DB) GetProjectByNameOrID(identifier string) (*Project, error) {
+	ident := strings.TrimSpace(identifier)
+	if ident == "" {
+		return nil, nil
+	}
+
+	queries := []struct {
+		sql string
+		arg string
+	}{
+		{`SELECT id, name, COALESCE(tri_code,''), COALESCE(description,''), COALESCE(business_domain,''), COALESCE(architecture_md,''), local_path, status, created_at, updated_at FROM projects WHERE id = ? LIMIT 1`, ident},
+		{`SELECT id, name, COALESCE(tri_code,''), COALESCE(description,''), COALESCE(business_domain,''), COALESCE(architecture_md,''), local_path, status, created_at, updated_at FROM projects WHERE LOWER(id) = LOWER(?) LIMIT 1`, ident},
+		{`SELECT id, name, COALESCE(tri_code,''), COALESCE(description,''), COALESCE(business_domain,''), COALESCE(architecture_md,''), local_path, status, created_at, updated_at FROM projects WHERE UPPER(tri_code) = UPPER(?) AND tri_code != '' LIMIT 1`, ident},
+		{`SELECT id, name, COALESCE(tri_code,''), COALESCE(description,''), COALESCE(business_domain,''), COALESCE(architecture_md,''), local_path, status, created_at, updated_at FROM projects WHERE LOWER(id) = LOWER(?) LIMIT 1`, "proj-" + ident},
+		{`SELECT id, name, COALESCE(tri_code,''), COALESCE(description,''), COALESCE(business_domain,''), COALESCE(architecture_md,''), local_path, status, created_at, updated_at FROM projects WHERE LOWER(name) = LOWER(?) LIMIT 1`, ident},
+		{`SELECT id, name, COALESCE(tri_code,''), COALESCE(description,''), COALESCE(business_domain,''), COALESCE(architecture_md,''), local_path, status, created_at, updated_at FROM projects WHERE business_domain = ? ORDER BY updated_at DESC LIMIT 1`, ident},
+	}
+
+	for _, q := range queries {
+		p := &Project{}
+		err := db.conn.QueryRow(q.sql, q.arg).
+			Scan(&p.ID, &p.Name, &p.TriCode, &p.Description, &p.BusinessDomain, &p.ArchitectureMD, &p.LocalPath, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+		if err == nil {
+			return p, nil
+		}
+		if err != sql.ErrNoRows {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
+// GetProjectIDsByRepoIDs returns distinct project IDs containing any of the given repo IDs.
+func (db *DB) GetProjectIDsByRepoIDs(repoIDs []string) ([]string, error) {
+	if len(repoIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(repoIDs))
+	args := make([]interface{}, len(repoIDs))
+	for i, id := range repoIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`SELECT DISTINCT project_id FROM project_repos WHERE repo_id IN (%s) ORDER BY project_id`, strings.Join(placeholders, ","))
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var pid string
+		if err := rows.Scan(&pid); err != nil {
+			return nil, err
+		}
+		ids = append(ids, pid)
+	}
+	return ids, rows.Err()
+}
+
 // CreateProject inserts a new project.
 func (db *DB) CreateProject(p *Project) error {
-	_, err := db.conn.Exec(`INSERT INTO projects (id, name, description, business_domain, architecture_md, local_path, status) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Name, p.Description, p.BusinessDomain, p.ArchitectureMD, p.LocalPath, p.Status)
+	_, err := db.conn.Exec(`INSERT INTO projects (id, name, tri_code, description, business_domain, architecture_md, local_path, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Name, p.TriCode, p.Description, p.BusinessDomain, p.ArchitectureMD, p.LocalPath, p.Status)
 	return err
 }
 
 // UpdateProject updates project fields and updated_at timestamp.
 func (db *DB) UpdateProject(p *Project) error {
 	timeStr := time.Now().Local().Format("2006-01-02 15:04:05")
-	_, err := db.conn.Exec(`UPDATE projects SET name = ?, description = ?, business_domain = ?, architecture_md = ?, local_path = ?, status = ?, updated_at = ? WHERE id = ?`,
-		p.Name, p.Description, p.BusinessDomain, p.ArchitectureMD, p.LocalPath, p.Status, timeStr, p.ID)
+	_, err := db.conn.Exec(`UPDATE projects SET name = ?, tri_code = ?, description = ?, business_domain = ?, architecture_md = ?, local_path = ?, status = ?, updated_at = ? WHERE id = ?`,
+		p.Name, p.TriCode, p.Description, p.BusinessDomain, p.ArchitectureMD, p.LocalPath, p.Status, timeStr, p.ID)
 	return err
 }
 
@@ -1205,21 +1293,29 @@ func (db *DB) UpdateBatchTaskStatus(batchID, repoID, status, summary string, dur
 		totalTokens = tokens[2]
 	}
 
-	_, err := db.conn.Exec(`UPDATE batch_tasks SET status = ?, summary = ?, duration_sec = ?, 
-		prompt_tokens = ?, completion_tokens = ?, total_tokens = ?, finished_at = CURRENT_TIMESTAMP
-		WHERE batch_id = ? AND repo_id = ?`, status, summary, durationSec, promptTokens, completionTokens, totalTokens, batchID, repoID)
+	tx, err := db.conn.Begin()
 	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`UPDATE batch_tasks SET status = ?, summary = ?, duration_sec = ?, 
+		prompt_tokens = ?, completion_tokens = ?, total_tokens = ?, finished_at = CURRENT_TIMESTAMP
+		WHERE batch_id = ? AND repo_id = ?`, status, summary, durationSec, promptTokens, completionTokens, totalTokens, batchID, repoID); err != nil {
 		return err
 	}
 
 	// 重新聚合更新 batch_runs 的计数与状态
-	_, err = db.conn.Exec(`UPDATE batch_runs SET 
+	if _, err := tx.Exec(`UPDATE batch_runs SET 
 		processed_count = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status IN ('completed','skipped','failed')),
 		success_count   = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'completed'),
 		skipped_count   = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'skipped'),
 		failed_count    = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'failed')
-		WHERE id = ?`, batchID, batchID, batchID, batchID, batchID)
-	return err
+		WHERE id = ?`, batchID, batchID, batchID, batchID, batchID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (db *DB) ListBatchTasks(batchID string) ([]BatchTask, error) {
@@ -1302,6 +1398,74 @@ func (db *DB) RecoverInterruptedBatchTasks() (int64, error) {
 		log.Printf("[batch_scheduler] Reset %d interrupted running tasks to pending on startup", n)
 	}
 	return n, nil
+}
+
+// ResetBatchFailedTasks resets failed (and optionally stale running) tasks in a batch back to pending,
+// refreshes batch_runs counters, and clears finished_at so the batch can be re-scheduled.
+func (db *DB) ResetBatchFailedTasks(batchID string, repoIDs []string, includeStaleRunning bool) (int64, int64, error) {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+
+	statusFilter := "status = 'failed'"
+	if includeStaleRunning {
+		statusFilter = "status IN ('failed', 'running')"
+	}
+
+	var args []interface{}
+	query := fmt.Sprintf(`UPDATE batch_tasks
+		SET status = 'pending', summary = '', error = '', duration_sec = 0,
+		    prompt_tokens = 0, completion_tokens = 0, total_tokens = 0,
+		    started_at = NULL, finished_at = NULL
+		WHERE batch_id = ? AND %s`, statusFilter)
+	args = append(args, batchID)
+
+	if len(repoIDs) > 0 {
+		placeholders := make([]string, 0, len(repoIDs))
+		for _, id := range repoIDs {
+			trimmed := strings.TrimSpace(id)
+			if trimmed == "" {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, trimmed)
+		}
+		if len(placeholders) > 0 {
+			query += " AND repo_id IN (" + strings.Join(placeholders, ",") + ")"
+		}
+	}
+
+	res, err := tx.Exec(query, args...)
+	if err != nil {
+		return 0, 0, err
+	}
+	resetCount, _ := res.RowsAffected()
+
+	var pendingTotal int64
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'pending'`, batchID).Scan(&pendingTotal); err != nil {
+		return 0, 0, err
+	}
+	if pendingTotal == 0 {
+		return 0, 0, fmt.Errorf("no failed or pending tasks to retry")
+	}
+
+	if _, err := tx.Exec(`UPDATE batch_runs SET
+		status = 'pending',
+		finished_at = NULL,
+		processed_count = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status IN ('completed','skipped','failed')),
+		success_count   = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'completed'),
+		skipped_count   = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'skipped'),
+		failed_count    = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'failed')
+		WHERE id = ?`, batchID, batchID, batchID, batchID, batchID); err != nil {
+		return 0, 0, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return resetCount, pendingTotal, nil
 }
 
 // --- System Settings DAO ---

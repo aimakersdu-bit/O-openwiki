@@ -37,6 +37,11 @@ type Server struct {
 
 	sseMu    sync.RWMutex
 	sseChans map[chan string]bool
+
+	projQueueMu       sync.Mutex
+	projQueue         []string
+	projQueuedSet     map[string]bool
+	projWorkerRunning bool
 }
 
 // NewServer creates a new Orchestrator API server.
@@ -78,6 +83,12 @@ func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, ma
 			sched.GetBatchScheduler().ApplyDayNightConcurrency(time.Now())
 		}
 	}
+
+	if sched != nil && sched.GetBatchScheduler() != nil {
+		sched.GetBatchScheduler().SetOnBatchCompleted(s.handleBatchCompletedProjects)
+	}
+
+	scheduler.SetGitCredentialsProvider(s.resolveGitCredentials)
 
 	linksDir := "/data/disk0/links/repos"
 	if cfg != nil && cfg.ReposBaseDir != "" {
@@ -155,6 +166,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/batch/resume", s.handleBatchControl)
 	s.mux.HandleFunc("/api/batch/cancel", s.handleBatchControl)
 	s.mux.HandleFunc("/api/batch/disable-night-mode", s.handleBatchControl)
+	s.mux.HandleFunc("/api/batch/retry-failed", s.handleBatchControl)
 
 	// Daily Token Telemetry & Feishu/Lark Multi-dimensional Table Export
 	s.mux.HandleFunc("/api/telemetry/tokens/daily", s.handleDailyTokens)
@@ -168,6 +180,10 @@ func (s *Server) routes() {
 
 	// LLM Quota & Dynamic Rate Limit Settings API
 	s.mux.HandleFunc("/api/settings/llm-quota", s.handleLLMQuota)
+
+	// Unified Git Credentials Settings API (Super Admin Only)
+	s.mux.HandleFunc("/api/settings/git-credentials", s.handleGitCredentials)
+	s.mux.HandleFunc("/api/settings/git-credentials/test", s.handleTestGitCredentials)
 
 	// Storage Pool & Volumes Management API
 	s.mux.HandleFunc("/api/storage/volumes", s.handleStorageVolumes)

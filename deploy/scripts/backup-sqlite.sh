@@ -32,7 +32,7 @@ backup_single_db() {
   log "Starting online atomic backup: ${src_db} -> ${target_file}"
 
   if command -v sqlite3 >/dev/null 2>&1; then
-    sqlite3 "${src_db}" "VACUUM INTO '${target_file}';"
+    sqlite3 -cmd ".timeout 10000" "${src_db}" "VACUUM INTO '${target_file}';"
   else
     # Fallback to copy if sqlite3 CLI binary is not installed
     cp "${src_db}" "${target_file}"
