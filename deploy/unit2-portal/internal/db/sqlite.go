@@ -36,14 +36,14 @@ func InitDB(dsn string) error {
 			token VARCHAR(255) PRIMARY KEY,
 			user_id TEXT NOT NULL,
 			display_name TEXT,
-			role TEXT DEFAULT 'user',
+			role VARCHAR(255) DEFAULT 'user',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			expires_at DATETIME NOT NULL
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS users (
 			username VARCHAR(255) PRIMARY KEY,
 			display_name TEXT,
-			role TEXT NOT NULL DEFAULT 'user',
+			role VARCHAR(255) NOT NULL DEFAULT 'user',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		) ENGINE=InnoDB`,
@@ -66,10 +66,10 @@ func InitDB(dsn string) error {
 		`CREATE TABLE IF NOT EXISTS business_domains (
 			id INT AUTO_INCREMENT PRIMARY KEY,
 			name VARCHAR(255) NOT NULL UNIQUE,
-			code TEXT DEFAULT '',
-			description TEXT DEFAULT '',
+			code VARCHAR(255) DEFAULT '',
+			description VARCHAR(255) DEFAULT '',
 			sort_order INT DEFAULT 0,
-			status TEXT NOT NULL DEFAULT 'active',
+			status VARCHAR(255) NOT NULL DEFAULT 'active',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		) ENGINE=InnoDB`,

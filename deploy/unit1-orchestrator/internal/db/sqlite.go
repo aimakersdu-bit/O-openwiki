@@ -193,12 +193,12 @@ func (db *DB) migrate() error {
 			id          VARCHAR(255) PRIMARY KEY,
 			name        TEXT NOT NULL,
 			git_url     TEXT NOT NULL,
-			branch      TEXT NOT NULL DEFAULT 'main',
+			branch      VARCHAR(255) NOT NULL DEFAULT 'main',
 			local_path  TEXT NOT NULL,
 			wiki_dir    TEXT,
 			static_dir  TEXT,
-			schedule    TEXT NOT NULL DEFAULT '0 2 * * *',
-			status      TEXT NOT NULL DEFAULT 'active',
+			schedule    VARCHAR(255) NOT NULL DEFAULT '0 2 * * *',
+			status      VARCHAR(255) NOT NULL DEFAULT 'active',
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		) ENGINE=InnoDB`,
@@ -206,7 +206,7 @@ func (db *DB) migrate() error {
 			id          INT AUTO_INCREMENT PRIMARY KEY,
 			repo_id     VARCHAR(255) NOT NULL,
 			git_head    TEXT,
-			status      TEXT NOT NULL DEFAULT 'pending',
+			status      VARCHAR(255) NOT NULL DEFAULT 'pending',
 			started_at  DATETIME,
 			finished_at DATETIME,
 			log         LONGTEXT,
@@ -226,12 +226,12 @@ func (db *DB) migrate() error {
 		`CREATE TABLE IF NOT EXISTS projects (
 			id              VARCHAR(255) PRIMARY KEY,
 			name            TEXT NOT NULL,
-			tri_code        TEXT NOT NULL DEFAULT '',
+			tri_code        VARCHAR(255) NOT NULL DEFAULT '',
 			description     TEXT,
-			business_domain TEXT NOT NULL DEFAULT '',
-			architecture_md TEXT DEFAULT '',
+			business_domain VARCHAR(255) NOT NULL DEFAULT '',
+			architecture_md VARCHAR(255) DEFAULT '',
 			local_path      TEXT NOT NULL,
-			status          TEXT NOT NULL DEFAULT 'active',
+			status          VARCHAR(255) NOT NULL DEFAULT 'active',
 			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 		) ENGINE=InnoDB`,
@@ -240,7 +240,7 @@ func (db *DB) migrate() error {
 			project_id  VARCHAR(255) NOT NULL,
 			repo_id     VARCHAR(255) NOT NULL,
 			alias_name  TEXT NOT NULL,
-			role        TEXT DEFAULT 'service',
+			role        VARCHAR(255) DEFAULT 'service',
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(project_id, repo_id),
 			UNIQUE(project_id, alias_name),
@@ -267,12 +267,12 @@ func (db *DB) migrate() error {
 
 	// Try adding columns/tables for migrations
 	db.conn.Exec(`ALTER TABLE qa_sessions ADD COLUMN session_id TEXT`)
-	db.conn.Exec(`ALTER TABLE repos ADD COLUMN tier TEXT DEFAULT 'B'`)
-	db.conn.Exec(`ALTER TABLE repos ADD COLUMN business_domain TEXT DEFAULT ''`)
+	db.conn.Exec(`ALTER TABLE repos ADD COLUMN tier VARCHAR(255) DEFAULT 'B'`)
+	db.conn.Exec(`ALTER TABLE repos ADD COLUMN business_domain VARCHAR(255) DEFAULT ''`)
 	db.conn.Exec(`ALTER TABLE repos ADD COLUMN last_release_at DATETIME`)
-	db.conn.Exec(`ALTER TABLE projects ADD COLUMN business_domain TEXT DEFAULT ''`)
-	db.conn.Exec(`ALTER TABLE projects ADD COLUMN architecture_md TEXT DEFAULT ''`)
-	db.conn.Exec(`ALTER TABLE projects ADD COLUMN tri_code TEXT DEFAULT ''`)
+	db.conn.Exec(`ALTER TABLE projects ADD COLUMN business_domain VARCHAR(255) DEFAULT ''`)
+	db.conn.Exec(`ALTER TABLE projects ADD COLUMN architecture_md VARCHAR(255) DEFAULT ''`)
+	db.conn.Exec(`ALTER TABLE projects ADD COLUMN tri_code VARCHAR(255) DEFAULT ''`)
 	db.conn.Exec(`ALTER TABLE builds ADD COLUMN rate_limited_retries INTEGER DEFAULT 0`)
 	db.conn.Exec(`ALTER TABLE builds ADD COLUMN prompt_tokens INTEGER DEFAULT 0`)
 	db.conn.Exec(`ALTER TABLE builds ADD COLUMN completion_tokens INTEGER DEFAULT 0`)
@@ -288,7 +288,7 @@ func (db *DB) migrate() error {
 			success_count   INTEGER DEFAULT 0,
 			skipped_count   INTEGER DEFAULT 0,
 			failed_count    INTEGER DEFAULT 0,
-			status          TEXT NOT NULL DEFAULT 'pending',
+			status          VARCHAR(255) NOT NULL DEFAULT 'pending',
 			max_concurrency INTEGER DEFAULT 2,
 			night_mode_only TINYINT(1) DEFAULT 0,
 			started_at      DATETIME,
@@ -299,7 +299,7 @@ func (db *DB) migrate() error {
 			id                INT AUTO_INCREMENT PRIMARY KEY,
 			batch_id          VARCHAR(255) NOT NULL,
 			repo_id           VARCHAR(255) NOT NULL,
-			status            TEXT NOT NULL DEFAULT 'pending',
+			status            VARCHAR(255) NOT NULL DEFAULT 'pending',
 			duration_sec      INTEGER DEFAULT 0,
 			prompt_tokens     BIGINT DEFAULT 0,
 			completion_tokens BIGINT DEFAULT 0,
@@ -314,7 +314,7 @@ func (db *DB) migrate() error {
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS daily_token_usage (
 			date               TEXT NOT NULL,
-			business_domain    TEXT NOT NULL DEFAULT '',
+			business_domain    VARCHAR(255) NOT NULL DEFAULT '',
 			prompt_tokens      INTEGER DEFAULT 0,
 			completion_tokens  INTEGER DEFAULT 0,
 			total_tokens       INTEGER DEFAULT 0,
@@ -332,7 +332,7 @@ func (db *DB) migrate() error {
 			mount_point TEXT NOT NULL,
 			total_bytes INTEGER NOT NULL DEFAULT 0,
 			used_bytes  INTEGER NOT NULL DEFAULT 0,
-			status      TEXT NOT NULL DEFAULT 'active',
+			status      VARCHAR(255) NOT NULL DEFAULT 'active',
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		) ENGINE=InnoDB`,
@@ -341,7 +341,7 @@ func (db *DB) migrate() error {
 			repo_id        TEXT NOT NULL,
 			from_volume_id TEXT NOT NULL,
 			to_volume_id   TEXT NOT NULL,
-			status         TEXT NOT NULL DEFAULT 'planned',
+			status         VARCHAR(255) NOT NULL DEFAULT 'planned',
 			error          TEXT,
 			started_at     DATETIME,
 			finished_at    DATETIME,
@@ -357,9 +357,9 @@ func (db *DB) migrate() error {
 	}
 
 	// Schema migrations for existing tables
-	_, _ = db.conn.Exec(`ALTER TABLE repos ADD COLUMN volume_id TEXT DEFAULT ''`)
+	_, _ = db.conn.Exec(`ALTER TABLE repos ADD COLUMN volume_id VARCHAR(255) DEFAULT ''`)
 	_, _ = db.conn.Exec(`ALTER TABLE repos ADD COLUMN size_bytes INTEGER DEFAULT 0`)
-	_, _ = db.conn.Exec(`ALTER TABLE daily_token_usage ADD COLUMN business_domain TEXT DEFAULT ''`)
+	_, _ = db.conn.Exec(`ALTER TABLE daily_token_usage ADD COLUMN business_domain VARCHAR(255) DEFAULT ''`)
 	_, _ = db.conn.Exec(`ALTER TABLE daily_token_usage ADD COLUMN throttled_count INTEGER DEFAULT 0`)
 	_, _ = db.conn.Exec(`ALTER TABLE daily_token_usage ADD COLUMN total_duration_sec INTEGER DEFAULT 0`)
 	_, _ = db.conn.Exec(`CREATE UNIQUE INDEX idx_daily_tokens_pk ON daily_token_usage(date, business_domain)`)
