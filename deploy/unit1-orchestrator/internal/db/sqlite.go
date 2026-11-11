@@ -210,7 +210,7 @@ func (db *DB) migrate() error {
 			started_at  DATETIME,
 			finished_at DATETIME,
 			log         LONGTEXT,
-			error       TEXT,
+			error       TEXT
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS qa_sessions (
 			id          INT AUTO_INCREMENT PRIMARY KEY,
@@ -219,7 +219,7 @@ func (db *DB) migrate() error {
 			user_id VARCHAR(255) NOT NULL,
 			question    TEXT NOT NULL,
 			answer      TEXT,
-			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS projects (
 			id              VARCHAR(255) PRIMARY KEY,
@@ -241,7 +241,7 @@ func (db *DB) migrate() error {
 			role        VARCHAR(255) DEFAULT 'service',
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(project_id, repo_id),
-			UNIQUE(project_id, alias_name),
+			UNIQUE(project_id, alias_name)
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS project_qa_sessions (
 			id          INT AUTO_INCREMENT PRIMARY KEY,
@@ -250,7 +250,7 @@ func (db *DB) migrate() error {
 			user_id VARCHAR(255) NOT NULL,
 			question    TEXT NOT NULL,
 			answer      TEXT,
-			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		) ENGINE=InnoDB`,
 	}
 
@@ -303,7 +303,7 @@ func (db *DB) migrate() error {
 			error             TEXT,
 			started_at        DATETIME,
 			finished_at       DATETIME,
-			UNIQUE(batch_id, repo_id),
+			UNIQUE(batch_id, repo_id)
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS daily_token_usage (
 			date VARCHAR(255) NOT NULL,
