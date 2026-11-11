@@ -9,17 +9,20 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 // Builder handles the openwiki update and static export process for a single repo.
 type Builder struct {
+	mu              sync.RWMutex
 	OpenwikiCLI     string // path to openwiki CLI
 	OpenwikiDistDir string // path to openwiki dist/ directory (for visualize assets)
 	VendorAssetsDir string // path to pre-downloaded vendor/ assets
 	StaticOutputDir string // base output dir (e.g. /var/www/openwiki-static)
 	DefaultLanguage string // default language tag for init/update (e.g. "zh-CN")
 	LLMBaseURL      string // optional base URL for internal LLM proxy
+	LLMTimeoutSec   int    // configured per-request LLM timeout in seconds (default 600)
 }
 
 // NewBuilder creates a new Builder instance.
@@ -40,12 +43,35 @@ func NewBuilder(cli, vendorDir, distDir, outputDir string, defaultLang ...string
 		OpenwikiDistDir: distDir,
 		StaticOutputDir: outputDir,
 		DefaultLanguage: lang,
+		LLMTimeoutSec:   600,
 	}
 }
 
 // SetLLMBaseURL sets the base URL for internal LLM gateway forwarding.
 func (b *Builder) SetLLMBaseURL(url string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.LLMBaseURL = url
+}
+
+// SetLLMTimeoutSec updates the LLM request timeout propagated to openwiki CLI subprocesses.
+func (b *Builder) SetLLMTimeoutSec(sec int) {
+	if sec <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.LLMTimeoutSec = sec
+}
+
+// GetLLMTimeoutSec returns the configured LLM request timeout in seconds (default 600).
+func (b *Builder) GetLLMTimeoutSec() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.LLMTimeoutSec <= 0 {
+		return 600
+	}
+	return b.LLMTimeoutSec
 }
 
 // BuildResult holds the outcome of a build.
@@ -179,22 +205,62 @@ func (b *Builder) createOpenWikiCmdWithBuildID(buildID int64, repoPath string, a
 		}
 	}
 
-	// LLM Proxy Environment Injection
-	if b.LLMBaseURL != "" {
-		baseURL := strings.TrimSuffix(b.LLMBaseURL, "/")
+	// LLM Proxy & Timeout Environment Injection
+	b.mu.RLock()
+	llmBaseURL := b.LLMBaseURL
+	llmTimeoutSec := b.LLMTimeoutSec
+	b.mu.RUnlock()
+	if llmTimeoutSec <= 0 {
+		llmTimeoutSec = 600
+	}
+
+	if llmBaseURL != "" {
+		baseURL := strings.TrimSuffix(llmBaseURL, "/")
 		if buildID > 0 {
 			baseURL = fmt.Sprintf("%s/build/%d", baseURL, buildID)
 		}
-		env = append(env, fmt.Sprintf("OPENAI_BASE_URL=%s", baseURL))
-		env = append(env, fmt.Sprintf("OPENAI_COMPATIBLE_BASE_URL=%s", baseURL))
+		env = upsertEnv(env, "OPENAI_BASE_URL", baseURL)
+		env = upsertEnv(env, "OPENAI_COMPATIBLE_BASE_URL", baseURL)
+
+		// When routing through LLMProxy, give the outer CLI client more headroom than
+		// a single proxy attempt timeout so proxy retries/backoff complete without racing,
+		// and keep inner CLI retries minimal unless explicitly overridden by the user.
+		cliTimeoutSec := llmTimeoutSec*2 + 120
+		env = upsertEnv(env, "OPENWIKI_LLM_TIMEOUT_SEC", fmt.Sprintf("%d", cliTimeoutSec))
+		env = setEnvIfUnset(env, "OPENWIKI_PROVIDER_RETRY_ATTEMPTS", "1")
+	} else {
+		env = upsertEnv(env, "OPENWIKI_LLM_TIMEOUT_SEC", fmt.Sprintf("%d", llmTimeoutSec))
 	}
 	if buildID > 0 {
-		env = append(env, fmt.Sprintf("OPENAI_API_KEY=ow-build-%d", buildID))
+		env = upsertEnv(env, "OPENAI_API_KEY", fmt.Sprintf("ow-build-%d", buildID))
 	}
+	// Avoid 30s PostHog shutdown timeout hangs in private / air-gapped environments unless explicitly configured.
+	env = setEnvIfUnset(env, "OPENWIKI_TELEMETRY_DISABLED", "1")
 
 	cmd.Env = env
 
 	return cmd
+}
+
+func upsertEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	for i, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			env[i] = prefix + value
+			return env
+		}
+	}
+	return append(env, prefix+value)
+}
+
+func setEnvIfUnset(env []string, key, value string) []string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return env
+		}
+	}
+	return append(env, prefix+value)
 }
 
 // BuildRepo runs the full build pipeline for a single repository.

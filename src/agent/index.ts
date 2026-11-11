@@ -120,6 +120,7 @@ import {
   resolveProviderLocation,
   resolveProviderRegion,
   resolveProviderRetryAttempts,
+  resolveProviderTimeoutMs,
   type OpenWikiProvider,
 } from "../config/constants.js";
 import {
@@ -215,6 +216,7 @@ export async function runOpenWikiAgent(
       config.provider,
       config.modelId,
       config.providerRetryAttempts,
+      config.providerTimeoutMs,
       openWikiIgnore,
     );
   } catch (error) {
@@ -244,6 +246,7 @@ async function resolveRunConfig(
   provider: OpenWikiProvider;
   modelId: string;
   providerRetryAttempts: number;
+  providerTimeoutMs: number;
 }> {
   try {
     const provider = resolveConfiguredProvider();
@@ -283,8 +286,10 @@ async function resolveRunConfig(
     emitDebug(options, `model=${modelId}`);
     const providerRetryAttempts = resolveProviderRetryAttempts();
     emitDebug(options, `provider.retryAttempts=${providerRetryAttempts}`);
+    const providerTimeoutMs = resolveProviderTimeoutMs();
+    emitDebug(options, `provider.timeoutMs=${providerTimeoutMs}`);
 
-    return { provider, modelId, providerRetryAttempts };
+    return { provider, modelId, providerRetryAttempts, providerTimeoutMs };
   } catch (error) {
     tagErrorStage(error, "config");
     throw error;
@@ -425,6 +430,30 @@ function createOpenWikiAgentGraph(
   });
 }
 
+async function applyNodeFetchTimeouts(timeoutMs: number): Promise<void> {
+  if (timeoutMs <= 300_000) {
+    return;
+  }
+  try {
+    const undiciModule = await import("undici");
+    const AgentCtor = undiciModule.Agent;
+    const setGlobalDispatcher = undiciModule.setGlobalDispatcher;
+    if (
+      typeof AgentCtor === "function" &&
+      typeof setGlobalDispatcher === "function"
+    ) {
+      setGlobalDispatcher(
+        new AgentCtor({
+          headersTimeout: timeoutMs,
+          bodyTimeout: timeoutMs,
+        }),
+      );
+    }
+  } catch {
+    // Best-effort: continue with default global fetch dispatcher if undici is unavailable.
+  }
+}
+
 async function runOpenWikiAgentCore(
   command: OpenWikiCommand,
   cwd: string,
@@ -432,8 +461,10 @@ async function runOpenWikiAgentCore(
   provider: OpenWikiProvider,
   modelId: string,
   providerRetryAttempts: number,
+  providerTimeoutMs: number,
   openWikiIgnore: OpenWikiIgnore,
 ): Promise<OpenWikiRunResult> {
+  await applyNodeFetchTimeouts(providerTimeoutMs);
   const outputMode = options.outputMode ?? "local-wiki";
   const context = await inStage(
     "build",
@@ -452,7 +483,13 @@ async function runOpenWikiAgentCore(
   emitDebug(options, "openwiki.snapshot=created");
   const model = inStageSync(
     "build",
-    () => createModel(provider, modelId, providerRetryAttempts),
+    () =>
+      createModel(
+        provider,
+        modelId,
+        providerRetryAttempts,
+        providerTimeoutMs,
+      ),
     { errorClass: "build_error", errorDetail: "model" },
   );
   emitDebug(options, `model.provider=${provider}`);
@@ -1021,6 +1058,7 @@ export function createModel(
   provider: OpenWikiProvider,
   modelId: string,
   providerRetryAttempts: number,
+  providerTimeoutMs = resolveProviderTimeoutMs(),
 ) {
   const retryOptions = { maxRetries: providerRetryAttempts };
 
@@ -1054,6 +1092,7 @@ export function createModel(
       projectId,
       location,
       retryOptions,
+      providerTimeoutMs,
     );
   }
 
@@ -1063,6 +1102,7 @@ export function createModel(
     return new ChatAnthropic(modelId, {
       apiKey: getProviderApiKey(provider),
       ...(baseURL ? { anthropicApiUrl: baseURL } : {}),
+      clientOptions: { timeout: providerTimeoutMs },
       ...retryOptions,
     });
   }
@@ -1090,6 +1130,7 @@ export function createModel(
       // every generation — including the non-streaming `.invoke()` calls
       // DeepAgents' agent node issues internally.
       streaming: true,
+      timeout: providerTimeoutMs,
       ...retryOptions,
       configuration: {
         baseURL: CODEX_RESPONSES_BASE_URL,
@@ -1134,6 +1175,7 @@ export function createModel(
         }
       : undefined,
     model: modelId,
+    timeout: providerTimeoutMs,
     useResponsesApi: providerUsesResponsesApi(provider, modelId),
     ...retryOptions,
   });
@@ -1201,6 +1243,7 @@ function createGeminiEnterpriseModel(
   projectId: string,
   location: string,
   retryOptions: { maxRetries: number },
+  timeoutMs: number,
 ) {
   switch (resolveVertexSurface(modelId)) {
     case "anthropic":
@@ -1229,6 +1272,7 @@ function createGeminiEnterpriseModel(
                 projectId,
                 region: location,
                 dangerouslyAllowBrowser: true,
+                timeout: timeoutMs,
               }),
           ),
         ...retryOptions,
@@ -1246,6 +1290,7 @@ function createGeminiEnterpriseModel(
           fetch: createVertexAuthFetch(),
         },
         model: toVertexPublisherModel(modelId),
+        timeout: timeoutMs,
         ...retryOptions,
       });
 

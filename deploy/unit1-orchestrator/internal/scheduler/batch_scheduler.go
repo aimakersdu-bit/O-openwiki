@@ -38,17 +38,21 @@ type BatchStatusResponse struct {
 
 // BatchScheduler manages the non-disruptive, rate-limited batch execution of wiki builds across repositories.
 type BatchScheduler struct {
-	db              *db.DB
-	pipeline        *BuildPipeline
-	limiter         *DynamicRateLimiter
-	mu              sync.RWMutex
-	activeSlots     map[int]*WorkerSlotInfo
-	runningBatchID  string
-	cancelFunc      context.CancelFunc
-	pauseCond       *sync.Cond
-	isPaused        bool
-	windowStartHour int
-	windowEndHour   int
+	db               *db.DB
+	pipeline         *BuildPipeline
+	limiter          *DynamicRateLimiter
+	mu               sync.RWMutex
+	activeSlots      map[int]*WorkerSlotInfo
+	runningBatchID   string
+	cancelFunc       context.CancelFunc
+	pauseCond        *sync.Cond
+	isPaused         bool
+	windowStartHour  int
+	windowEndHour    int
+	throttleCap      int
+	throttleUntil    time.Time
+	throttleCooldown time.Duration
+	nowFunc          func() time.Time
 	onBatchCompleted func(batchID string, tasks []db.BatchTask)
 }
 
@@ -62,16 +66,85 @@ func (bs *BatchScheduler) SetOnBatchCompleted(fn func(batchID string, tasks []db
 // NewBatchScheduler constructs a new BatchScheduler.
 func NewBatchScheduler(database *db.DB, pipeline *BuildPipeline, limiter *DynamicRateLimiter) *BatchScheduler {
 	bs := &BatchScheduler{
-		db:              database,
-		pipeline:        pipeline,
-		limiter:         limiter,
-		activeSlots:     make(map[int]*WorkerSlotInfo),
-		windowStartHour: 22,
-		windowEndHour:   7,
+		db:               database,
+		pipeline:         pipeline,
+		limiter:          limiter,
+		activeSlots:      make(map[int]*WorkerSlotInfo),
+		windowStartHour:  22,
+		windowEndHour:    7,
+		throttleCooldown: 10 * time.Minute,
+		nowFunc:          time.Now,
 	}
 	bs.pauseCond = sync.NewCond(&bs.mu)
 	_, _ = bs.RecoverInterruptedTasks()
 	return bs
+}
+
+func (bs *BatchScheduler) now() time.Time {
+	bs.mu.RLock()
+	fn := bs.nowFunc
+	bs.mu.RUnlock()
+	if fn != nil {
+		return fn()
+	}
+	return time.Now()
+}
+
+// SetThrottleCooldown overrides the auto-throttle recovery cooldown duration (useful for tests).
+func (bs *BatchScheduler) SetThrottleCooldown(d time.Duration) {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	bs.throttleCooldown = d
+}
+
+// SetNowFunc overrides the time source (useful for tests).
+func (bs *BatchScheduler) SetNowFunc(fn func() time.Time) {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	bs.nowFunc = fn
+}
+
+// ClearAutoThrottle lifts any active 429 concurrency cap so configured limits apply immediately.
+func (bs *BatchScheduler) ClearAutoThrottle() {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	bs.throttleCap = 0
+	bs.throttleUntil = time.Time{}
+}
+
+// RecordAutoThrottle steps down concurrency by 1 (minimum 1) and locks a recovery cooldown
+// so ApplyDayNightConcurrency will not immediately reset it back to the configured ceiling.
+func (bs *BatchScheduler) RecordAutoThrottle() int {
+	bs.mu.Lock()
+	cur := bs.limiter.GetConcurrency()
+	nextConc := cur - 1
+	if nextConc < 1 {
+		nextConc = 1
+	}
+	if bs.throttleCap <= 0 || nextConc < bs.throttleCap {
+		bs.throttleCap = nextConc
+	} else {
+		nextConc = bs.throttleCap
+	}
+	cooldown := bs.throttleCooldown
+	if cooldown <= 0 {
+		cooldown = 10 * time.Minute
+	}
+	nowFn := bs.nowFunc
+	now := time.Now()
+	if nowFn != nil {
+		now = nowFn()
+	}
+	bs.throttleUntil = now.Add(cooldown)
+	runningID := bs.runningBatchID
+	bs.mu.Unlock()
+
+	bs.limiter.SetConcurrency(nextConc)
+	if runningID != "" && bs.db != nil {
+		_ = bs.db.UpdateBatchConcurrency(runningID, nextConc)
+	}
+	log.Printf("[batch_scheduler] Auto-throttled concurrency from %d to %d (cooldown %v until %s)", cur, nextConc, cooldown, bs.throttleUntil.Format(time.RFC3339))
+	return nextConc
 }
 
 // RecoverInterruptedTasks resets any residual running batch tasks to pending upon startup.
@@ -87,6 +160,7 @@ func (bs *BatchScheduler) SetConcurrency(batchID string, concurrency int) error 
 	if concurrency < 1 {
 		concurrency = 1
 	}
+	bs.ClearAutoThrottle()
 	bs.limiter.SetConcurrency(concurrency)
 	if batchID != "" {
 		_ = bs.db.UpdateBatchConcurrency(batchID, concurrency)
@@ -96,6 +170,7 @@ func (bs *BatchScheduler) SetConcurrency(batchID string, concurrency int) error 
 }
 
 // ApplyDayNightConcurrency checks the current hour and sets the concurrency according to system_settings.
+// When an auto-throttle cooldown is active, it respects the throttled ceiling and steps back up +1 per cooldown after expiry.
 // Day: 07:00 - 22:00 (default day_max_concurrency: 2)
 // Night: 22:00 - 07:00 (default night_max_concurrency: 4)
 func (bs *BatchScheduler) ApplyDayNightConcurrency(now time.Time) int {
@@ -116,6 +191,33 @@ func (bs *BatchScheduler) ApplyDayNightConcurrency(now time.Time) int {
 			}
 		}
 	}
+
+	bs.mu.Lock()
+	if bs.throttleCap > 0 {
+		if now.Before(bs.throttleUntil) {
+			if targetConc > bs.throttleCap {
+				targetConc = bs.throttleCap
+			}
+		} else {
+			// Cooldown elapsed: step up gradually by +1 instead of jumping straight back to ceiling.
+			nextCap := bs.throttleCap + 1
+			cooldown := bs.throttleCooldown
+			if cooldown <= 0 {
+				cooldown = 10 * time.Minute
+			}
+			if nextCap >= targetConc {
+				bs.throttleCap = 0
+				bs.throttleUntil = time.Time{}
+				log.Printf("[batch_scheduler] Auto-throttle recovered to configured concurrency %d", targetConc)
+			} else {
+				bs.throttleCap = nextCap
+				bs.throttleUntil = now.Add(cooldown)
+				targetConc = nextCap
+				log.Printf("[batch_scheduler] Auto-throttle stepping up concurrency to %d", targetConc)
+			}
+		}
+	}
+	bs.mu.Unlock()
 
 	cur := bs.limiter.GetConcurrency()
 	if cur != targetConc {
@@ -353,8 +455,8 @@ func (bs *BatchScheduler) runBatchLoop(ctx context.Context, batchID string) {
 			return
 		}
 
-		// Auto-switch concurrency based on day/night window and system_settings
-		bs.ApplyDayNightConcurrency(time.Now())
+		// Auto-switch concurrency based on day/night window, cooldown lock, and system_settings
+		bs.ApplyDayNightConcurrency(bs.now())
 
 		// Night window throttling check
 		if run.NightModeOnly && !IsNightWindow(time.Now(), bs.windowStartHour, bs.windowEndHour) {
@@ -430,6 +532,9 @@ func (bs *BatchScheduler) runBatchLoop(ctx context.Context, batchID string) {
 				bs.pauseCond.Wait()
 			}
 			bs.mu.Unlock()
+
+			// Re-evaluate day/night window & auto-throttle step-up mid-batch before acquiring next slot
+			bs.ApplyDayNightConcurrency(bs.now())
 
 			// Acquire slot with dynamic rate limiter
 			slot, err := bs.limiter.AcquireSlot(ctx)

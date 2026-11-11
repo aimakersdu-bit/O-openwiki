@@ -376,6 +376,8 @@ func (db *DB) migrate() error {
 		"max_rpm":               "0",
 		"day_max_concurrency":   "2",
 		"night_max_concurrency": "4",
+		"llm_timeout_sec":       "600",
+		"llm_proxy_max_retries": "6",
 	}
 	for k, v := range defaultSettings {
 		db.conn.Exec(`INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)`, k, v)

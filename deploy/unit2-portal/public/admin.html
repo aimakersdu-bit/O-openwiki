@@ -330,6 +330,14 @@
             <label for="quotaNightConcurrency">夜间并发构建数 (22:00 ~ 07:00)</label>
             <input type="number" id="quotaNightConcurrency" min="1" max="16" placeholder="例如 4">
           </div>
+          <div class="form-group">
+            <label for="quotaLLMTimeoutSec">单次 LLM 请求超时 (秒，默认 600s=10分钟)</label>
+            <input type="number" id="quotaLLMTimeoutSec" min="10" max="3600" step="10" placeholder="例如 600">
+          </div>
+          <div class="form-group">
+            <label for="quotaLLMMaxRetries">网关 429/502 最大重试次数</label>
+            <input type="number" id="quotaLLMMaxRetries" min="0" max="20" step="1" placeholder="例如 6">
+          </div>
         </div>
 
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border-color, #334155);">

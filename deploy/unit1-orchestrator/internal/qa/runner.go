@@ -24,7 +24,7 @@ func NewRunner(cli string, timeout time.Duration) *Runner {
 		cli = "openwiki"
 	}
 	if timeout <= 0 {
-		timeout = 5 * time.Minute
+		timeout = 10 * time.Minute
 	}
 	return &Runner{
 		OpenwikiCLI: cli,

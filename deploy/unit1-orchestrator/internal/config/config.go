@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 // Config holds all orchestrator configuration.
@@ -23,10 +24,12 @@ type Config struct {
 	DBPath          string `json:"db_path"`             // path to SQLite database file
 
 	// OpenWiki provider settings
-	OpenwikiProvider  string `json:"openwiki_provider"`    // e.g. "openai", "gemini"
-	OpenwikiModel     string `json:"openwiki_model"`       // e.g. "gpt-4o"
-	OpenwikiAPIKey    string `json:"openwiki_api_key"`     // LLM API key
-	OpenAIUpstreamURL string `json:"openai_upstream_url"`  // Upstream OpenAI-compatible API base URL (e.g. "https://api.openai.com/v1")
+	OpenwikiProvider   string `json:"openwiki_provider"`     // e.g. "openai", "gemini"
+	OpenwikiModel      string `json:"openwiki_model"`        // e.g. "gpt-4o"
+	OpenwikiAPIKey     string `json:"openwiki_api_key"`      // LLM API key
+	OpenAIUpstreamURL  string `json:"openai_upstream_url"`   // Upstream OpenAI-compatible API base URL (e.g. "https://api.openai.com/v1")
+	LLMTimeoutSec      int    `json:"llm_timeout_sec"`       // Upstream first-header & CLI LLM request timeout in seconds (default 600 = 10 min)
+	LLMProxyMaxRetries int    `json:"llm_proxy_max_retries"` // Max retry attempts in LLMProxy on 429/502/503/504/timeout (default 6)
 
 	// QA settings
 	MaxConcurrentQA  int    `json:"max_concurrent_qa"`   // max concurrent chat processes
@@ -62,8 +65,10 @@ func DefaultConfig() *Config {
 		ReposBaseDir:     filepath.Join(home, ".openwiki", "repos"),
 		ProjectsBaseDir:  filepath.Join(home, ".openwiki", "projects"),
 		LogBaseDir:       filepath.Join(home, ".openwiki", "disk_log"),
-		DBPath:           "orchestrator.db",
-		MaxConcurrentQA:  5,
+		DBPath:             "orchestrator.db",
+		LLMTimeoutSec:      600,
+		LLMProxyMaxRetries: 6,
+		MaxConcurrentQA:    5,
 		QATimeoutSec:     600,
 		QADaemonScript:   "scripts/qa-daemon.js",
 		QASocketDir:      os.TempDir(),
@@ -159,5 +164,19 @@ func overrideEnv(cfg *Config) {
 	}
 	if envSecret := os.Getenv("OPENWIKI_HMAC_SECRET"); envSecret != "" {
 		cfg.HMACSecret = envSecret
+	}
+	if envTimeout := os.Getenv("LLM_TIMEOUT_SEC"); envTimeout != "" {
+		if sec, err := strconv.Atoi(envTimeout); err == nil && sec > 0 {
+			cfg.LLMTimeoutSec = sec
+		}
+	} else if envOwTimeout := os.Getenv("OPENWIKI_LLM_TIMEOUT_SEC"); envOwTimeout != "" {
+		if sec, err := strconv.Atoi(envOwTimeout); err == nil && sec > 0 {
+			cfg.LLMTimeoutSec = sec
+		}
+	}
+	if envRetries := os.Getenv("LLM_PROXY_MAX_RETRIES"); envRetries != "" {
+		if n, err := strconv.Atoi(envRetries); err == nil && n >= 0 {
+			cfg.LLMProxyMaxRetries = n
+		}
 	}
 }

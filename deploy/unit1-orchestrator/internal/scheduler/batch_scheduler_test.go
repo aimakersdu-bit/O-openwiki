@@ -301,3 +301,64 @@ func TestBatchSchedulerRetryFailedTasks(t *testing.T) {
 	}
 	t.Fatalf("timed out waiting for retried task fail-repo to be re-processed by scheduler loop")
 }
+
+func TestBatchSchedulerAutoThrottleCooldownAndRecovery(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_throttle_cooldown.db")
+	_ = db.InitDB(dbPath)
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open db failed: %v", err)
+	}
+	defer database.Close()
+
+	_ = database.SetSetting("day_max_concurrency", "4")
+	_ = database.SetSetting("night_max_concurrency", "6")
+
+	builder := scheduler.NewBuilder("openwiki", tmpDir, tmpDir, tmpDir)
+	limiter := scheduler.NewDynamicRateLimiter(4)
+	pipeline := scheduler.NewBuildPipeline(database, builder, limiter)
+	sched := scheduler.NewBatchScheduler(database, pipeline, limiter)
+	sched.SetThrottleCooldown(10 * time.Minute)
+
+	baseTime := time.Date(2026, 11, 11, 14, 0, 0, 0, time.Local)
+	curNow := baseTime
+	sched.SetNowFunc(func() time.Time { return curNow })
+
+	if c := sched.ApplyDayNightConcurrency(curNow); c != 4 || limiter.GetConcurrency() != 4 {
+		t.Fatalf("expected initial day concurrency 4, got %d (limiter=%d)", c, limiter.GetConcurrency())
+	}
+
+	// Trigger auto-throttle -> drops 4 -> 3 and locks cooldown
+	if next := sched.RecordAutoThrottle(); next != 3 || limiter.GetConcurrency() != 3 {
+		t.Fatalf("expected throttled concurrency 3, got %d (limiter=%d)", next, limiter.GetConcurrency())
+	}
+
+	// Within cooldown, ApplyDayNightConcurrency MUST NOT reset back to 4
+	curNow = baseTime.Add(3 * time.Minute)
+	if c := sched.ApplyDayNightConcurrency(curNow); c != 3 || limiter.GetConcurrency() != 3 {
+		t.Fatalf("expected concurrency held at 3 during cooldown, got %d (limiter=%d)", c, limiter.GetConcurrency())
+	}
+
+	// Trigger second throttle -> drops 3 -> 2
+	if next := sched.RecordAutoThrottle(); next != 2 || limiter.GetConcurrency() != 2 {
+		t.Fatalf("expected throttled concurrency 2, got %d (limiter=%d)", next, limiter.GetConcurrency())
+	}
+
+	// After 10m cooldown expires -> steps up gradually +1 (2 -> 3)
+	curNow = curNow.Add(11 * time.Minute)
+	if c := sched.ApplyDayNightConcurrency(curNow); c != 3 || limiter.GetConcurrency() != 3 {
+		t.Fatalf("expected step-up to 3 after cooldown, got %d (limiter=%d)", c, limiter.GetConcurrency())
+	}
+
+	// Manual SetConcurrency clears throttle lock immediately
+	if err := sched.SetConcurrency("", 4); err != nil {
+		t.Fatalf("SetConcurrency failed: %v", err)
+	}
+	if limiter.GetConcurrency() != 4 {
+		t.Fatalf("expected manual concurrency 4, got %d", limiter.GetConcurrency())
+	}
+	if c := sched.ApplyDayNightConcurrency(curNow); c != 4 {
+		t.Fatalf("expected concurrency 4 after manual reset, got %d", c)
+	}
+}

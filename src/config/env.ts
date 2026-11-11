@@ -58,7 +58,10 @@ import {
   OPENWIKI_MODEL_ID_ENV_KEY,
   OPENWIKI_PROVIDER_ENV_KEY,
   OPENWIKI_PROVIDER_RETRY_ATTEMPTS_ENV_KEY,
+  OPENWIKI_LLM_TIMEOUT_MS_ENV_KEY,
+  OPENWIKI_LLM_TIMEOUT_SEC_ENV_KEY,
   resolveProviderRetryAttempts,
+  resolveProviderTimeoutMs,
 } from "./constants.js";
 import { isFileNotFoundError } from "../platform/fs-errors.js";
 import { restrictDirToCurrentUser } from "../platform/windows-acl.js";
@@ -129,6 +132,8 @@ export const MANAGED_ENV_KEYS = [
   OPENWIKI_PROVIDER_ENV_KEY,
   OPENWIKI_MODEL_ID_ENV_KEY,
   OPENWIKI_PROVIDER_RETRY_ATTEMPTS_ENV_KEY,
+  OPENWIKI_LLM_TIMEOUT_MS_ENV_KEY,
+  OPENWIKI_LLM_TIMEOUT_SEC_ENV_KEY,
   OPENWIKI_NOTION_TOKEN_ENV_KEY,
   OPENWIKI_NOTION_MCP_CLIENT_ID_ENV_KEY,
   OPENWIKI_NOTION_MCP_ACCESS_TOKEN_ENV_KEY,
@@ -389,8 +394,11 @@ function createCredentialDiagnostic(
           ? getProviderWarnings(value)
           : key === OPENWIKI_PROVIDER_RETRY_ATTEMPTS_ENV_KEY
             ? getRetryAttemptsWarnings(value)
-            : (getBaseUrlDiagnosticWarnings(key, value) ??
-              getCredentialWarnings(value)),
+            : key === OPENWIKI_LLM_TIMEOUT_MS_ENV_KEY ||
+                key === OPENWIKI_LLM_TIMEOUT_SEC_ENV_KEY
+              ? getTimeoutWarnings(key, value)
+              : (getBaseUrlDiagnosticWarnings(key, value) ??
+                getCredentialWarnings(value)),
   };
 }
 
@@ -449,6 +457,8 @@ function isNonSecretDiagnosticKey(key: string): boolean {
     key === OPENWIKI_MODEL_ID_ENV_KEY ||
     key === OPENWIKI_PROVIDER_ENV_KEY ||
     key === OPENWIKI_PROVIDER_RETRY_ATTEMPTS_ENV_KEY ||
+    key === OPENWIKI_LLM_TIMEOUT_MS_ENV_KEY ||
+    key === OPENWIKI_LLM_TIMEOUT_SEC_ENV_KEY ||
     key === OPENWIKI_OPENROUTER_PROVIDER_ONLY_ENV_KEY ||
     key === ANTHROPIC_BASE_URL_ENV_KEY ||
     key === BASETEN_BASE_URL_ENV_KEY ||
@@ -511,6 +521,18 @@ function getRetryAttemptsWarnings(value: string): string[] {
     return [];
   } catch {
     return ["invalid retry attempts"];
+  }
+}
+
+function getTimeoutWarnings(key: string, value: string): string[] {
+  try {
+    resolveProviderTimeoutMs({
+      [key]: value,
+    });
+
+    return [];
+  } catch {
+    return ["invalid LLM timeout"];
   }
 }
 

@@ -3,7 +3,9 @@ package llmproxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,7 +14,23 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+)
+
+const (
+	// DefaultLLMTimeout is the default 10-minute timeout awaiting upstream response headers.
+	DefaultLLMTimeout = 600 * time.Second
+	// DefaultMaxRetries is the default maximum retry count for retryable upstream failures.
+	DefaultMaxRetries = 6
+	// DefaultMaxTransportRetries limits retries on network/timeout/502/504 errors to prevent excessive stalling.
+	DefaultMaxTransportRetries = 2
+	// defaultThrottleWindow is the sliding window duration for counting 429 events.
+	defaultThrottleWindow = 60 * time.Second
+	// defaultThrottleThreshold is the number of 429s within the window needed to trigger auto-throttle.
+	defaultThrottleThreshold = 3
+	// defaultThrottleCooldown prevents cascading multiple step-downs from a single concurrent burst.
+	defaultThrottleCooldown = 30 * time.Second
 )
 
 // BuildUsage tracks accumulated token telemetry and rate limit retries for a specific build.
@@ -25,21 +43,30 @@ type BuildUsage struct {
 }
 
 // LLMProxy is an in-process OpenAI-compatible proxy with dynamic TPM/RPM rate limiting,
-// transparent 429 adaptive backoff retries, and token accounting per build.
+// transparent 429/502/timeout adaptive backoff retries, and token accounting per build.
 type LLMProxy struct {
 	upstreamURL      string
 	realAPIKey       string
 	limiter          *TPMRateLimiter
 	throttleCallback func(delta int)
 
-	client      *http.Client
-	baseBackoff time.Duration
-	maxRetries  int
+	client                *http.Client
+	responseHeaderTimeout time.Duration
+	baseBackoff           time.Duration
+	maxRetries            int
+	maxTransportRetries   int
+	throttleWindow        time.Duration
+	throttleThreshold     int
+	throttleCooldown      time.Duration
+	nowFunc               func() time.Time
 
 	mu             sync.Mutex
 	buildUsage     map[string]*BuildUsage
 	consecutive429 int
+	events429      []time.Time
+	lastThrottleAt time.Time
 	total429Count  int
+	total502Count  int
 }
 
 // NewLLMProxy creates a new LLMProxy instance.
@@ -51,31 +78,90 @@ func NewLLMProxy(upstreamURL, realAPIKey string, limiter *TPMRateLimiter, thrott
 		limiter = NewTPMRateLimiter(0, 0)
 	}
 	return &LLMProxy{
-		upstreamURL:      strings.TrimSuffix(upstreamURL, "/"),
-		realAPIKey:       realAPIKey,
-		limiter:          limiter,
-		throttleCallback: throttleCallback,
-		client: &http.Client{
-			Timeout: 120 * time.Second,
-		},
-		baseBackoff: 5 * time.Second,
-		maxRetries:  4,
-		buildUsage:  make(map[string]*BuildUsage),
+		upstreamURL:           strings.TrimSuffix(upstreamURL, "/"),
+		realAPIKey:            realAPIKey,
+		limiter:               limiter,
+		throttleCallback:      throttleCallback,
+		client:                &http.Client{Timeout: 0},
+		responseHeaderTimeout: DefaultLLMTimeout,
+		baseBackoff:           5 * time.Second,
+		maxRetries:            DefaultMaxRetries,
+		maxTransportRetries:   DefaultMaxTransportRetries,
+		throttleWindow:        defaultThrottleWindow,
+		throttleThreshold:     defaultThrottleThreshold,
+		throttleCooldown:      defaultThrottleCooldown,
+		nowFunc:               time.Now,
+		buildUsage:            make(map[string]*BuildUsage),
 	}
 }
 
-// SetBaseBackoff sets the base backoff duration for 429 retries (useful for tests).
+// SetTimeout sets the per-attempt timeout while awaiting upstream response headers.
+// Streaming response bodies are allowed to continue beyond this once headers arrive.
+func (p *LLMProxy) SetTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.responseHeaderTimeout = d
+}
+
+// GetTimeout returns the configured per-attempt response header timeout.
+func (p *LLMProxy) GetTimeout() time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.responseHeaderTimeout <= 0 {
+		return DefaultLLMTimeout
+	}
+	return p.responseHeaderTimeout
+}
+
+// SetBaseBackoff sets the base backoff duration for retries (useful for tests).
 func (p *LLMProxy) SetBaseBackoff(d time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.baseBackoff = d
 }
 
-// SetMaxRetries configures the maximum retry attempts for 429/503.
+// SetMaxRetries configures the maximum retry attempts for retryable upstream failures.
 func (p *LLMProxy) SetMaxRetries(n int) {
+	if n < 0 {
+		n = 0
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.maxRetries = n
+}
+
+// GetMaxRetries returns the configured maximum retry attempts.
+func (p *LLMProxy) GetMaxRetries() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.maxRetries
+}
+
+// SetMaxTransportRetries configures the maximum retry attempts for 502/504/network/timeout errors.
+func (p *LLMProxy) SetMaxTransportRetries(n int) {
+	if n < 0 {
+		n = 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.maxTransportRetries = n
+}
+
+// SetThrottleCooldown overrides the cooldown between consecutive auto-throttle callbacks.
+func (p *LLMProxy) SetThrottleCooldown(d time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.throttleCooldown = d
+}
+
+// SetNowFunc overrides the time source (useful for tests).
+func (p *LLMProxy) SetNowFunc(fn func() time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.nowFunc = fn
 }
 
 // SetTransport sets the HTTP transport (useful for mocking without real network).
@@ -90,11 +176,18 @@ func (p *LLMProxy) GetLimiter() *TPMRateLimiter {
 	return p.limiter
 }
 
-// Get429Count returns the total number of 429 responses observed.
+// Get429Count returns the total number of 429/503 rate-limit responses observed.
 func (p *LLMProxy) Get429Count() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.total429Count
+}
+
+// Get502Count returns the total number of upstream transport/502/504 errors observed.
+func (p *LLMProxy) Get502Count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.total502Count
 }
 
 func (p *LLMProxy) getOrCreateUsage(buildID string) *BuildUsage {
@@ -142,26 +235,75 @@ func (p *LLMProxy) AddTokens(buildID string, prompt, completion, total int) {
 	u.TotalTokens += total
 }
 
+func (p *LLMProxy) now() time.Time {
+	if p.nowFunc != nil {
+		return p.nowFunc()
+	}
+	return time.Now()
+}
+
 func (p *LLMProxy) record429(buildID string) {
 	p.mu.Lock()
+	now := p.now()
 	p.total429Count++
 	p.consecutive429++
 	if buildID != "" {
 		u := p.getOrCreateUsage(buildID)
 		u.RateLimitedRetries++
 	}
-	consec := p.consecutive429
+
+	window := p.throttleWindow
+	if window <= 0 {
+		window = defaultThrottleWindow
+	}
+	threshold := p.throttleThreshold
+	if threshold <= 0 {
+		threshold = defaultThrottleThreshold
+	}
+	cooldown := p.throttleCooldown
+	if cooldown < 0 {
+		cooldown = 0
+	}
+
+	cutoff := now.Add(-window)
+	idx := 0
+	for idx < len(p.events429) && p.events429[idx].Before(cutoff) {
+		idx++
+	}
+	if idx > 0 {
+		p.events429 = p.events429[idx:]
+	}
+	p.events429 = append(p.events429, now)
+
+	shouldThrottle := false
+	windowCount := len(p.events429)
+	if windowCount >= threshold && p.throttleCallback != nil {
+		if p.lastThrottleAt.IsZero() || now.Sub(p.lastThrottleAt) >= cooldown {
+			shouldThrottle = true
+			p.lastThrottleAt = now
+			p.events429 = nil
+		}
+	}
+	cb := p.throttleCallback
 	p.mu.Unlock()
 
-	if consec >= 3 && p.throttleCallback != nil {
-		log.Printf("[LLMProxy] Upstream 429 triggered %d consecutive times; invoking auto-throttle callback", consec)
-		p.throttleCallback(-1)
+	if shouldThrottle && cb != nil {
+		log.Printf("[LLMProxy] Upstream 429 triggered %d times within %v; invoking auto-throttle callback", windowCount, window)
+		cb(-1)
 	}
+}
+
+func (p *LLMProxy) record502() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.total502Count++
 }
 
 func (p *LLMProxy) reset429() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// Reset only the strict consecutive counter; keep the sliding-window 429 history
+	// so interleaved 200/502 responses across concurrent slots cannot suppress throttling.
 	p.consecutive429 = 0
 }
 
@@ -171,14 +313,16 @@ func (p *LLMProxy) computeBackoff(attempt int, header http.Header) time.Duration
 	p.mu.Unlock()
 
 	// Check Retry-After header
-	if h := header.Get("Retry-After"); h != "" {
-		if sec, err := strconv.Atoi(strings.TrimSpace(h)); err == nil && sec > 0 {
-			return time.Duration(sec) * time.Second
+	if header != nil {
+		if h := header.Get("Retry-After"); h != "" {
+			if sec, err := strconv.Atoi(strings.TrimSpace(h)); err == nil && sec >= 0 {
+				return time.Duration(sec) * time.Second
+			}
 		}
-	}
-	if h := header.Get("x-ratelimit-reset-requests"); h != "" {
-		if d, err := time.ParseDuration(strings.TrimSpace(h)); err == nil && d > 0 {
-			return d
+		if h := header.Get("x-ratelimit-reset-requests"); h != "" {
+			if d, err := time.ParseDuration(strings.TrimSpace(h)); err == nil && d > 0 {
+				return d
+			}
 		}
 	}
 
@@ -188,6 +332,23 @@ func (p *LLMProxy) computeBackoff(attempt int, header http.Header) time.Duration
 	}
 	jitter := time.Duration(rand.Intn(50)) * time.Millisecond
 	return backoff + jitter
+}
+
+func (p *LLMProxy) doAttemptWithHeaderTimeout(parent context.Context, req *http.Request, headerTimeout time.Duration) (*http.Response, context.CancelFunc, bool, error) {
+	attemptCtx, cancelAttempt := context.WithCancel(parent)
+	var timedOut atomic.Bool
+	var timer *time.Timer
+	if headerTimeout > 0 {
+		timer = time.AfterFunc(headerTimeout, func() {
+			timedOut.Store(true)
+			cancelAttempt()
+		})
+	}
+	resp, err := p.client.Do(req.WithContext(attemptCtx))
+	if timer != nil {
+		timer.Stop()
+	}
+	return resp, cancelAttempt, timedOut.Load(), err
 }
 
 // ServeHTTP handles incoming OpenAI-compatible proxy requests.
@@ -247,9 +408,18 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetURL += "?" + r.URL.RawQuery
 	}
 
-	// Upstream call with retry loop for 429/503
-	var lastResp *http.Response
+	p.mu.Lock()
 	maxRetries := p.maxRetries
+	maxTransportRetries := p.maxTransportRetries
+	headerTimeout := p.responseHeaderTimeout
+	p.mu.Unlock()
+	if headerTimeout <= 0 {
+		headerTimeout = DefaultLLMTimeout
+	}
+
+	var lastErr error
+	var lastTimedOut bool
+	transportRetries := 0
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bytes.NewReader(bodyBytes))
@@ -272,23 +442,42 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			req.Header.Del("Authorization")
 		}
 
-		resp, err := p.client.Do(req)
+		resp, cancelAttempt, timedOut, err := p.doAttemptWithHeaderTimeout(r.Context(), req, headerTimeout)
 		if err != nil {
+			cancelAttempt()
 			if r.Context().Err() != nil {
 				return
 			}
-			http.Error(w, fmt.Sprintf("upstream proxy error: %v", err), http.StatusBadGateway)
-			return
+			p.record502()
+			lastErr = err
+			lastTimedOut = timedOut
+			if attempt < maxRetries && transportRetries < maxTransportRetries {
+				transportRetries++
+				backoff := p.computeBackoff(attempt, nil)
+				if backoff > 5*time.Second {
+					backoff = 5 * time.Second
+				}
+				log.Printf("[LLMProxy] Upstream error on attempt %d/%d (timedOut=%v): %v; retrying in %v", attempt+1, maxRetries+1, timedOut, err, backoff)
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(backoff):
+					continue
+				}
+			}
+			break
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
 			p.record429(buildID)
-			lastResp = resp
 			if attempt == maxRetries {
-				break
+				defer cancelAttempt()
+				p.forwardResponse(w, resp, buildID, estTokens)
+				return
 			}
 			backoff := p.computeBackoff(attempt, resp.Header)
 			resp.Body.Close()
+			cancelAttempt()
 
 			select {
 			case <-r.Context().Done():
@@ -298,16 +487,42 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Non-429 response
+		if resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusGatewayTimeout {
+			p.record502()
+			if attempt < maxRetries && transportRetries < maxTransportRetries {
+				transportRetries++
+				backoff := p.computeBackoff(attempt, resp.Header)
+				if backoff > 10*time.Second {
+					backoff = 10 * time.Second
+				}
+				log.Printf("[LLMProxy] Upstream returned HTTP %d on attempt %d/%d; retrying in %v", resp.StatusCode, attempt+1, maxRetries+1, backoff)
+				resp.Body.Close()
+				cancelAttempt()
+
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(backoff):
+					continue
+				}
+			}
+			defer cancelAttempt()
+			p.forwardResponse(w, resp, buildID, estTokens)
+			return
+		}
+
+		// Normal non-retryable response
 		p.reset429()
+		defer cancelAttempt()
 		p.forwardResponse(w, resp, buildID, estTokens)
 		return
 	}
 
-	// Max retries exceeded on 429
-	if lastResp != nil {
-		p.forwardResponse(w, lastResp, buildID, estTokens)
+	if lastTimedOut || errors.Is(lastErr, context.DeadlineExceeded) {
+		http.Error(w, fmt.Sprintf("upstream gateway timeout after %v: %v", headerTimeout, lastErr), http.StatusGatewayTimeout)
+		return
 	}
+	http.Error(w, fmt.Sprintf("upstream proxy error: %v", lastErr), http.StatusBadGateway)
 }
 
 func (p *LLMProxy) forwardResponse(w http.ResponseWriter, resp *http.Response, buildID string, estTokens int) {
@@ -375,6 +590,7 @@ func (p *LLMProxy) forwardSSE(w http.ResponseWriter, resp *http.Response, buildI
 	flusher.Flush()
 
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	var streamTotalTokens int
 	var streamPromptTokens int
 	var streamCompletionTokens int

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   BASETEN_BASE_URL_ENV_KEY,
   DEFAULT_MODEL_ID,
+  DEFAULT_LLM_TIMEOUT_MS,
   DEFAULT_PROVIDER_RETRY_ATTEMPTS,
   DEFAULT_PROVIDER,
   DEFAULT_VERTEX_LOCATION,
@@ -34,6 +35,7 @@ import {
   resolveProviderLocation,
   resolveProviderRegion,
   resolveProviderRetryAttempts,
+  resolveProviderTimeoutMs,
 } from "../../src/config/constants.ts";
 
 describe("isValidModelId", () => {
@@ -280,6 +282,36 @@ describe("resolveProviderRetryAttempts", () => {
           OPENWIKI_PROVIDER_RETRY_ATTEMPTS: value,
         }),
       ).toThrow(/OPENWIKI_PROVIDER_RETRY_ATTEMPTS/u);
+    }
+  });
+});
+
+describe("resolveProviderTimeoutMs", () => {
+  test("uses 10 minutes (600_000ms) default when no override is set", () => {
+    expect(DEFAULT_LLM_TIMEOUT_MS).toBe(600_000);
+    expect(resolveProviderTimeoutMs({})).toBe(600_000);
+  });
+
+  test("resolves OPENWIKI_LLM_TIMEOUT_SEC and prefers OPENWIKI_LLM_TIMEOUT_MS", () => {
+    expect(resolveProviderTimeoutMs({ OPENWIKI_LLM_TIMEOUT_SEC: "600" })).toBe(
+      600_000,
+    );
+    expect(
+      resolveProviderTimeoutMs({
+        OPENWIKI_LLM_TIMEOUT_SEC: "900",
+        OPENWIKI_LLM_TIMEOUT_MS: "45000",
+      }),
+    ).toBe(45_000);
+  });
+
+  test("rejects invalid timeout values", () => {
+    for (const value of ["", "   ", "0", "-10", "1.5", "abc"]) {
+      expect(() =>
+        resolveProviderTimeoutMs({ OPENWIKI_LLM_TIMEOUT_SEC: value }),
+      ).toThrow(/OPENWIKI_LLM_TIMEOUT_SEC/u);
+      expect(() =>
+        resolveProviderTimeoutMs({ OPENWIKI_LLM_TIMEOUT_MS: value }),
+      ).toThrow(/OPENWIKI_LLM_TIMEOUT_MS/u);
     }
   });
 });

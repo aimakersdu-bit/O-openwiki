@@ -53,6 +53,9 @@ export const NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1/";
 export const OPENWIKI_PROVIDER_RETRY_ATTEMPTS_ENV_KEY =
   "OPENWIKI_PROVIDER_RETRY_ATTEMPTS";
 export const DEFAULT_PROVIDER_RETRY_ATTEMPTS = 3;
+export const OPENWIKI_LLM_TIMEOUT_MS_ENV_KEY = "OPENWIKI_LLM_TIMEOUT_MS";
+export const OPENWIKI_LLM_TIMEOUT_SEC_ENV_KEY = "OPENWIKI_LLM_TIMEOUT_SEC";
+export const DEFAULT_LLM_TIMEOUT_MS = 600_000; // 10 minutes
 export const OPENWIKI_GOOGLE_ACCESS_TOKEN_ENV_KEY =
   "OPENWIKI_GOOGLE_ACCESS_TOKEN";
 export const OPENWIKI_GOOGLE_CLIENT_ID_ENV_KEY = "OPENWIKI_GOOGLE_CLIENT_ID";
@@ -889,6 +892,44 @@ export function resolveProviderRetryAttempts(
   }
 
   return parsedRetryAttempts;
+}
+
+function parsePositiveIntegerEnv(key: string, rawValue: string): number {
+  const normalized = rawValue.trim();
+  if (!/^[1-9]\d*$/u.test(normalized)) {
+    throw new Error(`Invalid ${key}. Expected a positive integer.`);
+  }
+  const parsed = Number(normalized);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`Invalid ${key}. Expected a positive integer.`);
+  }
+  return parsed;
+}
+
+export function resolveProviderTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const rawMs = env[OPENWIKI_LLM_TIMEOUT_MS_ENV_KEY];
+  if (rawMs !== undefined) {
+    return parsePositiveIntegerEnv(OPENWIKI_LLM_TIMEOUT_MS_ENV_KEY, rawMs);
+  }
+
+  const rawSec = env[OPENWIKI_LLM_TIMEOUT_SEC_ENV_KEY];
+  if (rawSec !== undefined) {
+    const seconds = parsePositiveIntegerEnv(
+      OPENWIKI_LLM_TIMEOUT_SEC_ENV_KEY,
+      rawSec,
+    );
+    const timeoutMs = seconds * 1000;
+    if (!Number.isSafeInteger(timeoutMs)) {
+      throw new Error(
+        `Invalid ${OPENWIKI_LLM_TIMEOUT_SEC_ENV_KEY}. Timeout exceeds safe integer range.`,
+      );
+    }
+    return timeoutMs;
+  }
+
+  return DEFAULT_LLM_TIMEOUT_MS;
 }
 
 export function resolveOpenRouterProviderOnly(

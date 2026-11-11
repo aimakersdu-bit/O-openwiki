@@ -29,3 +29,7 @@ __pycache__/
 deploy/bin/
 deploy/data/
 .pnpm-store/
+portal.db
+portal.db-*
+orchestrator.db
+orchestrator.db-*
