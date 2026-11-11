@@ -191,12 +191,12 @@ func (db *DB) migrate() error {
 	tables := []string{
 		`CREATE TABLE IF NOT EXISTS repos (
 			id          VARCHAR(255) PRIMARY KEY,
-			name        TEXT NOT NULL,
-			git_url     TEXT NOT NULL,
+			name VARCHAR(255) NOT NULL,
+			git_url VARCHAR(255) NOT NULL,
 			branch      VARCHAR(255) NOT NULL DEFAULT 'main',
-			local_path  TEXT NOT NULL,
-			wiki_dir    TEXT,
-			static_dir  TEXT,
+			local_path VARCHAR(255) NOT NULL,
+			wiki_dir VARCHAR(255),
+			static_dir VARCHAR(255),
 			schedule    VARCHAR(255) NOT NULL DEFAULT '0 2 * * *',
 			status      VARCHAR(255) NOT NULL DEFAULT 'active',
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -205,7 +205,7 @@ func (db *DB) migrate() error {
 		`CREATE TABLE IF NOT EXISTS builds (
 			id          INT AUTO_INCREMENT PRIMARY KEY,
 			repo_id     VARCHAR(255) NOT NULL,
-			git_head    TEXT,
+			git_head VARCHAR(255),
 			status      VARCHAR(255) NOT NULL DEFAULT 'pending',
 			started_at  DATETIME,
 			finished_at DATETIME,
@@ -215,9 +215,9 @@ func (db *DB) migrate() error {
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS qa_sessions (
 			id          INT AUTO_INCREMENT PRIMARY KEY,
-			session_id  TEXT,
+			session_id VARCHAR(255),
 			repo_id     VARCHAR(255) NOT NULL,
-			user_id     TEXT NOT NULL,
+			user_id VARCHAR(255) NOT NULL,
 			question    TEXT NOT NULL,
 			answer      TEXT,
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -225,12 +225,12 @@ func (db *DB) migrate() error {
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS projects (
 			id              VARCHAR(255) PRIMARY KEY,
-			name            TEXT NOT NULL,
+			name VARCHAR(255) NOT NULL,
 			tri_code        VARCHAR(255) NOT NULL DEFAULT '',
 			description     TEXT,
 			business_domain VARCHAR(255) NOT NULL DEFAULT '',
 			architecture_md VARCHAR(255) DEFAULT '',
-			local_path      TEXT NOT NULL,
+			local_path VARCHAR(255) NOT NULL,
 			status          VARCHAR(255) NOT NULL DEFAULT 'active',
 			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -239,7 +239,7 @@ func (db *DB) migrate() error {
 			id          INT AUTO_INCREMENT PRIMARY KEY,
 			project_id  VARCHAR(255) NOT NULL,
 			repo_id     VARCHAR(255) NOT NULL,
-			alias_name  TEXT NOT NULL,
+			alias_name VARCHAR(255) NOT NULL,
 			role        VARCHAR(255) DEFAULT 'service',
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(project_id, repo_id),
@@ -249,9 +249,9 @@ func (db *DB) migrate() error {
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS project_qa_sessions (
 			id          INT AUTO_INCREMENT PRIMARY KEY,
-			session_id  TEXT,
+			session_id VARCHAR(255),
 			project_id  VARCHAR(255) NOT NULL,
-			user_id     TEXT NOT NULL,
+			user_id VARCHAR(255) NOT NULL,
 			question    TEXT NOT NULL,
 			answer      TEXT,
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -266,7 +266,7 @@ func (db *DB) migrate() error {
 	}
 
 	// Try adding columns/tables for migrations
-	db.conn.Exec(`ALTER TABLE qa_sessions ADD COLUMN session_id TEXT`)
+	db.conn.Exec(`ALTER TABLE qa_sessions ADD COLUMN session_id VARCHAR(255)`)
 	db.conn.Exec(`ALTER TABLE repos ADD COLUMN tier VARCHAR(255) DEFAULT 'B'`)
 	db.conn.Exec(`ALTER TABLE repos ADD COLUMN business_domain VARCHAR(255) DEFAULT ''`)
 	db.conn.Exec(`ALTER TABLE repos ADD COLUMN last_release_at DATETIME`)
@@ -282,7 +282,7 @@ func (db *DB) migrate() error {
 	batchTables := []string{
 		`CREATE TABLE IF NOT EXISTS batch_runs (
 			id              VARCHAR(255) PRIMARY KEY,
-			name            TEXT NOT NULL,
+			name VARCHAR(255) NOT NULL,
 			total_count     INTEGER DEFAULT 0,
 			processed_count INTEGER DEFAULT 0,
 			success_count   INTEGER DEFAULT 0,
@@ -313,7 +313,7 @@ func (db *DB) migrate() error {
 			FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE CASCADE
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS daily_token_usage (
-			date               TEXT NOT NULL,
+			date VARCHAR(255) NOT NULL,
 			business_domain    VARCHAR(255) NOT NULL DEFAULT '',
 			prompt_tokens      INTEGER DEFAULT 0,
 			completion_tokens  INTEGER DEFAULT 0,
@@ -329,7 +329,7 @@ func (db *DB) migrate() error {
 		"CREATE TABLE IF NOT EXISTS system_settings (\n\t\t\t`key`      VARCHAR(255) PRIMARY KEY,\n\t\t\tvalue      TEXT NOT NULL,\n\t\t\tupdated_at DATETIME DEFAULT CURRENT_TIMESTAMP\n\t\t) ENGINE=InnoDB",
 		`CREATE TABLE IF NOT EXISTS volumes (
 			id          VARCHAR(255) PRIMARY KEY,
-			mount_point TEXT NOT NULL,
+			mount_point VARCHAR(255) NOT NULL,
 			total_bytes INTEGER NOT NULL DEFAULT 0,
 			used_bytes  INTEGER NOT NULL DEFAULT 0,
 			status      VARCHAR(255) NOT NULL DEFAULT 'active',
@@ -338,9 +338,9 @@ func (db *DB) migrate() error {
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS volume_migrations (
 			id             INT AUTO_INCREMENT PRIMARY KEY,
-			repo_id        TEXT NOT NULL,
-			from_volume_id TEXT NOT NULL,
-			to_volume_id   TEXT NOT NULL,
+			repo_id VARCHAR(255) NOT NULL,
+			from_volume_id VARCHAR(255) NOT NULL,
+			to_volume_id VARCHAR(255) NOT NULL,
 			status         VARCHAR(255) NOT NULL DEFAULT 'planned',
 			error          TEXT,
 			started_at     DATETIME,

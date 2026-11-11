@@ -34,7 +34,7 @@ func InitDB(dsn string) error {
 	tables := []string{
 		`CREATE TABLE IF NOT EXISTS sessions (
 			token VARCHAR(255) PRIMARY KEY,
-			user_id TEXT NOT NULL,
+			user_id VARCHAR(255) NOT NULL,
 			display_name TEXT,
 			role VARCHAR(255) DEFAULT 'user',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -50,16 +50,16 @@ func InitDB(dsn string) error {
 		`CREATE TABLE IF NOT EXISTS user_domain_grants (
 			username VARCHAR(255) NOT NULL,
 			business_domain VARCHAR(255) NOT NULL,
-			granted_by TEXT NOT NULL,
+			granted_by VARCHAR(255) NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (username, business_domain)
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS audit_logs (
 			id INT AUTO_INCREMENT PRIMARY KEY,
-			operator TEXT NOT NULL,
-			action TEXT NOT NULL,
-			target_type TEXT NOT NULL,
-			target_id TEXT NOT NULL,
+			operator VARCHAR(255) NOT NULL,
+			action VARCHAR(255) NOT NULL,
+			target_type VARCHAR(255) NOT NULL,
+			target_id VARCHAR(255) NOT NULL,
 			details TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		) ENGINE=InnoDB`,
