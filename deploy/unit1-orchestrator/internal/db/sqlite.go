@@ -211,7 +211,6 @@ func (db *DB) migrate() error {
 			finished_at DATETIME,
 			log         LONGTEXT,
 			error       TEXT,
-			FOREIGN KEY (repo_id) REFERENCES repos(id)
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS qa_sessions (
 			id          INT AUTO_INCREMENT PRIMARY KEY,
@@ -221,7 +220,6 @@ func (db *DB) migrate() error {
 			question    TEXT NOT NULL,
 			answer      TEXT,
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-			FOREIGN KEY (repo_id) REFERENCES repos(id)
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS projects (
 			id              VARCHAR(255) PRIMARY KEY,
@@ -244,8 +242,6 @@ func (db *DB) migrate() error {
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(project_id, repo_id),
 			UNIQUE(project_id, alias_name),
-			FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-			FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE CASCADE
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS project_qa_sessions (
 			id          INT AUTO_INCREMENT PRIMARY KEY,
@@ -255,7 +251,6 @@ func (db *DB) migrate() error {
 			question    TEXT NOT NULL,
 			answer      TEXT,
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-			FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 		) ENGINE=InnoDB`,
 	}
 
@@ -309,8 +304,6 @@ func (db *DB) migrate() error {
 			started_at        DATETIME,
 			finished_at       DATETIME,
 			UNIQUE(batch_id, repo_id),
-			FOREIGN KEY (batch_id) REFERENCES batch_runs(id) ON DELETE CASCADE,
-			FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE CASCADE
 		) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS daily_token_usage (
 			date VARCHAR(255) NOT NULL,
