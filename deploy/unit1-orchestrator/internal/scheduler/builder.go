@@ -344,12 +344,11 @@ func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir 
 	if err := cmd.Run(); err != nil {
 		msg := fmt.Sprintf("stdout: %s\nstderr: %s", stdout.String(), stderr.String())
 		b.logStep(repoID, msg, &logBuf, onProgress...)
-		result.Log = logBuf.String()
 		result.Error = fmt.Sprintf("openwiki update failed: %v", err)
-		b.logStep(repoID, "ERROR: "+result.Error, &logBuf, onProgress...)
-		return result
+		b.logStep(repoID, "WARNING: "+result.Error+" (continuing with offline graph export & static site release to ensure custom knowledge docs are published)", &logBuf, onProgress...)
+	} else {
+		b.logStep(repoID, fmt.Sprintf("stdout: %s\nopenwiki update completed successfully", stdout.String()), &logBuf, onProgress...)
 	}
-	b.logStep(repoID, fmt.Sprintf("stdout: %s\nopenwiki update completed successfully", stdout.String()), &logBuf, onProgress...)
 
 	// Get current git head
 	head, _ := GitCurrentHead(repoPath)

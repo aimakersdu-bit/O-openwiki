@@ -127,3 +127,4 @@ func TestIngestKnowledgeDocs_NormalizesAndCopies(t *testing.T) {
 		t.Errorf("txt file should not be copied to %s", dstTxt)
 	}
 }
+
