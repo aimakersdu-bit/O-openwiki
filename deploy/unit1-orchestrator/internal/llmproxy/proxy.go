@@ -351,6 +351,42 @@ func (p *LLMProxy) doAttemptWithHeaderTimeout(parent context.Context, req *http.
 	return resp, cancelAttempt, timedOut.Load(), err
 }
 
+func isStreamRequest(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	var req struct {
+		Stream bool `json:"stream"`
+	}
+	if err := json.Unmarshal(body, &req); err == nil {
+		return req.Stream
+	}
+	return bytes.Contains(body, []byte(`"stream":true`)) || bytes.Contains(body, []byte(`"stream": true`))
+}
+
+func ensureStreamUsageOption(body []byte) []byte {
+	if len(body) == 0 || !isStreamRequest(body) {
+		return body
+	}
+	if bytes.Contains(body, []byte(`"include_usage"`)) {
+		return body
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return body
+	}
+	opts, ok := raw["stream_options"].(map[string]interface{})
+	if !ok {
+		opts = make(map[string]interface{})
+	}
+	opts["include_usage"] = true
+	raw["stream_options"] = opts
+	if modified, err := json.Marshal(raw); err == nil {
+		return modified
+	}
+	return body
+}
+
 // ServeHTTP handles incoming OpenAI-compatible proxy requests.
 func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Parse BuildID from Authorization: Bearer ow-build-<buildID>
@@ -373,6 +409,8 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	bodyBytes = ensureStreamUsageOption(bodyBytes)
+	isStream := isStreamRequest(bodyBytes)
 
 	// Token estimation
 	estTokens := len(bodyBytes) / 4
@@ -428,11 +466,17 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Copy headers
+		// Copy headers, excluding hop-by-hop and compression headers that break streaming
 		for k, vv := range r.Header {
+			if strings.EqualFold(k, "Accept-Encoding") || strings.EqualFold(k, "Content-Length") {
+				continue
+			}
 			for _, v := range vv {
 				req.Header.Add(k, v)
 			}
+		}
+		if isStream {
+			req.Header.Set("Accept", "text/event-stream")
 		}
 
 		// Inject real upstream API key if provided
@@ -530,20 +574,21 @@ func (p *LLMProxy) forwardResponse(w http.ResponseWriter, resp *http.Response, b
 
 	contentType := resp.Header.Get("Content-Type")
 
-	// 1. Streaming response (SSE)
-	if strings.Contains(contentType, "text/event-stream") {
+	// 1. Streaming response (SSE): 仅当 200 OK 且明确为 text/event-stream 时走流式通道
+	if resp.StatusCode == http.StatusOK && strings.Contains(strings.ToLower(contentType), "text/event-stream") {
 		p.forwardSSE(w, resp, buildID, estTokens)
 		return
 	}
 
-	// 2. Non-streaming JSON or other response
+	// 2. Non-streaming JSON, error status (400/401/429/500), or other response:
+	// 读取并保真透传，保留原始 HTTP 状态码与 Content-Type，严禁篡改为 text/event-stream
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("read upstream response: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Extract tokens if JSON
+	// Extract tokens if JSON and 200 OK
 	if strings.Contains(contentType, "application/json") && resp.StatusCode == http.StatusOK {
 		var tokenData struct {
 			Usage struct {
@@ -560,6 +605,9 @@ func (p *LLMProxy) forwardResponse(w http.ResponseWriter, resp *http.Response, b
 
 	// Copy headers
 	for k, vv := range resp.Header {
+		if strings.EqualFold(k, "Content-Length") {
+			continue
+		}
 		for _, v := range vv {
 			w.Header().Add(k, v)
 		}
@@ -576,7 +624,9 @@ func (p *LLMProxy) forwardSSE(w http.ResponseWriter, resp *http.Response, buildI
 	}
 
 	for k, vv := range resp.Header {
-		if strings.EqualFold(k, "Content-Length") {
+		if strings.EqualFold(k, "Content-Length") ||
+			strings.EqualFold(k, "Content-Encoding") ||
+			strings.EqualFold(k, "Transfer-Encoding") {
 			continue
 		}
 		for _, v := range vv {
@@ -584,8 +634,9 @@ func (p *LLMProxy) forwardSSE(w http.ResponseWriter, resp *http.Response, buildI
 		}
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(resp.StatusCode)
 	flusher.Flush()
 
@@ -605,6 +656,10 @@ func (p *LLMProxy) forwardSSE(w http.ResponseWriter, resp *http.Response, buildI
 			if payload == "[DONE]" {
 				continue
 			}
+			// Performance optimization: skip JSON unmarshal if line doesn't contain usage keywords
+			if !strings.Contains(payload, "usage") {
+				continue
+			}
 			var chunk struct {
 				Usage *struct {
 					PromptTokens     int `json:"prompt_tokens"`
@@ -620,6 +675,10 @@ func (p *LLMProxy) forwardSSE(w http.ResponseWriter, resp *http.Response, buildI
 				}
 			}
 		}
+	}
+
+	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
+		log.Printf("[LLMProxy] SSE scanner error for build %s: %v", buildID, err)
 	}
 
 	if streamTotalTokens > 0 {

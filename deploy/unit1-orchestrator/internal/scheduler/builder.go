@@ -23,6 +23,7 @@ type Builder struct {
 	DefaultLanguage string // default language tag for init/update (e.g. "zh-CN")
 	LLMBaseURL      string // optional base URL for internal LLM proxy
 	LLMTimeoutSec   int    // configured per-request LLM timeout in seconds (default 600)
+	OpenwikiModel   string // configured default model id (e.g. "glm-5.2")
 }
 
 // NewBuilder creates a new Builder instance.
@@ -209,9 +210,14 @@ func (b *Builder) createOpenWikiCmdWithBuildID(buildID int64, repoPath string, a
 	b.mu.RLock()
 	llmBaseURL := b.LLMBaseURL
 	llmTimeoutSec := b.LLMTimeoutSec
+	openwikiModel := b.OpenwikiModel
 	b.mu.RUnlock()
 	if llmTimeoutSec <= 0 {
 		llmTimeoutSec = 600
+	}
+
+	if openwikiModel != "" {
+		env = setEnvIfUnset(env, "OPENWIKI_MODEL_ID", openwikiModel)
 	}
 
 	if llmBaseURL != "" {
@@ -221,6 +227,10 @@ func (b *Builder) createOpenWikiCmdWithBuildID(buildID int64, repoPath string, a
 		}
 		env = upsertEnv(env, "OPENAI_BASE_URL", baseURL)
 		env = upsertEnv(env, "OPENAI_COMPATIBLE_BASE_URL", baseURL)
+
+		// When routing through LLMProxy, default to standard OpenAI-compatible gateway (/v1/chat/completions)
+		env = setEnvIfUnset(env, "OPENWIKI_PROVIDER", "openai-compatible")
+		env = setEnvIfUnset(env, "OPENWIKI_OPENAI_COMPATIBLE_STREAMING", "true")
 
 		// When routing through LLMProxy, give the outer CLI client more headroom than
 		// a single proxy attempt timeout so proxy retries/backoff complete without racing,
@@ -232,7 +242,13 @@ func (b *Builder) createOpenWikiCmdWithBuildID(buildID int64, repoPath string, a
 		env = upsertEnv(env, "OPENWIKI_LLM_TIMEOUT_SEC", fmt.Sprintf("%d", llmTimeoutSec))
 	}
 	if buildID > 0 {
-		env = upsertEnv(env, "OPENAI_API_KEY", fmt.Sprintf("ow-build-%d", buildID))
+		keyVal := fmt.Sprintf("ow-build-%d", buildID)
+		env = upsertEnv(env, "OPENAI_API_KEY", keyVal)
+		env = upsertEnv(env, "OPENAI_COMPATIBLE_API_KEY", keyVal)
+	} else if llmBaseURL != "" {
+		// Provide placeholder credentials for buildID == 0 so CLI provider checks pass
+		env = setEnvIfUnset(env, "OPENAI_API_KEY", "ow-build-0")
+		env = setEnvIfUnset(env, "OPENAI_COMPATIBLE_API_KEY", "ow-build-0")
 	}
 	// Avoid 30s PostHog shutdown timeout hangs in private / air-gapped environments unless explicitly configured.
 	env = setEnvIfUnset(env, "OPENWIKI_TELEMETRY_DISABLED", "1")
@@ -293,11 +309,10 @@ func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir 
 		}
 	}()
 
-	// Step 0: Check if .openwiki exists; if not, run openwiki init first
-	openwikiDir := filepath.Join(repoPath, ".openwiki")
-	if _, err := os.Stat(openwikiDir); os.IsNotExist(err) {
-		b.logStep(repoID, fmt.Sprintf("=== Step 0: openwiki init --language %s ===", lang), &logBuf, onProgress...)
-		cmdInit := b.createOpenWikiCmdWithBuildID(buildID, repoPath, "init", "--language", lang)
+	// Step 0: Check if wiki directory exists; if not, run openwiki code --init --print first
+	if _, err := os.Stat(wikiDir); os.IsNotExist(err) {
+		b.logStep(repoID, fmt.Sprintf("=== Step 0: openwiki code --init --print --language %s ===", lang), &logBuf, onProgress...)
+		cmdInit := b.createOpenWikiCmdWithBuildID(buildID, repoPath, "code", "--init", "--print", "--language", lang)
 		var stdoutInit, stderrInit bytes.Buffer
 		cmdInit.Stdout = &stdoutInit
 		cmdInit.Stderr = &stderrInit

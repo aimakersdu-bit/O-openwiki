@@ -355,3 +355,148 @@ func TestSlidingWindow429ThrottleWithInterleaved200AndCooldown(t *testing.T) {
 		t.Fatalf("expected throttle cooldown to suppress duplicate triggers, got %d", atomic.LoadInt32(&throttleCalls))
 	}
 }
+
+func TestStreamingHeaderSanitization(t *testing.T) {
+	var capturedAcceptEncoding string
+	var capturedAccept string
+	var capturedBody []byte
+
+	mockRT := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		capturedAcceptEncoding = r.Header.Get("Accept-Encoding")
+		capturedAccept = r.Header.Get("Accept")
+		capturedBody, _ = io.ReadAll(r.Body)
+		header := make(http.Header)
+		header.Set("Content-Type", "text/event-stream")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+		}, nil
+	})
+
+	proxy := NewLLMProxy("http://mock-upstream/v1", "key", nil, nil)
+	proxy.SetTransport(mockRT)
+
+	req := httptest.NewRequest("POST", "/internal/llm/v1/chat/completions", strings.NewReader(`{"stream":true,"messages":[]}`))
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	req.Header.Set("Accept", "application/json") // Node fetch default
+
+	w := httptest.NewRecorder()
+	proxy.ServeHTTP(w, req)
+
+	if capturedAcceptEncoding != "" {
+		t.Fatalf("expected Accept-Encoding to be stripped, got %q", capturedAcceptEncoding)
+	}
+	if capturedAccept != "text/event-stream" {
+		t.Fatalf("expected Accept to be normalized to text/event-stream for stream:true, got %q", capturedAccept)
+	}
+	if w.Header().Get("X-Accel-Buffering") != "no" {
+		t.Fatalf("expected X-Accel-Buffering: no, got %q", w.Header().Get("X-Accel-Buffering"))
+	}
+	if !strings.Contains(string(capturedBody), `"include_usage":true`) && !strings.Contains(string(capturedBody), `"include_usage": true`) {
+		t.Fatalf("expected stream_options.include_usage injected into stream request, got %s", string(capturedBody))
+	}
+}
+
+type flushingRecorder struct {
+	*httptest.ResponseRecorder
+	flushedCh  chan struct{}
+	flushCount atomic.Int32
+}
+
+func newFlushingRecorder() *flushingRecorder {
+	return &flushingRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		flushedCh:        make(chan struct{}, 10),
+	}
+}
+
+func (f *flushingRecorder) Flush() {
+	f.flushCount.Add(1)
+	select {
+	case f.flushedCh <- struct{}{}:
+	default:
+	}
+}
+
+func TestRealTimeStreamingFlush(t *testing.T) {
+	pr, pw := io.Pipe()
+
+	mockRT := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		header := make(http.Header)
+		header.Set("Content-Type", "text/event-stream")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     header,
+			Body:       pr,
+		}, nil
+	})
+
+	proxy := NewLLMProxy("http://mock-upstream/v1", "key", nil, nil)
+	proxy.SetTransport(mockRT)
+
+	req := httptest.NewRequest("POST", "/internal/llm/v1/chat/completions", strings.NewReader(`{"stream":true}`))
+	req.Header.Set("Authorization", "Bearer ow-build-test-stream")
+	w := newFlushingRecorder()
+
+	doneCh := make(chan struct{})
+	go func() {
+		proxy.ServeHTTP(w, req)
+		close(doneCh)
+	}()
+
+	// 1. 发送首个 chunk，保持 pipe 不关闭
+	_, _ = pw.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"))
+
+	// 2. 验证客户端在 upstream 结束前就已经收到数据并触发了 Flush (证明无 io.ReadAll 缓冲)
+	select {
+	case <-w.flushedCh:
+		// 成功收到实时 Flush
+	case <-time.After(2 * time.Second):
+		pw.Close()
+		t.Fatal("timed out waiting for first chunk to be flushed; proxy buffered the stream!")
+	}
+
+	// 3. 发送带 usage 的结束 chunk 并关闭
+	_, _ = pw.Write([]byte("data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\ndata: [DONE]\n\n"))
+	pw.Close()
+
+	<-doneCh
+
+	// 验证 token 记账正确
+	u, ok := proxy.GetBuildUsage("test-stream")
+	if !ok || u.TotalTokens != 15 {
+		t.Fatalf("expected 15 total tokens, got %v (ok=%v)", u, ok)
+	}
+}
+
+func TestErrorResponsePreservesJSONContentType(t *testing.T) {
+	mockRT := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		header := make(http.Header)
+		header.Set("Content-Type", "application/json")
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"invalid model","type":"invalid_request_error"}}`)),
+		}, nil
+	})
+
+	proxy := NewLLMProxy("http://mock-upstream/v1", "key", nil, nil)
+	proxy.SetTransport(mockRT)
+
+	req := httptest.NewRequest("POST", "/internal/llm/v1/chat/completions", strings.NewReader(`{"stream":true,"model":"unknown"}`))
+	w := httptest.NewRecorder()
+	proxy.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+	if !strings.Contains(w.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("expected application/json preserved for error response, got %s", w.Header().Get("Content-Type"))
+	}
+	if strings.Contains(w.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatal("error response should NEVER have text/event-stream content-type")
+	}
+}
+
+

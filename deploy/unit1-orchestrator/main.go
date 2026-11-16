@@ -38,14 +38,15 @@ func main() {
 	if dbDSN == "" {
 		log.Fatalf("DB_DSN is required (MySQL DSN, e.g. openwiki:pass@tcp(127.0.0.1:3306)/openwiki?parseTime=true)")
 	}
-	if err := db.InitDB(dbDSN); err != nil {
+	if err := db.InitDBWithOptions(dbDSN, cfg.DBAutoMigrate); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.CloseDB()
-	log.Printf("Database initialized (MySQL)")
+	log.Printf("Database initialized (MySQL, auto_migrate=%v)", cfg.DBAutoMigrate)
 
 	// Create builder, runner, pool, scheduler
 	builder := scheduler.NewBuilder(cfg.OpenwikiCLI, cfg.VendorAssetsDir, cfg.OpenwikiDistDir, cfg.StaticOutputDir, cfg.DefaultLanguage)
+	builder.OpenwikiModel = cfg.OpenwikiModel
 	builder.RepairStaticOutputDir()
 	sched := scheduler.NewScheduler(builder)
 

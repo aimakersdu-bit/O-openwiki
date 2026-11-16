@@ -257,3 +257,44 @@ func TestRepairStaticOutputDir_BackfillsClientLibAndFixesPerms(t *testing.T) {
 		t.Errorf("expected repaired file perm 0644, got %04o", fileInfo.Mode().Perm())
 	}
 }
+
+func TestBuilderEnvInjectionForOpenAICompatible(t *testing.T) {
+	b := &Builder{
+		LLMBaseURL:    "http://127.0.0.1:3000/internal/llm/v1",
+		LLMTimeoutSec: 300,
+	}
+
+	cmd := b.createOpenWikiCmdWithBuildID(123, "/tmp/mock-repo", "code", "--update")
+
+	envMap := make(map[string]string)
+	for _, e := range cmd.Env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	// 1. 验证 Provider 设为 openai-compatible
+	if envMap["OPENWIKI_PROVIDER"] != "openai-compatible" {
+		t.Fatalf("expected OPENWIKI_PROVIDER=openai-compatible, got %q", envMap["OPENWIKI_PROVIDER"])
+	}
+	// 2. 验证 OPENAI_API_KEY 与 OPENAI_COMPATIBLE_API_KEY 均被注入为 ow-build-123
+	if envMap["OPENAI_API_KEY"] != "ow-build-123" {
+		t.Fatalf("expected OPENAI_API_KEY=ow-build-123, got %q", envMap["OPENAI_API_KEY"])
+	}
+	if envMap["OPENAI_COMPATIBLE_API_KEY"] != "ow-build-123" {
+		t.Fatalf("expected OPENAI_COMPATIBLE_API_KEY=ow-build-123, got %q", envMap["OPENAI_COMPATIBLE_API_KEY"])
+	}
+	// 3. 验证 Base URL
+	if envMap["OPENAI_BASE_URL"] != "http://127.0.0.1:3000/internal/llm/v1/build/123" {
+		t.Fatalf("unexpected OPENAI_BASE_URL: %s", envMap["OPENAI_BASE_URL"])
+	}
+	if envMap["OPENAI_COMPATIBLE_BASE_URL"] != "http://127.0.0.1:3000/internal/llm/v1/build/123" {
+		t.Fatalf("unexpected OPENAI_COMPATIBLE_BASE_URL: %s", envMap["OPENAI_COMPATIBLE_BASE_URL"])
+	}
+	// 4. 验证 OPENWIKI_OPENAI_COMPATIBLE_STREAMING 自动开启
+	if envMap["OPENWIKI_OPENAI_COMPATIBLE_STREAMING"] != "true" {
+		t.Fatalf("expected OPENWIKI_OPENAI_COMPATIBLE_STREAMING=true, got %q", envMap["OPENWIKI_OPENAI_COMPATIBLE_STREAMING"])
+	}
+}
+
