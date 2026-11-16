@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -141,7 +142,11 @@ func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, ma
 		if sched.GetBuilder() != nil {
 			port := "3000"
 			if cfg != nil && cfg.ListenAddr != "" {
-				port = strings.TrimPrefix(cfg.ListenAddr, ":")
+				if _, p, err := net.SplitHostPort(cfg.ListenAddr); err == nil && p != "" {
+					port = p
+				} else {
+					port = strings.TrimPrefix(cfg.ListenAddr, ":")
+				}
 			}
 			sched.GetBuilder().SetLLMBaseURL(fmt.Sprintf("http://127.0.0.1:%s/internal/llm/v1", port))
 		}

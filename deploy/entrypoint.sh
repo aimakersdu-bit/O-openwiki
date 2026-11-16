@@ -53,7 +53,8 @@ if [ ! -f /app/config.json ]; then
   "static_output_dir": "/data/openwiki/static",
   "vendor_assets_dir": "/app/assets/vendor",
   "repos_base_dir": "/data/openwiki/repos",
-  "db_path": "/data/openwiki/db/orchestrator.db",
+  "db_dsn": "",
+  "db_auto_migrate": true,
   "max_concurrent_qa": 5,
   "qa_timeout_sec": 600,
   "default_language": "zh-CN"
@@ -66,11 +67,20 @@ if [ ! -f /app/config.yaml ]; then
     echo "--> 生成 Portal 默认配置文件 config.yaml..."
     cat << 'EOF' > /app/config.yaml
 port: 8080
-db_path: "/data/openwiki/db/portal.db"
+db_dsn: ""
+db_auto_migrate: true
 orchestrator_url: "http://127.0.0.1:3000"
 static_output_dir: "/data/openwiki/static"
 session_ttl_hours: 24
 EOF
+fi
+
+# 3.5 检查 MySQL DSN 环境变量 (未配置且配置文件中为空时提前提示)
+if [ -z "$DB_DSN" ] && ! grep -qE '"db_dsn"[[:space:]]*:[[:space:]]*"[^"]+"' /app/config.json 2>/dev/null; then
+    echo "⚠️  警告: 未检测到 DB_DSN 环境变量且 config.json 中 db_dsn 为空，Orchestrator 启动将会失败！"
+fi
+if [ -z "$PORTAL_DB_DSN" ] && ! grep -qE 'db_dsn:[[:space:]]*"?[^"[:space:]]+' /app/config.yaml 2>/dev/null; then
+    echo "⚠️  警告: 未检测到 PORTAL_DB_DSN 环境变量且 config.yaml 中 db_dsn 为空，Portal 启动将会失败！"
 fi
 
 # 4. 启动后台日志滚存定时任务 (Cron)

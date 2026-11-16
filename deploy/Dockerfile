@@ -52,6 +52,7 @@ COPY bin/${TARGETARCH:-arm}/config.yaml /app/config.yaml
 # 5. 复制系统配置文件与控制脚本
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY logrotate.conf /etc/logrotate.d/openwiki
+COPY schema.sql /app/schema.sql
 COPY entrypoint.sh /app/entrypoint.sh
 COPY healthcheck.sh /app/healthcheck.sh
 

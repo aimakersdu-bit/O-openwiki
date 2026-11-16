@@ -10,6 +10,11 @@ services:
     restart: always
     environment:
       - NODE_ENV=production
+      # 【MySQL 数据库连接串 (必填)】建议开启 parseTime=true
+      # - DB_DSN=openwiki:password@tcp(127.0.0.1:3306)/openwiki?parseTime=true&charset=utf8mb4
+      # - PORTAL_DB_DSN=openwiki:password@tcp(127.0.0.1:3306)/openwiki?parseTime=true&charset=utf8mb4
+      # 【行内生产环境如已由 DBA 执行 deploy/schema.sql，可设为 false 跳过启动 DDL】
+      # - DB_AUTO_MIGRATE=true
       # 【全局 Git HTTP 统一账号密码】设置后所有人添加的 HTTP Git 仓库无需再输入账号密码
       # - GIT_USERNAME=your_username
       # - GIT_PASSWORD=your_password_or_token

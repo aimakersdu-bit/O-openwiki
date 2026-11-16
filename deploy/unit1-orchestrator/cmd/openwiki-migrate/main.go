@@ -28,7 +28,7 @@ func main() {
 	if cfg.DBDSN == "" {
 		log.Fatalf("DB_DSN is required (MySQL DSN)")
 	}
-	if err := db.InitDB(cfg.DBDSN); err != nil {
+	if err := db.InitDBWithOptions(cfg.DBDSN, cfg.DBAutoMigrate); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.CloseDB()

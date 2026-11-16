@@ -15,8 +15,13 @@ type DB struct {
 	conn *sql.DB
 }
 
-// Open opens (or creates) the MySQL database and runs migrations.
+// Open opens the MySQL database and runs migrations by default.
 func Open(dsn string) (*DB, error) {
+	return OpenWithOptions(dsn, true)
+}
+
+// OpenWithOptions opens the MySQL database and optionally runs schema migrations.
+func OpenWithOptions(dsn string, autoMigrate bool) (*DB, error) {
 	conn, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open mysql db %s: %w", dsn, err)
@@ -26,9 +31,14 @@ func Open(dsn string) (*DB, error) {
 	conn.SetConnMaxLifetime(5 * time.Minute)
 
 	db := &DB{conn: conn}
-	if err := db.migrate(); err != nil {
+	if autoMigrate {
+		if err := db.migrate(); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("migrate db: %w", err)
+		}
+	} else if err := conn.Ping(); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("migrate db: %w", err)
+		return nil, fmt.Errorf("ping mysql db: %w", err)
 	}
 
 	return db, nil
@@ -41,10 +51,15 @@ func (db *DB) Close() error {
 
 var globalDB *DB
 
-// InitDB initializes the global database connection.
+// InitDB initializes the global database connection with auto-migration enabled.
 func InitDB(dsn string) error {
+	return InitDBWithOptions(dsn, true)
+}
+
+// InitDBWithOptions initializes the global database connection and controls startup DDL.
+func InitDBWithOptions(dsn string, autoMigrate bool) error {
 	var err error
-	globalDB, err = Open(dsn)
+	globalDB, err = OpenWithOptions(dsn, autoMigrate)
 	return err
 }
 
@@ -190,68 +205,78 @@ func GetProjectRepos(projectID string) ([]RepoWithAlias, error) {
 func (db *DB) migrate() error {
 	tables := []string{
 		`CREATE TABLE IF NOT EXISTS repos (
-			id          VARCHAR(255) PRIMARY KEY,
-			name VARCHAR(255) NOT NULL,
-			git_url VARCHAR(255) NOT NULL,
-			branch      VARCHAR(255) NOT NULL DEFAULT 'main',
-			local_path VARCHAR(255) NOT NULL,
-			wiki_dir VARCHAR(255),
-			static_dir VARCHAR(255),
-			schedule    VARCHAR(255) NOT NULL DEFAULT '0 2 * * *',
-			status      VARCHAR(255) NOT NULL DEFAULT 'active',
-			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-		) ENGINE=InnoDB`,
+			id              VARCHAR(255) PRIMARY KEY,
+			name            VARCHAR(255) NOT NULL,
+			git_url         VARCHAR(512) NOT NULL,
+			branch          VARCHAR(255) NOT NULL DEFAULT 'main',
+			local_path      VARCHAR(512) NOT NULL,
+			wiki_dir        VARCHAR(512),
+			static_dir      VARCHAR(512),
+			schedule        VARCHAR(255) NOT NULL DEFAULT '0 2 * * *',
+			status          VARCHAR(255) NOT NULL DEFAULT 'active',
+			tier            VARCHAR(64) NOT NULL DEFAULT 'B',
+			business_domain VARCHAR(255) NOT NULL DEFAULT '',
+			last_release_at DATETIME NULL,
+			volume_id       VARCHAR(255) NOT NULL DEFAULT '',
+			size_bytes      BIGINT NOT NULL DEFAULT 0,
+			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS builds (
-			id          INT AUTO_INCREMENT PRIMARY KEY,
-			repo_id     VARCHAR(255) NOT NULL,
-			git_head VARCHAR(255),
-			status      VARCHAR(255) NOT NULL DEFAULT 'pending',
-			started_at  DATETIME,
-			finished_at DATETIME,
-			log         LONGTEXT,
-			error       TEXT
-		) ENGINE=InnoDB`,
+			id                   INT AUTO_INCREMENT PRIMARY KEY,
+			repo_id              VARCHAR(255) NOT NULL,
+			git_head             VARCHAR(255),
+			status               VARCHAR(255) NOT NULL DEFAULT 'pending',
+			started_at           DATETIME NULL,
+			finished_at          DATETIME NULL,
+			log                  LONGTEXT,
+			error                TEXT,
+			rate_limited_retries INT DEFAULT 0,
+			prompt_tokens        BIGINT DEFAULT 0,
+			completion_tokens    BIGINT DEFAULT 0,
+			total_tokens         BIGINT DEFAULT 0,
+			saved_tokens         BIGINT DEFAULT 0
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS qa_sessions (
-			id          INT AUTO_INCREMENT PRIMARY KEY,
+			id         INT AUTO_INCREMENT PRIMARY KEY,
 			session_id VARCHAR(255),
-			repo_id     VARCHAR(255) NOT NULL,
-			user_id VARCHAR(255) NOT NULL,
-			question    TEXT NOT NULL,
-			answer      TEXT,
-			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-		) ENGINE=InnoDB`,
+			repo_id    VARCHAR(255) NOT NULL,
+			user_id    VARCHAR(255) NOT NULL,
+			question   TEXT NOT NULL,
+			answer     MEDIUMTEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS projects (
 			id              VARCHAR(255) PRIMARY KEY,
-			name VARCHAR(255) NOT NULL,
+			name            VARCHAR(255) NOT NULL,
 			tri_code        VARCHAR(255) NOT NULL DEFAULT '',
 			description     TEXT,
 			business_domain VARCHAR(255) NOT NULL DEFAULT '',
-			architecture_md VARCHAR(255) DEFAULT '',
-			local_path VARCHAR(255) NOT NULL,
+			architecture_md MEDIUMTEXT,
+			local_path      VARCHAR(512) NOT NULL,
 			status          VARCHAR(255) NOT NULL DEFAULT 'active',
 			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
-		) ENGINE=InnoDB`,
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS project_repos (
-			id          INT AUTO_INCREMENT PRIMARY KEY,
-			project_id  VARCHAR(255) NOT NULL,
-			repo_id     VARCHAR(255) NOT NULL,
+			id         INT AUTO_INCREMENT PRIMARY KEY,
+			project_id VARCHAR(255) NOT NULL,
+			repo_id    VARCHAR(255) NOT NULL,
 			alias_name VARCHAR(255) NOT NULL,
-			role        VARCHAR(255) DEFAULT 'service',
-			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			role       VARCHAR(255) DEFAULT 'service',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(project_id, repo_id),
 			UNIQUE(project_id, alias_name)
-		) ENGINE=InnoDB`,
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS project_qa_sessions (
-			id          INT AUTO_INCREMENT PRIMARY KEY,
+			id         INT AUTO_INCREMENT PRIMARY KEY,
 			session_id VARCHAR(255),
-			project_id  VARCHAR(255) NOT NULL,
-			user_id VARCHAR(255) NOT NULL,
-			question    TEXT NOT NULL,
-			answer      TEXT,
-			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-		) ENGINE=InnoDB`,
+			project_id VARCHAR(255) NOT NULL,
+			user_id    VARCHAR(255) NOT NULL,
+			question   TEXT NOT NULL,
+			answer     MEDIUMTEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 	}
 
 	for _, t := range tables {
@@ -260,87 +285,101 @@ func (db *DB) migrate() error {
 		}
 	}
 
-	// Try adding columns/tables for migrations
-	db.conn.Exec(`ALTER TABLE qa_sessions ADD COLUMN session_id VARCHAR(255)`)
-	db.conn.Exec(`ALTER TABLE repos ADD COLUMN tier VARCHAR(255) DEFAULT 'B'`)
-	db.conn.Exec(`ALTER TABLE repos ADD COLUMN business_domain VARCHAR(255) DEFAULT ''`)
-	db.conn.Exec(`ALTER TABLE repos ADD COLUMN last_release_at DATETIME`)
-	db.conn.Exec(`ALTER TABLE projects ADD COLUMN business_domain VARCHAR(255) DEFAULT ''`)
-	db.conn.Exec(`ALTER TABLE projects ADD COLUMN architecture_md VARCHAR(255) DEFAULT ''`)
-	db.conn.Exec(`ALTER TABLE projects ADD COLUMN tri_code VARCHAR(255) DEFAULT ''`)
-	db.conn.Exec(`ALTER TABLE builds ADD COLUMN rate_limited_retries INTEGER DEFAULT 0`)
-	db.conn.Exec(`ALTER TABLE builds ADD COLUMN prompt_tokens INTEGER DEFAULT 0`)
-	db.conn.Exec(`ALTER TABLE builds ADD COLUMN completion_tokens INTEGER DEFAULT 0`)
-	db.conn.Exec(`ALTER TABLE builds ADD COLUMN total_tokens INTEGER DEFAULT 0`)
-	db.conn.Exec(`ALTER TABLE builds ADD COLUMN saved_tokens INTEGER DEFAULT 0`)
+	// Best-effort incremental upgrades for pre-existing tables created without newer columns
+	alterStmts := []string{
+		`ALTER TABLE qa_sessions ADD COLUMN session_id VARCHAR(255)`,
+		`ALTER TABLE repos ADD COLUMN tier VARCHAR(64) NOT NULL DEFAULT 'B'`,
+		`ALTER TABLE repos ADD COLUMN business_domain VARCHAR(255) NOT NULL DEFAULT ''`,
+		`ALTER TABLE repos ADD COLUMN last_release_at DATETIME NULL`,
+		`ALTER TABLE repos ADD COLUMN volume_id VARCHAR(255) NOT NULL DEFAULT ''`,
+		`ALTER TABLE repos ADD COLUMN size_bytes BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE projects ADD COLUMN business_domain VARCHAR(255) NOT NULL DEFAULT ''`,
+		`ALTER TABLE projects ADD COLUMN architecture_md MEDIUMTEXT`,
+		`ALTER TABLE projects ADD COLUMN tri_code VARCHAR(255) NOT NULL DEFAULT ''`,
+		`ALTER TABLE builds ADD COLUMN rate_limited_retries INT DEFAULT 0`,
+		`ALTER TABLE builds ADD COLUMN prompt_tokens BIGINT DEFAULT 0`,
+		`ALTER TABLE builds ADD COLUMN completion_tokens BIGINT DEFAULT 0`,
+		`ALTER TABLE builds ADD COLUMN total_tokens BIGINT DEFAULT 0`,
+		`ALTER TABLE builds ADD COLUMN saved_tokens BIGINT DEFAULT 0`,
+		// Upgrade earlier VARCHAR(255)/INT columns if created by an older MySQL migration run
+		`ALTER TABLE projects MODIFY COLUMN architecture_md MEDIUMTEXT`,
+		`ALTER TABLE builds MODIFY COLUMN prompt_tokens BIGINT DEFAULT 0`,
+		`ALTER TABLE builds MODIFY COLUMN completion_tokens BIGINT DEFAULT 0`,
+		`ALTER TABLE builds MODIFY COLUMN total_tokens BIGINT DEFAULT 0`,
+		`ALTER TABLE builds MODIFY COLUMN saved_tokens BIGINT DEFAULT 0`,
+		`ALTER TABLE repos MODIFY COLUMN size_bytes BIGINT NOT NULL DEFAULT 0`,
+	}
+	for _, stmt := range alterStmts {
+		_, _ = db.conn.Exec(stmt)
+	}
 
 	batchTables := []string{
 		`CREATE TABLE IF NOT EXISTS batch_runs (
 			id              VARCHAR(255) PRIMARY KEY,
-			name VARCHAR(255) NOT NULL,
-			total_count     INTEGER DEFAULT 0,
-			processed_count INTEGER DEFAULT 0,
-			success_count   INTEGER DEFAULT 0,
-			skipped_count   INTEGER DEFAULT 0,
-			failed_count    INTEGER DEFAULT 0,
+			name            VARCHAR(255) NOT NULL,
+			total_count     INT DEFAULT 0,
+			processed_count INT DEFAULT 0,
+			success_count   INT DEFAULT 0,
+			skipped_count   INT DEFAULT 0,
+			failed_count    INT DEFAULT 0,
 			status          VARCHAR(255) NOT NULL DEFAULT 'pending',
-			max_concurrency INTEGER DEFAULT 2,
+			max_concurrency INT DEFAULT 2,
 			night_mode_only TINYINT(1) DEFAULT 0,
-			started_at      DATETIME,
-			finished_at     DATETIME,
+			started_at      DATETIME NULL,
+			finished_at     DATETIME NULL,
 			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
-		) ENGINE=InnoDB`,
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS batch_tasks (
 			id                INT AUTO_INCREMENT PRIMARY KEY,
 			batch_id          VARCHAR(255) NOT NULL,
 			repo_id           VARCHAR(255) NOT NULL,
 			status            VARCHAR(255) NOT NULL DEFAULT 'pending',
-			duration_sec      INTEGER DEFAULT 0,
+			duration_sec      INT DEFAULT 0,
 			prompt_tokens     BIGINT DEFAULT 0,
 			completion_tokens BIGINT DEFAULT 0,
 			total_tokens      BIGINT DEFAULT 0,
 			summary           TEXT,
 			error             TEXT,
-			started_at        DATETIME,
-			finished_at       DATETIME,
+			started_at        DATETIME NULL,
+			finished_at       DATETIME NULL,
 			UNIQUE(batch_id, repo_id)
-		) ENGINE=InnoDB`,
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS daily_token_usage (
-			date VARCHAR(255) NOT NULL,
-			business_domain    VARCHAR(255) NOT NULL DEFAULT '',
-			prompt_tokens      INTEGER DEFAULT 0,
-			completion_tokens  INTEGER DEFAULT 0,
-			total_tokens       INTEGER DEFAULT 0,
-			saved_tokens       INTEGER DEFAULT 0,
-			build_count        INTEGER DEFAULT 0,
-			skipped_count      INTEGER DEFAULT 0,
-			throttled_count    INTEGER DEFAULT 0,
-			total_duration_sec INTEGER DEFAULT 0,
+			date               VARCHAR(64) NOT NULL,
+			business_domain    VARCHAR(191) NOT NULL DEFAULT '',
+			prompt_tokens      BIGINT DEFAULT 0,
+			completion_tokens  BIGINT DEFAULT 0,
+			total_tokens       BIGINT DEFAULT 0,
+			saved_tokens       BIGINT DEFAULT 0,
+			build_count        INT DEFAULT 0,
+			skipped_count      INT DEFAULT 0,
+			throttled_count    INT DEFAULT 0,
+			total_duration_sec BIGINT DEFAULT 0,
 			updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (date, business_domain)
-		) ENGINE=InnoDB`,
-		"CREATE TABLE IF NOT EXISTS system_settings (\n\t\t\t`key`      VARCHAR(255) PRIMARY KEY,\n\t\t\tvalue      TEXT NOT NULL,\n\t\t\tupdated_at DATETIME DEFAULT CURRENT_TIMESTAMP\n\t\t) ENGINE=InnoDB",
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		"CREATE TABLE IF NOT EXISTS system_settings (\n\t\t\t`key`      VARCHAR(255) PRIMARY KEY,\n\t\t\tvalue      TEXT NOT NULL,\n\t\t\tupdated_at DATETIME DEFAULT CURRENT_TIMESTAMP\n\t\t) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 		`CREATE TABLE IF NOT EXISTS volumes (
 			id          VARCHAR(255) PRIMARY KEY,
-			mount_point VARCHAR(255) NOT NULL,
-			total_bytes INTEGER NOT NULL DEFAULT 0,
-			used_bytes  INTEGER NOT NULL DEFAULT 0,
-			status      VARCHAR(255) NOT NULL DEFAULT 'active',
+			mount_point VARCHAR(512) NOT NULL,
+			total_bytes BIGINT NOT NULL DEFAULT 0,
+			used_bytes  BIGINT NOT NULL DEFAULT 0,
+			status      VARCHAR(64) NOT NULL DEFAULT 'active',
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-		) ENGINE=InnoDB`,
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS volume_migrations (
 			id             INT AUTO_INCREMENT PRIMARY KEY,
-			repo_id VARCHAR(255) NOT NULL,
+			repo_id        VARCHAR(255) NOT NULL,
 			from_volume_id VARCHAR(255) NOT NULL,
-			to_volume_id VARCHAR(255) NOT NULL,
-			status         VARCHAR(255) NOT NULL DEFAULT 'planned',
+			to_volume_id   VARCHAR(255) NOT NULL,
+			status         VARCHAR(64) NOT NULL DEFAULT 'planned',
 			error          TEXT,
-			started_at     DATETIME,
-			finished_at    DATETIME,
+			started_at     DATETIME NULL,
+			finished_at    DATETIME NULL,
 			created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
-		) ENGINE=InnoDB`,
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 	}
 
 	for _, bt := range batchTables {
@@ -349,13 +388,22 @@ func (db *DB) migrate() error {
 		}
 	}
 
-	// Schema migrations for existing tables
-	_, _ = db.conn.Exec(`ALTER TABLE repos ADD COLUMN volume_id VARCHAR(255) DEFAULT ''`)
-	_, _ = db.conn.Exec(`ALTER TABLE repos ADD COLUMN size_bytes INTEGER DEFAULT 0`)
-	_, _ = db.conn.Exec(`ALTER TABLE daily_token_usage ADD COLUMN business_domain VARCHAR(255) DEFAULT ''`)
-	_, _ = db.conn.Exec(`ALTER TABLE daily_token_usage ADD COLUMN throttled_count INTEGER DEFAULT 0`)
-	_, _ = db.conn.Exec(`ALTER TABLE daily_token_usage ADD COLUMN total_duration_sec INTEGER DEFAULT 0`)
-	_, _ = db.conn.Exec(`CREATE UNIQUE INDEX idx_daily_tokens_pk ON daily_token_usage(date, business_domain)`)
+	// Incremental upgrades for batch/volume/usage tables from older schemas
+	batchAlterStmts := []string{
+		`ALTER TABLE daily_token_usage ADD COLUMN business_domain VARCHAR(191) NOT NULL DEFAULT ''`,
+		`ALTER TABLE daily_token_usage ADD COLUMN throttled_count INT DEFAULT 0`,
+		`ALTER TABLE daily_token_usage ADD COLUMN total_duration_sec BIGINT DEFAULT 0`,
+		`ALTER TABLE daily_token_usage MODIFY COLUMN prompt_tokens BIGINT DEFAULT 0`,
+		`ALTER TABLE daily_token_usage MODIFY COLUMN completion_tokens BIGINT DEFAULT 0`,
+		`ALTER TABLE daily_token_usage MODIFY COLUMN total_tokens BIGINT DEFAULT 0`,
+		`ALTER TABLE daily_token_usage MODIFY COLUMN saved_tokens BIGINT DEFAULT 0`,
+		`ALTER TABLE daily_token_usage MODIFY COLUMN total_duration_sec BIGINT DEFAULT 0`,
+		`ALTER TABLE volumes MODIFY COLUMN total_bytes BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE volumes MODIFY COLUMN used_bytes BIGINT NOT NULL DEFAULT 0`,
+	}
+	for _, stmt := range batchAlterStmts {
+		_, _ = db.conn.Exec(stmt)
+	}
 
 	defaultSettings := map[string]string{
 		"max_tpm":               "0",
@@ -415,11 +463,19 @@ type Repo struct {
 	UpdatedAt      string `json:"updated_at"`
 }
 
+func nullIfEmpty(s string) interface{} {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return nil
+	}
+	return trimmed
+}
+
 // ListRepos returns all registered repositories.
 func (db *DB) ListRepos() ([]Repo, error) {
 	rows, err := db.conn.Query(`SELECT id, name, git_url, branch, local_path, 
 		COALESCE(wiki_dir,''), COALESCE(static_dir,''), schedule, status, 
-		COALESCE(tier,'B'), COALESCE(business_domain,''), COALESCE(last_release_at,''),
+		COALESCE(tier,'B'), COALESCE(business_domain,''), COALESCE(DATE_FORMAT(last_release_at, '%Y-%m-%d %H:%i:%s'),''),
 		COALESCE(volume_id,''), COALESCE(size_bytes, 0),
 		created_at, updated_at FROM repos ORDER BY name`)
 	if err != nil {
@@ -447,7 +503,7 @@ func (db *DB) GetRepo(id string) (*Repo, error) {
 	r := &Repo{}
 	err := db.conn.QueryRow(`SELECT id, name, git_url, branch, local_path, 
 		COALESCE(wiki_dir,''), COALESCE(static_dir,''), schedule, status, 
-		COALESCE(tier,'B'), COALESCE(business_domain,''), COALESCE(last_release_at,''),
+		COALESCE(tier,'B'), COALESCE(business_domain,''), COALESCE(DATE_FORMAT(last_release_at, '%Y-%m-%d %H:%i:%s'),''),
 		COALESCE(volume_id,''), COALESCE(size_bytes, 0),
 		created_at, updated_at FROM repos WHERE id = ?`, id).
 		Scan(&r.ID, &r.Name, &r.GitURL, &r.Branch, &r.LocalPath,
@@ -476,7 +532,7 @@ func (db *DB) GetRepoByNameOrID(identifier string) (*Repo, error) {
 	r = &Repo{}
 	err = db.conn.QueryRow(`SELECT id, name, git_url, branch, local_path, 
 		COALESCE(wiki_dir,''), COALESCE(static_dir,''), schedule, status, 
-		COALESCE(tier,'B'), COALESCE(business_domain,''), COALESCE(last_release_at,''),
+		COALESCE(tier,'B'), COALESCE(business_domain,''), COALESCE(DATE_FORMAT(last_release_at, '%Y-%m-%d %H:%i:%s'),''),
 		COALESCE(volume_id,''), COALESCE(size_bytes, 0),
 		created_at, updated_at FROM repos WHERE name = ? LIMIT 1`, identifier).
 		Scan(&r.ID, &r.Name, &r.GitURL, &r.Branch, &r.LocalPath,
@@ -499,7 +555,7 @@ func (db *DB) CreateRepo(r *Repo) error {
 	_, err := db.conn.Exec(`INSERT INTO repos (id, name, git_url, branch, local_path, wiki_dir, static_dir, schedule, status, tier, business_domain, last_release_at, volume_id, size_bytes)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.Name, r.GitURL, r.Branch, r.LocalPath, r.WikiDir, r.StaticDir, r.Schedule, r.Status,
-		tier, r.BusinessDomain, r.LastReleaseAt, r.VolumeID, r.SizeBytes)
+		tier, r.BusinessDomain, nullIfEmpty(r.LastReleaseAt), r.VolumeID, r.SizeBytes)
 	return err
 }
 
@@ -511,7 +567,7 @@ func (db *DB) UpdateRepo(r *Repo) error {
 		tier = "B"
 	}
 	_, err := db.conn.Exec(`UPDATE repos SET name = ?, git_url = ?, branch = ?, local_path = ?, wiki_dir = ?, static_dir = ?, schedule = ?, status = ?, tier = ?, business_domain = ?, last_release_at = ?, volume_id = ?, size_bytes = ?, updated_at = ? WHERE id = ?`,
-		r.Name, r.GitURL, r.Branch, r.LocalPath, r.WikiDir, r.StaticDir, r.Schedule, r.Status, tier, r.BusinessDomain, r.LastReleaseAt, r.VolumeID, r.SizeBytes, timeStr, r.ID)
+		r.Name, r.GitURL, r.Branch, r.LocalPath, r.WikiDir, r.StaticDir, r.Schedule, r.Status, tier, r.BusinessDomain, nullIfEmpty(r.LastReleaseAt), r.VolumeID, r.SizeBytes, timeStr, r.ID)
 	return err
 }
 
@@ -705,9 +761,9 @@ func (db *DB) ListUserQASessions(repoID, userID string, limit int) ([]QASessionS
 	if userID != "" {
 		query := `
 			SELECT 
-				COALESCE(session_id, printf('legacy_%d', id)) as sess_id,
-				repo_id,
-				user_id,
+				COALESCE(session_id, CONCAT('legacy_', id)) as sess_id,
+				MIN(repo_id) as repo_id,
+				MIN(user_id) as user_id,
 				MIN(question) as first_question,
 				MIN(created_at) as first_created,
 				MAX(created_at) as last_created,
@@ -722,9 +778,9 @@ func (db *DB) ListUserQASessions(repoID, userID string, limit int) ([]QASessionS
 	} else {
 		query := `
 			SELECT 
-				COALESCE(session_id, printf('legacy_%d', id)) as sess_id,
-				repo_id,
-				user_id,
+				COALESCE(session_id, CONCAT('legacy_', id)) as sess_id,
+				MIN(repo_id) as repo_id,
+				MIN(user_id) as user_id,
 				MIN(question) as first_question,
 				MIN(created_at) as first_created,
 				MAX(created_at) as last_created,
@@ -763,19 +819,19 @@ func (db *DB) GetQASessionMessages(sessionID, userID string) ([]QASession, error
 	if userID != "" {
 		query := `
 			SELECT id, COALESCE(session_id,''), repo_id, user_id, question, COALESCE(answer,''), created_at
-			FROM qa_sessions WHERE (session_id = ? OR (session_id IS NULL AND printf('legacy_%d', id) = ?)) AND user_id = ?
+			FROM qa_sessions WHERE (session_id = ? OR (session_id IS NULL AND CONCAT('legacy_', id) = ?)) AND user_id = ?
 			UNION ALL
 			SELECT id, COALESCE(session_id,''), project_id, user_id, question, COALESCE(answer,''), created_at
-			FROM project_qa_sessions WHERE (session_id = ? OR (session_id IS NULL AND printf('legacy_%d', id) = ?)) AND user_id = ?
+			FROM project_qa_sessions WHERE (session_id = ? OR (session_id IS NULL AND CONCAT('legacy_', id) = ?)) AND user_id = ?
 			ORDER BY id ASC`
 		rows, err = db.conn.Query(query, sessionID, sessionID, userID, sessionID, sessionID, userID)
 	} else {
 		query := `
 			SELECT id, COALESCE(session_id,''), repo_id, user_id, question, COALESCE(answer,''), created_at
-			FROM qa_sessions WHERE session_id = ? OR (session_id IS NULL AND printf('legacy_%d', id) = ?)
+			FROM qa_sessions WHERE session_id = ? OR (session_id IS NULL AND CONCAT('legacy_', id) = ?)
 			UNION ALL
 			SELECT id, COALESCE(session_id,''), project_id, user_id, question, COALESCE(answer,''), created_at
-			FROM project_qa_sessions WHERE session_id = ? OR (session_id IS NULL AND printf('legacy_%d', id) = ?)
+			FROM project_qa_sessions WHERE session_id = ? OR (session_id IS NULL AND CONCAT('legacy_', id) = ?)
 			ORDER BY id ASC`
 		rows, err = db.conn.Query(query, sessionID, sessionID, sessionID, sessionID)
 	}
@@ -797,8 +853,8 @@ func (db *DB) GetQASessionMessages(sessionID, userID string) ([]QASession, error
 
 // DeleteQASession deletes a session and its messages.
 func (db *DB) DeleteQASession(sessionID, userID string) error {
-	_, err1 := db.conn.Exec(`DELETE FROM qa_sessions WHERE (session_id = ? OR printf('legacy_%d', id) = ?) AND (user_id = ? OR ? = '')`, sessionID, sessionID, userID, userID)
-	_, err2 := db.conn.Exec(`DELETE FROM project_qa_sessions WHERE (session_id = ? OR printf('legacy_%d', id) = ?) AND (user_id = ? OR ? = '')`, sessionID, sessionID, userID, userID)
+	_, err1 := db.conn.Exec(`DELETE FROM qa_sessions WHERE (session_id = ? OR CONCAT('legacy_', id) = ?) AND (user_id = ? OR ? = '')`, sessionID, sessionID, userID, userID)
+	_, err2 := db.conn.Exec(`DELETE FROM project_qa_sessions WHERE (session_id = ? OR CONCAT('legacy_', id) = ?) AND (user_id = ? OR ? = '')`, sessionID, sessionID, userID, userID)
 	if err1 != nil {
 		return err1
 	}
@@ -871,9 +927,9 @@ func (db *DB) ListUserProjectQASessions(projectID, userID string, limit int) ([]
 	if userID != "" {
 		query := `
 			SELECT 
-				COALESCE(session_id, printf('legacy_%d', id)) as sess_id,
-				project_id,
-				user_id,
+				COALESCE(session_id, CONCAT('legacy_', id)) as sess_id,
+				MIN(project_id) as project_id,
+				MIN(user_id) as user_id,
 				MIN(question) as first_question,
 				MIN(created_at) as first_created,
 				MAX(created_at) as last_created,
@@ -888,9 +944,9 @@ func (db *DB) ListUserProjectQASessions(projectID, userID string, limit int) ([]
 	} else {
 		query := `
 			SELECT 
-				COALESCE(session_id, printf('legacy_%d', id)) as sess_id,
-				project_id,
-				user_id,
+				COALESCE(session_id, CONCAT('legacy_', id)) as sess_id,
+				MIN(project_id) as project_id,
+				MIN(user_id) as user_id,
 				MIN(question) as first_question,
 				MIN(created_at) as first_created,
 				MAX(created_at) as last_created,
@@ -1130,7 +1186,7 @@ func (db *DB) GetProjectRepos(projectID string) ([]RepoWithAlias, error) {
 		SELECT r.id, r.name, r.git_url, r.branch, r.local_path, 
 		       COALESCE(r.wiki_dir,''), COALESCE(r.static_dir,''), r.schedule, r.status, 
 		       r.created_at, r.updated_at, pr.alias_name, COALESCE(pr.role, 'service'),
-		       COALESCE(r.tier,'B'), COALESCE(r.business_domain,''), COALESCE(r.last_release_at,''),
+		       COALESCE(r.tier,'B'), COALESCE(r.business_domain,''), COALESCE(DATE_FORMAT(r.last_release_at, '%Y-%m-%d %H:%i:%s'),''),
 		       COALESCE(r.volume_id,'disk0'), COALESCE(r.size_bytes,0)
 		FROM project_repos pr
 		JOIN repos r ON pr.repo_id = r.id
@@ -1337,16 +1393,17 @@ func (db *DB) RecordDailyTokenUsage(u *DailyTokenUsage) error {
 	_, err := db.conn.Exec(`INSERT INTO daily_token_usage (date, business_domain, prompt_tokens, completion_tokens, total_tokens, saved_tokens, build_count, skipped_count, throttled_count, total_duration_sec, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON DUPLICATE KEY UPDATE
-			prompt_tokens = prompt_tokens + VALUES(prompt_tokens),
-			completion_tokens = completion_tokens + VALUES(completion_tokens),
-			total_tokens = total_tokens + VALUES(total_tokens),
-			saved_tokens = saved_tokens + VALUES(saved_tokens),
-			build_count = build_count + VALUES(build_count),
-			skipped_count = skipped_count + VALUES(skipped_count),
-			throttled_count = throttled_count + VALUES(throttled_count),
-			total_duration_sec = total_duration_sec + VALUES(total_duration_sec),
+			prompt_tokens = prompt_tokens + ?,
+			completion_tokens = completion_tokens + ?,
+			total_tokens = total_tokens + ?,
+			saved_tokens = saved_tokens + ?,
+			build_count = build_count + ?,
+			skipped_count = skipped_count + ?,
+			throttled_count = throttled_count + ?,
+			total_duration_sec = total_duration_sec + ?,
 			updated_at = CURRENT_TIMESTAMP`,
-		u.Date, domain, u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.SavedTokens, u.BuildCount, u.SkippedCount, u.ThrottledCount, u.TotalDurationSec)
+		u.Date, domain, u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.SavedTokens, u.BuildCount, u.SkippedCount, u.ThrottledCount, u.TotalDurationSec,
+		u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.SavedTokens, u.BuildCount, u.SkippedCount, u.ThrottledCount, u.TotalDurationSec)
 	return err
 }
 
@@ -1477,7 +1534,7 @@ func (db *DB) GetSetting(key string, defaultVal ...string) (string, error) {
 
 // SetSetting upserts a setting key/value.
 func (db *DB) SetSetting(key, val string) error {
-	_, err := db.conn.Exec("INSERT INTO system_settings (`key`, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)\n\t\tON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = CURRENT_TIMESTAMP", key, val)
+	_, err := db.conn.Exec("INSERT INTO system_settings (`key`, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)\n\t\tON DUPLICATE KEY UPDATE value = ?, updated_at = CURRENT_TIMESTAMP", key, val, val)
 	return err
 }
 
@@ -1546,11 +1603,13 @@ func (db *DB) CreateVolume(v *Volume) error {
 	_, err := db.conn.Exec(`INSERT INTO volumes (id, mount_point, total_bytes, used_bytes, status)
 		VALUES (?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
-			mount_point = VALUES(mount_point),
-			total_bytes = VALUES(total_bytes),
-			used_bytes = VALUES(used_bytes),
-			status = VALUES(status),
-			updated_at = CURRENT_TIMESTAMP`, v.ID, v.MountPoint, v.TotalBytes, v.UsedBytes, status)
+			mount_point = ?,
+			total_bytes = ?,
+			used_bytes = ?,
+			status = ?,
+			updated_at = CURRENT_TIMESTAMP`,
+		v.ID, v.MountPoint, v.TotalBytes, v.UsedBytes, status,
+		v.MountPoint, v.TotalBytes, v.UsedBytes, status)
 	return err
 }
 

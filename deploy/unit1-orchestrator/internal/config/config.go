@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // Config holds all orchestrator configuration.
@@ -23,6 +24,7 @@ type Config struct {
 	LogBaseDir      string `json:"log_base_dir"`       // base directory for logs (e.g. /data/disk_log)
 	DBPath          string `json:"db_path"`             // legacy SQLite path (unused with MySQL)
 	DBDSN           string `json:"db_dsn"`              // MySQL DSN, e.g. "openwiki:pass@tcp(127.0.0.1:3306)/openwiki?parseTime=true"
+	DBAutoMigrate   bool   `json:"db_auto_migrate"`     // Run schema DDL on startup (default true; set DB_AUTO_MIGRATE=false in restricted bank prod)
 
 	// OpenWiki provider settings
 	OpenwikiProvider   string `json:"openwiki_provider"`     // e.g. "openai", "gemini"
@@ -68,6 +70,7 @@ func DefaultConfig() *Config {
 		LogBaseDir:       filepath.Join(home, ".openwiki", "disk_log"),
 		DBPath:             "orchestrator.db",
 		DBDSN:              "",
+		DBAutoMigrate:      true,
 		LLMTimeoutSec:      600,
 		LLMProxyMaxRetries: 6,
 		MaxConcurrentQA:    5,
@@ -118,6 +121,9 @@ func overrideEnv(cfg *Config) {
 	}
 	if envDSN := os.Getenv("DB_DSN"); envDSN != "" {
 		cfg.DBDSN = envDSN
+	}
+	if envAutoMigrate := os.Getenv("DB_AUTO_MIGRATE"); envAutoMigrate != "" {
+		cfg.DBAutoMigrate = envAutoMigrate != "false" && envAutoMigrate != "0"
 	}
 	if envStatic := os.Getenv("STATIC_OUTPUT_DIR"); envStatic != "" {
 		cfg.StaticOutputDir = envStatic
@@ -182,6 +188,72 @@ func overrideEnv(cfg *Config) {
 	if envRetries := os.Getenv("LLM_PROXY_MAX_RETRIES"); envRetries != "" {
 		if n, err := strconv.Atoi(envRetries); err == nil && n >= 0 {
 			cfg.LLMProxyMaxRetries = n
+		}
+	}
+
+	readDotEnvFallback(cfg)
+}
+
+func readDotEnvFallback(cfg *Config) {
+	if cfg.OpenAIUpstreamURL != "" && cfg.OpenwikiAPIKey != "" {
+		return
+	}
+	dotEnvPath := os.Getenv("OPENWIKI_HOME")
+	if dotEnvPath != "" {
+		dotEnvPath = filepath.Join(dotEnvPath, ".env")
+	} else if home, err := os.UserHomeDir(); err == nil && home != "" {
+		dotEnvPath = filepath.Join(home, ".openwiki", ".env")
+	}
+	if dotEnvPath == "" {
+		return
+	}
+	data, err := os.ReadFile(dotEnvPath)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	envMap := make(map[string]string)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			k := strings.TrimSpace(parts[0])
+			v := strings.TrimSpace(parts[1])
+			v = strings.Trim(v, `"'`)
+			envMap[k] = v
+		}
+	}
+	if cfg.OpenAIUpstreamURL == "" {
+		if u := envMap["OPENAI_UPSTREAM_URL"]; u != "" {
+			cfg.OpenAIUpstreamURL = u
+		} else if u := envMap["OPENAI_COMPATIBLE_BASE_URL"]; u != "" {
+			cfg.OpenAIUpstreamURL = u
+		} else if u := envMap["OPENAI_BASE_URL"]; u != "" {
+			cfg.OpenAIUpstreamURL = u
+		}
+	}
+	if cfg.OpenwikiAPIKey == "" {
+		if k := envMap["OPENAI_COMPATIBLE_API_KEY"]; k != "" {
+			cfg.OpenwikiAPIKey = k
+		} else if k := envMap["OPENAI_API_KEY"]; k != "" {
+			cfg.OpenwikiAPIKey = k
+		} else if k := envMap["OPENWIKI_API_KEY"]; k != "" {
+			cfg.OpenwikiAPIKey = k
+		}
+	}
+	if cfg.OpenwikiProvider == "" {
+		if p := envMap["OPENWIKI_PROVIDER"]; p != "" {
+			cfg.OpenwikiProvider = p
+		}
+	}
+	if cfg.OpenwikiModel == "" {
+		if m := envMap["OPENWIKI_MODEL_ID"]; m != "" {
+			cfg.OpenwikiModel = m
+		} else if m := envMap["OPENWIKI_MODEL"]; m != "" {
+			cfg.OpenwikiModel = m
 		}
 	}
 }

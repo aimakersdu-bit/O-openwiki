@@ -12,6 +12,7 @@ type Config struct {
 	Port            int    `yaml:"port"`
 	DBPath          string `yaml:"db_path"`
 	DBDSN           string `yaml:"db_dsn"`
+	DBAutoMigrate   bool   `yaml:"db_auto_migrate"`
 	OrchestratorURL string `yaml:"orchestrator_url"` // e.g. http://127.0.0.1:3000
 	StaticOutputDir string `yaml:"static_output_dir"` // e.g. ~/.openwiki/static
 
@@ -52,6 +53,7 @@ func DefaultConfig() *Config {
 		Port:            8080,
 		DBPath:          "portal.db",
 		DBDSN:           "",
+		DBAutoMigrate:   true,
 		OrchestratorURL: "http://127.0.0.1:3000",
 		StaticOutputDir: filepath.Join(home, ".openwiki", "static"),
 		SessionTTLHours: 24,
@@ -103,6 +105,9 @@ func overrideEnv(cfg *Config) {
 	}
 	if envDSN := os.Getenv("PORTAL_DB_DSN"); envDSN != "" {
 		cfg.DBDSN = envDSN
+	}
+	if envAutoMigrate := os.Getenv("DB_AUTO_MIGRATE"); envAutoMigrate != "" {
+		cfg.DBAutoMigrate = envAutoMigrate != "false" && envAutoMigrate != "0"
 	}
 	if envOrch := os.Getenv("ORCHESTRATOR_URL"); envOrch != "" {
 		cfg.OrchestratorURL = envOrch

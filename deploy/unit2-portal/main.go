@@ -37,11 +37,11 @@ func main() {
 	if cfg.DBDSN == "" {
 		log.Fatalf("PORTAL_DB_DSN is required (MySQL DSN, e.g. openwiki:pass@tcp(127.0.0.1:3306)/openwiki?parseTime=true)")
 	}
-	if err := db.InitDB(cfg.DBDSN); err != nil {
+	if err := db.InitDBWithOptions(cfg.DBDSN, cfg.DBAutoMigrate); err != nil {
 		log.Fatalf("Failed to initialize portal database: %v", err)
 	}
 	defer db.CloseDB()
-	log.Printf("Portal database initialized (MySQL)")
+	log.Printf("Portal database initialized (MySQL, auto_migrate=%v)", cfg.DBAutoMigrate)
 
 	// Resolve public static frontend directory dynamically with fallback candidates
 	publicPath := *publicDir

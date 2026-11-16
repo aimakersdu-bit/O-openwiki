@@ -20,8 +20,13 @@ type Session struct {
 	ExpiresAt   time.Time `json:"expires_at"`
 }
 
-// InitDB opens MySQL connection and creates tables.
+// InitDB opens MySQL connection and runs migrations by default.
 func InitDB(dsn string) error {
+	return InitDBWithOptions(dsn, true)
+}
+
+// InitDBWithOptions opens MySQL connection and optionally creates tables/indexes.
+func InitDBWithOptions(dsn string, autoMigrate bool) error {
 	var err error
 	DB, err = sql.Open("mysql", dsn)
 	if err != nil {
@@ -31,6 +36,13 @@ func InitDB(dsn string) error {
 	DB.SetMaxIdleConns(10)
 	DB.SetConnMaxLifetime(5 * time.Minute)
 
+	if !autoMigrate {
+		if err := DB.Ping(); err != nil {
+			return fmt.Errorf("failed to ping database: %w", err)
+		}
+		return nil
+	}
+
 	tables := []string{
 		`CREATE TABLE IF NOT EXISTS sessions (
 			token VARCHAR(255) PRIMARY KEY,
@@ -39,21 +51,21 @@ func InitDB(dsn string) error {
 			role VARCHAR(255) DEFAULT 'user',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			expires_at DATETIME NOT NULL
-		) ENGINE=InnoDB`,
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS users (
 			username VARCHAR(255) PRIMARY KEY,
 			display_name TEXT,
 			role VARCHAR(255) NOT NULL DEFAULT 'user',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		) ENGINE=InnoDB`,
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS user_domain_grants (
 			username VARCHAR(255) NOT NULL,
 			business_domain VARCHAR(255) NOT NULL,
 			granted_by VARCHAR(255) NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (username, business_domain)
-		) ENGINE=InnoDB`,
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS audit_logs (
 			id INT AUTO_INCREMENT PRIMARY KEY,
 			operator VARCHAR(255) NOT NULL,
@@ -62,23 +74,25 @@ func InitDB(dsn string) error {
 			target_id VARCHAR(255) NOT NULL,
 			details TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		) ENGINE=InnoDB`,
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS business_domains (
 			id INT AUTO_INCREMENT PRIMARY KEY,
 			name VARCHAR(255) NOT NULL UNIQUE,
 			code VARCHAR(255) DEFAULT '',
-			description VARCHAR(255) DEFAULT '',
+			description TEXT,
 			sort_order INT DEFAULT 0,
 			status VARCHAR(255) NOT NULL DEFAULT 'active',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		) ENGINE=InnoDB`,
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 	}
 	for _, t := range tables {
 		if _, err := DB.Exec(t); err != nil {
 			return fmt.Errorf("failed to execute schema: %w", err)
 		}
 	}
+	// Best-effort column upgrade if created by earlier migration
+	_, _ = DB.Exec(`ALTER TABLE business_domains MODIFY COLUMN description TEXT`)
 	indices := []string{
 		`CREATE INDEX idx_sessions_user ON sessions(user_id)`,
 		`CREATE INDEX idx_grants_user ON user_domain_grants(username)`,
@@ -108,8 +122,8 @@ func SaveSession(s *Session) error {
 	INSERT INTO sessions (token, user_id, display_name, role, created_at, expires_at)
 	VALUES (?, ?, ?, ?, ?, ?)
 	ON DUPLICATE KEY UPDATE
-		role = VALUES(role),
-		expires_at = VALUES(expires_at)
+		role = ?,
+		expires_at = ?
 	`
 	timeFormat := "2006-01-02 15:04:05"
 	createdAtStr := time.Now().UTC().Format(timeFormat)
@@ -119,7 +133,7 @@ func SaveSession(s *Session) error {
 		s.Role = "user"
 	}
 
-	_, err := DB.Exec(query, s.Token, s.UserID, s.DisplayName, s.Role, createdAtStr, expiresAtStr)
+	_, err := DB.Exec(query, s.Token, s.UserID, s.DisplayName, s.Role, createdAtStr, expiresAtStr, s.Role, expiresAtStr)
 	return err
 }
 
@@ -127,7 +141,7 @@ func SaveSession(s *Session) error {
 func GetSession(token string) (*Session, error) {
 	query := `
 	SELECT token, user_id, display_name, COALESCE(role, 'user'), created_at, expires_at
-	FROM sessions WHERE token = ? AND expires_at > CURRENT_TIMESTAMP;
+	FROM sessions WHERE token = ? AND expires_at > UTC_TIMESTAMP();
 	`
 	row := DB.QueryRow(query, token)
 	var s Session
@@ -149,7 +163,7 @@ func DeleteSession(token string) error {
 
 // CleanExpiredSessions removes expired sessions from DB.
 func CleanExpiredSessions() error {
-	_, err := DB.Exec("DELETE FROM sessions WHERE expires_at <= CURRENT_TIMESTAMP")
+	_, err := DB.Exec("DELETE FROM sessions WHERE expires_at <= UTC_TIMESTAMP()")
 	return err
 }
 
@@ -190,10 +204,10 @@ func UpsertUser(u *User) error {
 	INSERT INTO users (username, display_name, role, updated_at)
 	VALUES (?, ?, ?, CURRENT_TIMESTAMP)
 	ON DUPLICATE KEY UPDATE
-		display_name = VALUES(display_name),
+		display_name = ?,
 		updated_at = CURRENT_TIMESTAMP
 	`
-	_, err := DB.Exec(query, u.Username, u.DisplayName, u.Role)
+	_, err := DB.Exec(query, u.Username, u.DisplayName, u.Role, u.DisplayName)
 	return err
 }
 
@@ -203,10 +217,10 @@ func SetUserRole(username, role string) error {
 	INSERT INTO users (username, role, updated_at)
 	VALUES (?, ?, CURRENT_TIMESTAMP)
 	ON DUPLICATE KEY UPDATE
-		role = VALUES(role),
+		role = ?,
 		updated_at = CURRENT_TIMESTAMP
 	`
-	_, err := DB.Exec(query, username, role)
+	_, err := DB.Exec(query, username, role, role)
 	return err
 }
 
