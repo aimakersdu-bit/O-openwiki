@@ -19,28 +19,22 @@ import (
 )
 
 func setupTestServer(t *testing.T) (*Server, func()) {
-	tmpDir, err := os.MkdirTemp("", "mcp_test_db_*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
+	dsn := os.Getenv("TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("skipping database test: TEST_MYSQL_DSN not set (requires MySQL database)")
 	}
 
-	dbPath := filepath.Join(tmpDir, "test.db")
-	database, err := db.Open(dbPath)
+	database, err := db.Open(dsn)
 	if err != nil {
-		os.RemoveAll(tmpDir)
 		t.Fatalf("failed to open test db: %v", err)
 	}
 
 	cfg := config.DefaultConfig()
-	cfg.DBPath = dbPath
-
-	// We pass nil qaMgr for non-execution tests
 	server := NewServer(cfg, database, nil)
 
 	cleanup := func() {
 		server.sessions.Stop()
 		database.Close()
-		os.RemoveAll(tmpDir)
 	}
 
 	return server, cleanup
@@ -418,12 +412,11 @@ func (m *mockQATransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestMCPListProjectsAndAskByTriCode(t *testing.T) {
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "mcp_projects.db")
-	if err := db.InitDB(dbPath); err != nil {
-		t.Fatalf("InitDB failed: %v", err)
+	dsn := os.Getenv("TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("skipping test: TEST_MYSQL_DSN not set (requires MySQL database)")
 	}
-	defer db.CloseDB()
-	database, err := db.Open(dbPath)
+	database, err := db.Open(dsn)
 	if err != nil {
 		t.Fatalf("db.Open failed: %v", err)
 	}
@@ -434,7 +427,7 @@ func TestMCPListProjectsAndAskByTriCode(t *testing.T) {
 	qaMgr.SetTransport(mockTr)
 
 	cfg := config.DefaultConfig()
-	cfg.DBPath = dbPath
+	cfg.DBPath = dsn
 	server := NewServer(cfg, database, qaMgr)
 	defer server.sessions.Stop()
 
@@ -532,5 +525,133 @@ func TestMCPListProjectsAndAskByTriCode(t *testing.T) {
 		if res.IsError || !strings.Contains(res.Content[0].Text, "DEO microservice architecture answer") {
 			t.Fatalf("expected ask_repository(%s) fallback to proj-deo, got %+v", key, res)
 		}
+	}
+}
+
+func TestMCP_ListRepositoryDocsAndReadDoc(t *testing.T) {
+	server, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	tmpRepoDir, err := os.MkdirTemp("", "mcp_repo_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpRepoDir)
+
+	wikiDir := filepath.Join(tmpRepoDir, "openwiki")
+	_ = os.MkdirAll(filepath.Join(wikiDir, "architecture"), 0755)
+	_ = os.MkdirAll(filepath.Join(wikiDir, "knowledge"), 0755)
+
+	doc1 := "---\ntype: Architecture\ntitle: 架构总览\n---\n# 架构总览\n内容"
+	_ = os.WriteFile(filepath.Join(wikiDir, "architecture", "overview.md"), []byte(doc1), 0644)
+
+	doc2 := "---\ntype: Knowledge\ntitle: 支付业务专题\n---\n# 支付业务专题\n支付核心链路说明"
+	_ = os.WriteFile(filepath.Join(wikiDir, "knowledge", "pay_flow.md"), []byte(doc2), 0644)
+
+	// Register repo in DB
+	repo := &db.Repo{
+		ID:        "repo-test-docs",
+		Name:      "test-docs-repo",
+		LocalPath: tmpRepoDir,
+		Status:    "active",
+	}
+	if err := server.database.CreateRepo(repo); err != nil {
+		t.Fatalf("create repo failed: %v", err)
+	}
+
+	// 1. Test list_repository_docs
+	listReq, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      10,
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name": "list_repository_docs",
+			"arguments": map[string]interface{}{
+				"repo_name": "repo-test-docs",
+			},
+		},
+	})
+	resp, err := server.ProcessJSONRPC(context.Background(), nil, listReq)
+	if err != nil || resp.Error != nil {
+		t.Fatalf("list_repository_docs failed: %v %v", err, resp)
+	}
+	res := resp.Result.(*CallToolResult)
+	if res.IsError {
+		t.Fatalf("list_repository_docs returned error: %s", res.Content[0].Text)
+	}
+	if !strings.Contains(res.Content[0].Text, "architecture/overview.md") || !strings.Contains(res.Content[0].Text, "knowledge/pay_flow.md") {
+		t.Fatalf("list_repository_docs missing docs: %s", res.Content[0].Text)
+	}
+
+	// 2. Test read_repository_doc
+	readReq, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      11,
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name": "read_repository_doc",
+			"arguments": map[string]interface{}{
+				"repo_name": "repo-test-docs",
+				"doc_path":  "knowledge/pay_flow.md",
+			},
+		},
+	})
+	respRead, err := server.ProcessJSONRPC(context.Background(), nil, readReq)
+	if err != nil || respRead.Error != nil {
+		t.Fatalf("read_repository_doc failed: %v %v", err, respRead)
+	}
+	resRead := respRead.Result.(*CallToolResult)
+	if resRead.IsError || !strings.Contains(resRead.Content[0].Text, "支付核心链路说明") {
+		t.Fatalf("read_repository_doc unexpected content: %+v", resRead)
+	}
+
+	// 3. Test path traversal safety
+	attackReq, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      12,
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name": "read_repository_doc",
+			"arguments": map[string]interface{}{
+				"repo_name": "repo-test-docs",
+				"doc_path":  "../../etc/passwd",
+			},
+		},
+	})
+	respAttack, err := server.ProcessJSONRPC(context.Background(), nil, attackReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resAttack := respAttack.Result.(*CallToolResult)
+	if !resAttack.IsError {
+		t.Fatalf("expected error on path traversal attack, got success: %+v", resAttack)
+	}
+}
+
+func TestMCP_ToolsRegistered(t *testing.T) {
+	server := &Server{}
+	tools := server.GetTools()
+
+	var hasListDocs, hasReadDoc bool
+	for _, tool := range tools {
+		if tool.Name == "list_repository_docs" {
+			hasListDocs = true
+			if len(tool.InputSchema.Required) == 0 || tool.InputSchema.Required[0] != "repo_name" {
+				t.Errorf("list_repository_docs should require repo_name")
+			}
+		}
+		if tool.Name == "read_repository_doc" {
+			hasReadDoc = true
+			if len(tool.InputSchema.Required) < 2 {
+				t.Errorf("read_repository_doc should require repo_name and doc_path")
+			}
+		}
+	}
+
+	if !hasListDocs {
+		t.Errorf("expected list_repository_docs to be registered in GetTools")
+	}
+	if !hasReadDoc {
+		t.Errorf("expected read_repository_doc to be registered in GetTools")
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -104,6 +106,42 @@ func (s *Server) GetTools() []Tool {
 				Properties: map[string]PropertySchema{},
 			},
 		},
+		{
+			Name:        "list_repository_docs",
+			Description: "列出指定代码仓库中已构建的所有知识文档清单，包含系统自动生成的架构文档与团队维护的专题业务文档（knowledge/）。返回文档相对路径、类型、标题与字节大小。",
+			InputSchema: ToolInputSchema{
+				Type: "object",
+				Properties: map[string]PropertySchema{
+					"repo_name": {
+						Type:        "string",
+						Description: "目标代码仓库 ID 或名称（例如: zk-service、test）",
+					},
+					"category": {
+						Type:        "string",
+						Description: "可选筛选类别: 'all'(默认全部), 'knowledge'(仅团队专题文档), 'architecture'(仅架构文档)",
+					},
+				},
+				Required: []string{"repo_name"},
+			},
+		},
+		{
+			Name:        "read_repository_doc",
+			Description: "直接读取目标代码仓库中特定 Wiki 文档的完整 Markdown 正文内容。支持传入从 list_repository_docs 获取到的相对路径（如 'architecture/overview.md' 或 'knowledge/pay_flow.md'）。内置目录沙箱防护。",
+			InputSchema: ToolInputSchema{
+				Type: "object",
+				Properties: map[string]PropertySchema{
+					"repo_name": {
+						Type:        "string",
+						Description: "目标代码仓库 ID 或名称",
+					},
+					"doc_path": {
+						Type:        "string",
+						Description: "文档相对路径（例如: 'knowledge/zk_guide.md' 或 'architecture/overview.md'）",
+					},
+				},
+				Required: []string{"repo_name", "doc_path"},
+			},
+		},
 	}
 }
 
@@ -118,6 +156,10 @@ func (s *Server) ExecuteTool(ctx context.Context, session *ClientSession, name s
 		return s.handleListRepositories(ctx)
 	case "list_projects":
 		return s.handleListProjects(ctx)
+	case "list_repository_docs":
+		return s.handleListRepositoryDocs(ctx, args)
+	case "read_repository_doc":
+		return s.handleReadRepositoryDoc(ctx, args)
 	default:
 		return &CallToolResult{
 			IsError: true,
@@ -500,6 +542,155 @@ func (s *Server) handleListProjects(ctx context.Context) (*CallToolResult, error
 	data, err := json.MarshalIndent(results, "", "  ")
 	if err != nil {
 		return nil, err
+	}
+
+	return &CallToolResult{
+		IsError: false,
+		Content: []ContentItem{{
+			Type: "text",
+			Text: string(data),
+		}},
+	}, nil
+}
+
+type RepoDocSummary struct {
+	Path      string `json:"path"`
+	Title     string `json:"title"`
+	Type      string `json:"type"` // "custom_knowledge" or "architecture_wiki"
+	SizeBytes int64  `json:"size_bytes"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+func (s *Server) handleListRepositoryDocs(ctx context.Context, args map[string]any) (*CallToolResult, error) {
+	repoName := firstStringArg(args, "repo_name", "key", "id")
+	if repoName == "" {
+		return mcpErrorResult("repo_name is required."), nil
+	}
+	category := strings.ToLower(firstStringArg(args, "category"))
+
+	targetRepo, err := s.database.GetRepoByNameOrID(repoName)
+	if err != nil {
+		return nil, fmt.Errorf("database query failed: %w", err)
+	}
+	if targetRepo == nil {
+		return mcpErrorResult(fmt.Sprintf("repository '%s' not found.", repoName)), nil
+	}
+
+	wikiDir := targetRepo.WikiDir
+	if wikiDir == "" {
+		wikiDir = filepath.Join(targetRepo.LocalPath, "openwiki")
+	}
+
+	info, err := os.Stat(wikiDir)
+	if err != nil || !info.IsDir() {
+		return mcpErrorResult(fmt.Sprintf("wiki directory for repository '%s' not found or not built yet.", repoName)), nil
+	}
+
+	docs := make([]RepoDocSummary, 0)
+	_ = filepath.Walk(wikiDir, func(path string, fi os.FileInfo, err error) error {
+		if err != nil || fi.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(strings.ToLower(fi.Name()), ".md") {
+			return nil
+		}
+
+		rel, err := filepath.Rel(wikiDir, path)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+
+		isKnowledge := strings.HasPrefix(rel, "knowledge/")
+		if category == "knowledge" && !isKnowledge {
+			return nil
+		}
+		if category == "architecture" && isKnowledge {
+			return nil
+		}
+
+		docType := "architecture_wiki"
+		if isKnowledge {
+			docType = "custom_knowledge"
+		}
+
+		// Quick title extraction
+		title := strings.TrimSuffix(fi.Name(), ".md")
+		if data, err := os.ReadFile(path); err == nil {
+			lines := strings.Split(string(data), "\n")
+			for _, l := range lines {
+				l = strings.TrimSpace(l)
+				if strings.HasPrefix(l, "title:") {
+					title = strings.TrimSpace(strings.TrimPrefix(l, "title:"))
+					title = strings.Trim(title, `"'`)
+					break
+				}
+				if strings.HasPrefix(l, "# ") {
+					title = strings.TrimSpace(strings.TrimPrefix(l, "# "))
+					break
+				}
+			}
+		}
+
+		docs = append(docs, RepoDocSummary{
+			Path:      rel,
+			Title:     title,
+			Type:      docType,
+			SizeBytes: fi.Size(),
+			UpdatedAt: fi.ModTime().Format(time.RFC3339),
+		})
+		return nil
+	})
+
+	data, err := json.MarshalIndent(docs, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+
+	return &CallToolResult{
+		IsError: false,
+		Content: []ContentItem{{
+			Type: "text",
+			Text: string(data),
+		}},
+	}, nil
+}
+
+func (s *Server) handleReadRepositoryDoc(ctx context.Context, args map[string]any) (*CallToolResult, error) {
+	repoName := firstStringArg(args, "repo_name", "key", "id")
+	if repoName == "" {
+		return mcpErrorResult("repo_name is required."), nil
+	}
+	docPath := firstStringArg(args, "doc_path", "path", "file")
+	if docPath == "" {
+		return mcpErrorResult("doc_path is required."), nil
+	}
+
+	targetRepo, err := s.database.GetRepoByNameOrID(repoName)
+	if err != nil {
+		return nil, fmt.Errorf("database query failed: %w", err)
+	}
+	if targetRepo == nil {
+		return mcpErrorResult(fmt.Sprintf("repository '%s' not found.", repoName)), nil
+	}
+
+	wikiDir := targetRepo.WikiDir
+	if wikiDir == "" {
+		wikiDir = filepath.Join(targetRepo.LocalPath, "openwiki")
+	}
+
+	cleanDocPath := filepath.Clean(docPath)
+	fullPath := filepath.Clean(filepath.Join(wikiDir, cleanDocPath))
+
+	// Jail security check: strictly ensure target is inside wikiDir
+	rel, err := filepath.Rel(wikiDir, fullPath)
+	if err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
+		return mcpErrorResult("Access denied: path escapes the repository wiki directory."), nil
+	}
+
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return mcpErrorResult(fmt.Sprintf("document '%s' not found in repository '%s'.", docPath, repoName)), nil
 	}
 
 	return &CallToolResult{
