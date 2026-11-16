@@ -371,6 +371,7 @@ func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir 
 	} else {
 		b.logStep(repoID, "visualizer assets copied successfully", &logBuf, onProgress...)
 	}
+	b.copyKnowledgeAssets(wikiDir, stagingDir, &logBuf)
 
 	// Step 4: Copy vendor libraries (intranet offline) into staging directory
 	b.logStep(repoID, "=== Step 4: Copy vendor libraries ===", &logBuf, onProgress...)
@@ -418,6 +419,7 @@ func (b *Builder) DeployVisualizer(wikiDir, staticDir string) error {
 	var logBuf strings.Builder
 	_ = b.exportGraph(wikiDir, staticDir, &logBuf)
 	_ = b.copyVisualizerAssets(staticDir, &logBuf)
+	b.copyKnowledgeAssets(wikiDir, staticDir, &logBuf)
 	_ = b.copyVendorAssets(staticDir, &logBuf)
 	b.EnsureStaticPermissions(staticDir)
 	return nil
@@ -701,46 +703,56 @@ func (b *Builder) RepairStaticOutputDir() {
 	_ = os.Chmod(b.StaticOutputDir, 0755)
 }
 
-// ingestKnowledge detects a doc/knowledge directory in the repository and symlinks
-// its Markdown files into openwiki/knowledge/ so the openwiki agent can discover and
-// reference them during wiki generation, static export, and graph building.
-// It is non-invasive: source files remain owned by the repo. Repos without doc/knowledge
-// are silently skipped (returns false).
+// ingestKnowledge detects a knowledge directory (doc/knowledge, docs, wiki, or .openwikirc)
+// and normalizes/copies its Markdown files and image assets into openwiki/knowledge/
+// so the openwiki agent and graph builder can discover and reference them.
 func (b *Builder) ingestKnowledge(repoID, repoPath string, logBuf *strings.Builder, onProgress ...func(string)) bool {
-	knowledgeSrcDir := filepath.Join(repoPath, "doc", "knowledge")
-	info, err := os.Stat(knowledgeSrcDir)
-	if err != nil || !info.IsDir() {
+	srcDir := FindKnowledgeSourceDir(repoPath)
+	if srcDir == "" {
 		return false
 	}
 
 	knowledgeDstDir := filepath.Join(repoPath, "openwiki", "knowledge")
-	if err := os.MkdirAll(knowledgeDstDir, 0755); err != nil {
-		b.logStep(repoID, fmt.Sprintf("create knowledge dir failed: %v", err), logBuf, onProgress...)
+	count, err := IngestKnowledgeDocs(srcDir, knowledgeDstDir)
+	if err != nil {
+		b.logStep(repoID, fmt.Sprintf("ingest knowledge from %s failed: %v", srcDir, err), logBuf, onProgress...)
 		return false
 	}
 
-	count := 0
-	_ = filepath.Walk(knowledgeSrcDir, func(path string, info os.FileInfo, err error) error {
+	relSrc, _ := filepath.Rel(repoPath, srcDir)
+	if relSrc == "" {
+		relSrc = srcDir
+	}
+	b.logStep(repoID, fmt.Sprintf("Ingested %d knowledge docs from %s into openwiki/knowledge/", count, relSrc), logBuf, onProgress...)
+	return count > 0
+}
+
+// copyKnowledgeAssets copies non-markdown static assets (images, svg, etc.) from openwiki/knowledge
+// into the staging/static directory so that image links in user docs resolve in the browser.
+func (b *Builder) copyKnowledgeAssets(wikiDir, staticDir string, log *strings.Builder) {
+	knowledgeDir := filepath.Join(wikiDir, "knowledge")
+	if info, err := os.Stat(knowledgeDir); err != nil || !info.IsDir() {
+		return
+	}
+
+	_ = filepath.Walk(knowledgeDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
 		}
-		if !strings.HasSuffix(info.Name(), ".md") {
-			return nil
+		ext := strings.ToLower(filepath.Ext(path))
+		if validAssetExts[ext] {
+			rel, err := filepath.Rel(wikiDir, path)
+			if err != nil {
+				return nil
+			}
+			dst := filepath.Join(staticDir, rel)
+			_ = os.MkdirAll(filepath.Dir(dst), 0755)
+			if err := copyFile(path, dst); err == nil {
+				log.WriteString(fmt.Sprintf("  copied knowledge asset %s\n", rel))
+			}
 		}
-		relPath, _ := filepath.Rel(knowledgeSrcDir, path)
-		dstFile := filepath.Join(knowledgeDstDir, relPath)
-		_ = os.MkdirAll(filepath.Dir(dstFile), 0755)
-		_ = os.Remove(dstFile) // idempotent: remove then recreate
-		if err := os.Symlink(path, dstFile); err != nil {
-			b.logStep(repoID, fmt.Sprintf("link knowledge %s failed: %v", relPath, err), logBuf, onProgress...)
-			return nil
-		}
-		count++
 		return nil
 	})
-
-	b.logStep(repoID, fmt.Sprintf("Ingested %d knowledge MD files", count), logBuf, onProgress...)
-	return count > 0
 }
 
 // ExportActiveGraph re-exports api/graph for the currently active deployed version of a repo (used after QA creates/updates wiki docs).

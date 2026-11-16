@@ -78,17 +78,17 @@ const x = 42;`
 	}
 }
 
-func TestIngestKnowledge_LinksMarkdownFiles(t *testing.T) {
+func TestIngestKnowledge_CopiesAndNormalizesMarkdownFiles(t *testing.T) {
 	tmp := t.TempDir()
 	// doc/knowledge with nested MD files
 	src := tmp + "/doc/knowledge"
 	if err := os.MkdirAll(src+"/sub", 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(src+"/a.md", []byte("# A"), 0644); err != nil {
+	if err := os.WriteFile(src+"/a.md", []byte("# A 标题\n\n正文"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(src+"/sub/b.md", []byte("# B"), 0644); err != nil {
+	if err := os.WriteFile(src+"/sub/b.md", []byte("# B 标题"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	// a non-md file that must be ignored
@@ -104,18 +104,51 @@ func TestIngestKnowledge_LinksMarkdownFiles(t *testing.T) {
 
 	dst := tmp + "/openwiki/knowledge"
 	for _, rel := range []string{"a.md", "sub/b.md"} {
-		link := dst + "/" + rel
-		fi, err := os.Lstat(link)
+		file := dst + "/" + rel
+		fi, err := os.Stat(file)
 		if err != nil {
-			t.Fatalf("expected symlink %s: %v", link, err)
+			t.Fatalf("expected file %s: %v", file, err)
 		}
-		if fi.Mode()&os.ModeSymlink == 0 {
-			t.Fatalf("%s should be a symlink", link)
+		if fi.IsDir() {
+			t.Fatalf("%s should be a regular file, not a dir", file)
 		}
 	}
-	// notes.txt must NOT be linked
-	if _, err := os.Lstat(dst + "/notes.txt"); !os.IsNotExist(err) {
-		t.Fatalf("non-md file should not be linked")
+
+	// Verify normalization added frontmatter
+	contentA, err := os.ReadFile(dst + "/a.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contentA), "type: Knowledge") {
+		t.Errorf("a.md should have frontmatter type: Knowledge, got:\n%s", string(contentA))
+	}
+
+	// notes.txt must NOT be copied
+	if _, err := os.Stat(dst + "/notes.txt"); !os.IsNotExist(err) {
+		t.Fatalf("non-md file should not be copied")
+	}
+}
+
+func TestIngestKnowledge_MultiDirectorySupport(t *testing.T) {
+	tmp := t.TempDir()
+	// Repo uses docs/ instead of doc/knowledge/
+	src := tmp + "/docs"
+	if err := os.MkdirAll(src, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src+"/guide.md", []byte("# 快速上手指南"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &Builder{}
+	var logBuf strings.Builder
+	if !b.ingestKnowledge("repo-docs", tmp, &logBuf) {
+		t.Fatalf("ingestKnowledge should succeed for docs/ directory")
+	}
+
+	dstFile := tmp + "/openwiki/knowledge/guide.md"
+	if _, err := os.Stat(dstFile); err != nil {
+		t.Fatalf("expected %s to exist: %v", dstFile, err)
 	}
 }
 
@@ -128,7 +161,7 @@ func TestIngestKnowledge_NoDirectoryReturnsFalse(t *testing.T) {
 	}
 }
 
-func TestIngestKnowledge_IdempotentRelink(t *testing.T) {
+func TestIngestKnowledge_IdempotentSync(t *testing.T) {
 	tmp := t.TempDir()
 	src := tmp + "/doc/knowledge"
 	if err := os.MkdirAll(src, 0755); err != nil {
@@ -142,16 +175,16 @@ func TestIngestKnowledge_IdempotentRelink(t *testing.T) {
 	if !b.ingestKnowledge("repo-z", tmp, &logBuf) {
 		t.Fatal("first ingest should succeed")
 	}
-	// second run must not error and link must still resolve
+	// second run must not error and file must still exist
 	if !b.ingestKnowledge("repo-z", tmp, &logBuf) {
 		t.Fatal("second ingest should succeed (idempotent)")
 	}
-	target, err := os.Readlink(tmp + "/openwiki/knowledge/a.md")
+	data, err := os.ReadFile(tmp + "/openwiki/knowledge/a.md")
 	if err != nil {
-		t.Fatalf("symlink should still resolve: %v", err)
+		t.Fatalf("file should exist: %v", err)
 	}
-	if !strings.HasSuffix(target, "/doc/knowledge/a.md") {
-		t.Fatalf("symlink target unexpected: %s", target)
+	if !strings.Contains(string(data), "type: Knowledge") {
+		t.Fatalf("content unexpected: %s", string(data))
 	}
 }
 
