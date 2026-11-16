@@ -331,3 +331,13 @@ func TestBuilderEnvInjectionForOpenAICompatible(t *testing.T) {
 	}
 }
 
+func TestBuilder_BuildModesDefined(t *testing.T) {
+	if BuildModeFull != "full" {
+		t.Errorf("expected BuildModeFull == full, got %s", BuildModeFull)
+	}
+	if BuildModeKnowledgeOnly != "knowledge-only" {
+		t.Errorf("expected BuildModeKnowledgeOnly == knowledge-only, got %s", BuildModeKnowledgeOnly)
+	}
+}
+
+

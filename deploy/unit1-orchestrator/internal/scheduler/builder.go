@@ -13,6 +13,16 @@ import (
 	"time"
 )
 
+// BuildMode specifies the execution granularity for building a repository wiki.
+type BuildMode string
+
+const (
+	// BuildModeFull performs code diff checks, init/update LLM wiki generation, knowledge ingestion, and static graph export.
+	BuildModeFull BuildMode = "full"
+	// BuildModeKnowledgeOnly skips heavy LLM code scans (init/update) and only ingests custom knowledge & exports static visualizer assets.
+	BuildModeKnowledgeOnly BuildMode = "knowledge-only"
+)
+
 // Builder handles the openwiki update and static export process for a single repo.
 type Builder struct {
 	mu              sync.RWMutex
@@ -286,6 +296,11 @@ func (b *Builder) BuildRepo(repoID, repoPath, wikiDir string, onProgress ...func
 
 // BuildRepoWithBuildID runs the full build pipeline for a single repository with build attribution.
 func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir string, onProgress ...func(string)) *BuildResult {
+	return b.BuildRepoWithMode(buildID, repoID, repoPath, wikiDir, BuildModeFull, onProgress...)
+}
+
+// BuildRepoWithMode runs the build pipeline for a repository according to the specified BuildMode.
+func (b *Builder) BuildRepoWithMode(buildID int64, repoID, repoPath, wikiDir string, mode BuildMode, onProgress ...func(string)) *BuildResult {
 	var logBuf strings.Builder
 	result := &BuildResult{}
 
@@ -309,22 +324,28 @@ func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir 
 		}
 	}()
 
-	// Step 0: Check if wiki directory exists; if not, run openwiki code --init --print first
-	if _, err := os.Stat(wikiDir); os.IsNotExist(err) {
-		b.logStep(repoID, fmt.Sprintf("=== Step 0: openwiki code --init --print --language %s ===", lang), &logBuf, onProgress...)
-		cmdInit := b.createOpenWikiCmdWithBuildID(buildID, repoPath, "code", "--init", "--print", "--language", lang)
-		var stdoutInit, stderrInit bytes.Buffer
-		cmdInit.Stdout = &stdoutInit
-		cmdInit.Stderr = &stderrInit
-		if err := cmdInit.Run(); err != nil {
-			msg := fmt.Sprintf("init stdout: %s\ninit stderr: %s\nopenwiki init failed: %v", stdoutInit.String(), stderrInit.String(), err)
-			b.logStep(repoID, msg, &logBuf, onProgress...)
-			result.Log = logBuf.String()
-			result.Error = fmt.Sprintf("openwiki init failed: %v", err)
-			b.logStep(repoID, "ERROR: "+result.Error, &logBuf, onProgress...)
-			return result
+	ranInit := false
+	if mode != BuildModeKnowledgeOnly {
+		// Step 0: Check if wiki directory exists; if not, run openwiki code --init --print first
+		if _, err := os.Stat(wikiDir); os.IsNotExist(err) {
+			b.logStep(repoID, fmt.Sprintf("=== Step 0: openwiki code --init --print --language %s ===", lang), &logBuf, onProgress...)
+			cmdInit := b.createOpenWikiCmdWithBuildID(buildID, repoPath, "code", "--init", "--print", "--language", lang)
+			var stdoutInit, stderrInit bytes.Buffer
+			cmdInit.Stdout = &stdoutInit
+			cmdInit.Stderr = &stderrInit
+			if err := cmdInit.Run(); err != nil {
+				msg := fmt.Sprintf("init stdout: %s\ninit stderr: %s\nopenwiki init failed: %v", stdoutInit.String(), stderrInit.String(), err)
+				b.logStep(repoID, msg, &logBuf, onProgress...)
+				result.Log = logBuf.String()
+				result.Error = fmt.Sprintf("openwiki init failed: %v", err)
+				b.logStep(repoID, "ERROR: "+result.Error, &logBuf, onProgress...)
+				return result
+			}
+			b.logStep(repoID, "openwiki init completed successfully", &logBuf, onProgress...)
+			ranInit = true
 		}
-		b.logStep(repoID, "openwiki init completed successfully", &logBuf, onProgress...)
+	} else {
+		b.logStep(repoID, "Knowledge-only build mode active: skipping openwiki code --init", &logBuf, onProgress...)
 	}
 
 	// Step 0.5: Knowledge Ingestion (doc/knowledge -> openwiki/knowledge, symlink-based, non-invasive)
@@ -335,19 +356,26 @@ func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir 
 		b.logStep(repoID, "No doc/knowledge directory found, skipping knowledge ingestion", &logBuf, onProgress...)
 	}
 
-	// Step 1: Run openwiki code --update --print --language <lang>
-	b.logStep(repoID, fmt.Sprintf("=== Step 1: openwiki code --update --print --language %s ===", lang), &logBuf, onProgress...)
-	cmd := b.createOpenWikiCmdWithBuildID(buildID, repoPath, "code", "--update", "--print", "--language", lang)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := fmt.Sprintf("stdout: %s\nstderr: %s", stdout.String(), stderr.String())
-		b.logStep(repoID, msg, &logBuf, onProgress...)
-		result.Error = fmt.Sprintf("openwiki update failed: %v", err)
-		b.logStep(repoID, "WARNING: "+result.Error+" (continuing with offline graph export & static site release to ensure custom knowledge docs are published)", &logBuf, onProgress...)
+	// Step 1: Run openwiki code --update --print --language <lang> (skip if init just ran or in knowledge-only mode)
+	if mode == BuildModeKnowledgeOnly {
+		b.logStep(repoID, "Knowledge-only mode: skipping Step 1 openwiki code --update", &logBuf, onProgress...)
+	} else if ranInit {
+		b.logStep(repoID, "=== Step 1: openwiki code --update skipped ===", &logBuf, onProgress...)
+		b.logStep(repoID, "openwiki init already generated fresh wiki, skipping redundant openwiki update", &logBuf, onProgress...)
 	} else {
-		b.logStep(repoID, fmt.Sprintf("stdout: %s\nopenwiki update completed successfully", stdout.String()), &logBuf, onProgress...)
+		b.logStep(repoID, fmt.Sprintf("=== Step 1: openwiki code --update --print --language %s ===", lang), &logBuf, onProgress...)
+		cmd := b.createOpenWikiCmdWithBuildID(buildID, repoPath, "code", "--update", "--print", "--language", lang)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			msg := fmt.Sprintf("stdout: %s\nstderr: %s", stdout.String(), stderr.String())
+			b.logStep(repoID, msg, &logBuf, onProgress...)
+			result.Error = fmt.Sprintf("openwiki update failed: %v", err)
+			b.logStep(repoID, "WARNING: "+result.Error+" (continuing with offline graph export & static site release to ensure custom knowledge docs are published)", &logBuf, onProgress...)
+		} else {
+			b.logStep(repoID, fmt.Sprintf("stdout: %s\nopenwiki update completed successfully", stdout.String()), &logBuf, onProgress...)
+		}
 	}
 
 	// Get current git head

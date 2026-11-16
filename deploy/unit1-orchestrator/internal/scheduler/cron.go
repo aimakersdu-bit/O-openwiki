@@ -129,35 +129,50 @@ func (s *Scheduler) Stop() {
 	s.cron.Stop()
 }
 
-// TriggerBuild manually triggers a build for a specific repo (bypasses cron schedule, forced build).
+// TriggerBuild manually triggers a build for a specific repo using the default BuildModeFull.
 func (s *Scheduler) TriggerBuild(repoID string) error {
+	return s.TriggerBuildWithMode(repoID, BuildModeFull)
+}
+
+// TriggerBuildWithMode manually triggers a build for a specific repo with the given BuildMode.
+func (s *Scheduler) TriggerBuildWithMode(repoID string, mode BuildMode) error {
 	repo, err := s.db.GetRepo(repoID)
 	if err != nil || repo == nil {
 		return fmt.Errorf("repo not found: %s", repoID)
 	}
-	go s.runBuild(*repo, true)
+	go s.runBuildWithMode(*repo, true, mode)
 	return nil
 }
 
 // addJob registers a cron entry for the given repo.
 func (s *Scheduler) addJob(repo db.Repo) error {
-	if repo.Schedule == "" || repo.Schedule == "manual" {
+	schedule := repo.Schedule
+	if schedule == "" || schedule == "manual" {
 		log.Printf("[scheduler] repo %s has manual/empty schedule, skipping cron registration", repo.ID)
 		return nil
 	}
+
+	// Auto-stagger optimization: if schedule is "staggered" or the legacy uniform "0 2 * * *",
+	// automatically compute a deterministic staggered night schedule across 01:00 ~ 05:00
+	if schedule == "staggered" || schedule == "0 2 * * *" {
+		staggered := ComputeStaggeredSchedule(repo.ID, DefaultNightWindowStart, DefaultNightWindowEnd)
+		log.Printf("[scheduler] auto-staggered night schedule for repo %s: %s (replaced: %s)", repo.ID, staggered, schedule)
+		schedule = staggered
+	}
+
 	r := repo // capture for closure
-	entryID, err := s.cron.AddFunc(repo.Schedule, func() {
+	entryID, err := s.cron.AddFunc(schedule, func() {
 		s.runBuild(r, false)
 	})
 	if err != nil {
-		return fmt.Errorf("invalid cron %q: %w", repo.Schedule, err)
+		return fmt.Errorf("invalid cron %q: %w", schedule, err)
 	}
 
 	s.mu.Lock()
 	s.entries[repo.ID] = entryID
 	s.mu.Unlock()
 
-	log.Printf("[scheduler] registered repo %s with schedule %q", repo.ID, repo.Schedule)
+	log.Printf("[scheduler] registered repo %s with schedule %q", repo.ID, schedule)
 	return nil
 }
 
@@ -181,12 +196,13 @@ func (s *Scheduler) UpdateRepoJob(repo *db.Repo) error {
 	return s.addJob(*repo)
 }
 
-// runBuild executes the full build pipeline for a single repo:
-// 1. git clone if local directory does not exist, otherwise git fetch/pull
-// 2. openwiki init (if .openwiki not present)
-// 3. openwiki code --update --print
-// 4. Export static files & vendor assets to Nginx output directory
+// runBuild executes the full build pipeline for a single repo using default BuildModeFull.
 func (s *Scheduler) runBuild(repo db.Repo, force bool) {
+	s.runBuildWithMode(repo, force, BuildModeFull)
+}
+
+// runBuildWithMode executes the build pipeline for a single repo with the specified BuildMode.
+func (s *Scheduler) runBuildWithMode(repo db.Repo, force bool, mode BuildMode) {
 	if s.pipeline != nil && s.limiter != nil {
 		ctx := context.Background()
 		slot, err := s.limiter.AcquireSlot(ctx)
@@ -196,7 +212,7 @@ func (s *Scheduler) runBuild(repo db.Repo, force bool) {
 		}
 		defer s.limiter.ReleaseSlot(slot)
 
-		_, _ = s.pipeline.Execute(ctx, &repo, force, slot, nil)
+		_, _ = s.pipeline.ExecuteWithMode(ctx, &repo, force, slot, mode, nil)
 		return
 	}
 	s.mu.Lock()

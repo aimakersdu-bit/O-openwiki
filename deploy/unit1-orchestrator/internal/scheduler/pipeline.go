@@ -109,8 +109,13 @@ func (p *BuildPipeline) SetLogBaseDir(dir string) {
 	p.logBaseDir = dir
 }
 
-// Execute runs the build pipeline for a repository.
+// Execute runs the build pipeline for a repository using the default BuildModeFull.
 func (p *BuildPipeline) Execute(ctx context.Context, repo *db.Repo, force bool, slot int, onProgress PipelineProgressCallback) (*PipelineResult, error) {
+	return p.ExecuteWithMode(ctx, repo, force, slot, BuildModeFull, onProgress)
+}
+
+// ExecuteWithMode runs the build pipeline for a repository according to the specified BuildMode.
+func (p *BuildPipeline) ExecuteWithMode(ctx context.Context, repo *db.Repo, force bool, slot int, mode BuildMode, onProgress PipelineProgressCallback) (*PipelineResult, error) {
 	if repo == nil {
 		return nil, fmt.Errorf("repo is nil")
 	}
@@ -257,7 +262,7 @@ func (p *BuildPipeline) Execute(ctx context.Context, repo *db.Repo, force bool, 
 
 	var logFlushMu sync.Mutex
 	lastLogFlush := time.Now()
-	buildRes := p.builder.BuildRepoWithBuildID(buildID, repo.ID, repo.LocalPath, repo.WikiDir, func(currentLog string) {
+	buildRes := p.builder.BuildRepoWithMode(buildID, repo.ID, repo.LocalPath, repo.WikiDir, mode, func(currentLog string) {
 		fullLog := logBuf.String() + "\n" + currentLog
 		logFlushMu.Lock()
 		shouldFlush := time.Since(lastLogFlush) >= 2*time.Second

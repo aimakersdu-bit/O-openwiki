@@ -5,10 +5,12 @@ import (
 	"net/http"
 
 	"github.com/openwiki/orchestrator/internal/db"
+	"github.com/openwiki/orchestrator/internal/scheduler"
 )
 
 type TriggerBuildRequest struct {
 	RepoID string `json:"repo_id"`
+	Mode   string `json:"mode,omitempty"` // "full", "knowledge" / "knowledge-only"
 }
 
 // handleBuildStatus returns latest build records for a repository.
@@ -57,12 +59,19 @@ func (s *Server) handleBuildTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go s.scheduler.TriggerBuild(req.RepoID)
+	buildMode := scheduler.BuildModeFull
+	if req.Mode == string(scheduler.BuildModeKnowledgeOnly) || req.Mode == "knowledge" {
+		buildMode = scheduler.BuildModeKnowledgeOnly
+	}
+
+	go s.scheduler.TriggerBuildWithMode(req.RepoID, buildMode)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "Build triggered successfully",
 		"repo_id": req.RepoID,
+		"mode":    string(buildMode),
 	})
 }
+
