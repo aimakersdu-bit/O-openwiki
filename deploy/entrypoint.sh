@@ -75,6 +75,13 @@ session_ttl_hours: 24
 EOF
 fi
 
+# 3.4 互通 DB_DSN 与 PORTAL_DB_DSN 环境变量 (All-in-One 单容器场景通常共用同一数据库)
+if [ -n "$DB_DSN" ] && [ -z "$PORTAL_DB_DSN" ]; then
+    export PORTAL_DB_DSN="$DB_DSN"
+elif [ -n "$PORTAL_DB_DSN" ] && [ -z "$DB_DSN" ]; then
+    export DB_DSN="$PORTAL_DB_DSN"
+fi
+
 # 3.5 检查 MySQL DSN 环境变量 (未配置且配置文件中为空时提前提示)
 if [ -z "$DB_DSN" ] && ! grep -qE '"db_dsn"[[:space:]]*:[[:space:]]*"[^"]+"' /app/config.json 2>/dev/null; then
     echo "⚠️  警告: 未检测到 DB_DSN 环境变量且 config.json 中 db_dsn 为空，Orchestrator 启动将会失败！"
