@@ -18,6 +18,7 @@
         <li><a href="index.html" class="active">📖 Wiki 仪表盘</a></li>
         <li class="admin-only"><a href="admin.html">⚙️ 仓库运维与构建</a></li>
         <li class="admin-only"><a href="history.html">💬 问答审计</a></li>
+        <li><a href="training-custom-docs.html" target="_blank" title="查看自定义文档规范、实施SOP与ZK实战演示">💡 使用帮助</a></li>
       </ul>
     </div>
     <div id="navbarUser"></div>
@@ -30,6 +31,18 @@
         <h2>企业代码 Wiki 仪表盘</h2>
         <p class="subtitle">在线查阅各代码仓库的生成 Wiki 或启动 AI 深度问答</p>
       </div>
+      <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <a href="training-custom-docs.html" target="_blank" class="btn btn-secondary" style="display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; padding: 0.4rem 0.85rem; border-radius: 8px; border: 1px solid rgba(99, 102, 241, 0.4); background: rgba(99, 102, 241, 0.1); color: #818cf8; text-decoration: none;" title="查看自定义文档编写规范、实施SOP与ZK实战案例">
+          <span>💡</span>
+          <span>自定义文档指南 (SOP)</span>
+        </a>
+      </div>
+    </div>
+
+    <!-- View Mode Switcher: Single Repos vs Microservice Projects -->
+    <div style="display: flex; gap: 0.5rem; margin-bottom: 1.25rem;">
+      <button id="viewReposBtn" class="btn btn-sm btn-primary" style="border-radius: 20px; padding: 0.4rem 1.2rem;">📦 独立代码仓库</button>
+      <button id="viewProjectsBtn" class="btn btn-sm btn-secondary" style="border-radius: 20px; padding: 0.4rem 1.2rem;">🏢 微服务项目全景</button>
     </div>
 
     <!-- Search & Filter Toolbar -->

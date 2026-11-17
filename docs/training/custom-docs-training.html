@@ -1,0 +1,1413 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenWiki 自定义知识与文档体系培训 · ZooKeeper实战案例</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              100: '#e0e7ff',
+              400: '#818cf8',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+            },
+            dark: {
+              900: '#0b0f19',
+              850: '#0f172a',
+              800: '#1e293b',
+              750: '#283548',
+              700: '#334155',
+            }
+          },
+          fontFamily: {
+            mono: ['JetBrains Mono', 'Fira Code', 'Consolas', 'monospace'],
+            sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+  <!-- Marked.js for Markdown -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    /* Custom Scrollbars */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+    /* Markdown Styling inside Wiki view */
+    .wiki-prose h1 { font-size: 1.5rem; font-weight: 700; color: #f8fafc; margin-bottom: 0.75rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; }
+    .wiki-prose h2 { font-size: 1.25rem; font-weight: 600; color: #e2e8f0; margin-top: 1.25rem; margin-bottom: 0.5rem; }
+    .wiki-prose h3 { font-size: 1.1rem; font-weight: 600; color: #cbd5e1; margin-top: 1rem; margin-bottom: 0.5rem; }
+    .wiki-prose p { color: #94a3b8; line-height: 1.6; margin-bottom: 0.75rem; }
+    .wiki-prose ul { list-style-type: disc; padding-left: 1.5rem; color: #94a3b8; margin-bottom: 0.75rem; }
+    .wiki-prose ol { list-style-type: decimal; padding-left: 1.5rem; color: #94a3b8; margin-bottom: 0.75rem; }
+    .wiki-prose li { margin-bottom: 0.25rem; }
+    .wiki-prose pre { background: #090d16; border: 1px solid #1e293b; border-radius: 6px; padding: 0.75rem; overflow-x: auto; margin-bottom: 0.75rem; font-family: monospace; font-size: 0.85rem; color: #38bdf8; }
+    .wiki-prose code { background: #1e293b; padding: 0.15rem 0.35rem; border-radius: 4px; font-size: 0.85rem; color: #a5b4fc; }
+    .wiki-prose pre code { background: transparent; padding: 0; color: inherit; }
+    .wiki-prose blockquote { border-left: 4px solid #6366f1; padding-left: 1rem; color: #cbd5e1; background: rgba(99, 102, 241, 0.05); border-radius: 0 4px 4px 0; margin-bottom: 0.75rem; padding-top: 0.25rem; padding-bottom: 0.25rem; }
+    .wiki-prose table { width: 100%; border-collapse: collapse; margin-bottom: 0.75rem; font-size: 0.85rem; }
+    .wiki-prose th, .wiki-prose td { border: 1px solid #334155; padding: 0.5rem 0.75rem; text-align: left; }
+    .wiki-prose th { background: #1e293b; color: #f1f5f9; font-weight: 600; }
+    .wiki-prose td { color: #cbd5e1; }
+
+    /* Pulse animation */
+    @keyframes pulse-subtle {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.85; transform: scale(1.02); }
+    }
+    .animate-pulse-subtle { animation: pulse-subtle 3s infinite ease-in-out; }
+  </style>
+</head>
+<body class="bg-dark-900 text-slate-100 font-sans antialiased min-h-screen flex flex-col selection:bg-brand-500 selection:text-white">
+
+  <!-- ======================== Top Navbar ======================== -->
+  <header class="h-16 border-b border-dark-800 bg-dark-850/80 backdrop-blur sticky top-0 z-50 flex items-center justify-between px-6">
+    <div class="flex items-center space-x-3">
+      <div class="w-9 h-9 rounded-lg bg-gradient-to-tr from-brand-600 to-indigo-400 flex items-center justify-center shadow-lg shadow-brand-500/20">
+        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path>
+        </svg>
+      </div>
+      <div>
+        <h1 class="text-base font-bold bg-gradient-to-r from-white via-indigo-200 to-indigo-400 bg-clip-text text-transparent">
+          OpenWiki 知识库培训
+        </h1>
+        <p class="text-[11px] text-slate-400 flex items-center gap-1.5">
+          <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+          自定义文档 (Custom Knowledge) · ZooKeeper 实战与实施 SOP
+        </p>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <nav class="flex items-center space-x-1 bg-dark-900/80 p-1 rounded-xl border border-dark-750">
+      <button id="navSlide" onclick="switchView('slide')" class="px-4 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-2 bg-brand-600 text-white shadow-sm">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"></path></svg>
+        幻灯片演讲台
+      </button>
+      <button id="navSop" onclick="switchView('sop')" class="px-4 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-2 text-slate-400 hover:text-slate-200 hover:bg-dark-800">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
+        业务实施 SOP
+      </button>
+      <button id="navPlayground" onclick="switchView('playground')" class="px-4 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-2 text-slate-400 hover:text-slate-200 hover:bg-dark-800">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+        ZooKeeper 实战沙箱
+      </button>
+    </nav>
+
+    <!-- Header Actions -->
+    <div class="flex items-center space-x-2">
+      <a href="index.html" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-dark-800 hover:bg-dark-750 text-slate-300 hover:text-white border border-dark-700 transition flex items-center gap-1.5" title="返回 Portal 仪表盘">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+        返回 Portal
+      </a>
+      <button onclick="openTemplateModal()" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-dark-800 hover:bg-dark-750 text-indigo-300 border border-dark-700 transition flex items-center gap-1.5">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"></path></svg>
+        ZK 规范模板库
+      </button>
+      <button onclick="toggleFullScreen()" title="按 F 键全屏" class="p-2 text-slate-400 hover:text-white rounded-lg bg-dark-800 hover:bg-dark-700 transition border border-dark-700">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"></path></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ======================== VIEW 1: Slide Presentation Deck ======================== -->
+  <main id="viewSlide" class="flex-1 flex flex-col p-6 max-w-7xl mx-auto w-full">
+    <!-- Slide Card Container -->
+    <div class="flex-1 bg-dark-850 border border-dark-750 rounded-2xl p-8 relative flex flex-col justify-between shadow-2xl overflow-hidden min-h-[560px]">
+      
+      <!-- Slide Decorative Ambient Glow -->
+      <div class="absolute -top-24 -right-24 w-96 h-96 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
+      <div class="absolute -bottom-24 -left-24 w-96 h-96 bg-brand-500/10 rounded-full blur-3xl pointer-events-none"></div>
+
+      <!-- Slide Dynamic Content Container -->
+      <div id="slideContent" class="relative z-10">
+        <!-- Rendered dynamically by JS -->
+      </div>
+
+      <!-- Slide Footer & Controls -->
+      <div class="relative z-10 pt-6 border-t border-dark-750 flex items-center justify-between mt-6">
+        <!-- Slide Indicators -->
+        <div class="flex items-center space-x-2" id="slideDots">
+          <!-- Dots rendered dynamically -->
+        </div>
+
+        <div class="text-xs text-slate-400 font-mono flex items-center gap-2">
+          <span>提示: 可用键盘 <kbd class="px-1.5 py-0.5 rounded bg-dark-750 text-slate-200">←</kbd> <kbd class="px-1.5 py-0.5 rounded bg-dark-750 text-slate-200">→</kbd> 或 <kbd class="px-1.5 py-0.5 rounded bg-dark-750 text-slate-200">Space</kbd> 翻页，<kbd class="px-1.5 py-0.5 rounded bg-dark-750 text-slate-200">F</kbd> 全屏</span>
+          <span class="text-dark-700">|</span>
+          <span id="slideCounter" class="text-indigo-400 font-semibold">1 / 6</span>
+        </div>
+
+        <!-- Navigation Buttons -->
+        <div class="flex items-center space-x-3">
+          <button id="btnPrevSlide" onclick="prevSlide()" class="px-4 py-2 rounded-xl bg-dark-800 hover:bg-dark-700 text-slate-300 hover:text-white border border-dark-700 text-xs font-medium transition flex items-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+            上一页
+          </button>
+          <button id="btnNextSlide" onclick="nextSlide()" class="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium transition flex items-center gap-1.5 shadow-lg shadow-brand-600/30">
+            下一页
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ======================== VIEW 2: Standard Operating Procedure (SOP) ======================== -->
+  <main id="viewSop" class="hidden flex-1 p-6 max-w-7xl mx-auto w-full space-y-6">
+    <!-- Header banner -->
+    <div class="bg-gradient-to-r from-brand-900/40 via-dark-850 to-dark-850 border border-brand-500/20 rounded-2xl p-6">
+      <div class="flex items-start justify-between">
+        <div>
+          <span class="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-brand-500/20 text-brand-300 border border-brand-500/30 uppercase tracking-wider">业务版块标准操作指引</span>
+          <h2 class="text-2xl font-bold text-white mt-2">自定义知识文档标准化落地 SOP (五步闭环)</h2>
+          <p class="text-sm text-slate-400 mt-1 max-w-3xl">
+            本规范指导各研发与业务版块如何将团队核心技术方案、系统架构、分布式中间件规约（以 ZooKeeper 为例）无缝并网入 OpenWiki，实现代码、Wiki、3D 知识图谱与 Cursor/IDE 智能体多端联通。
+          </p>
+        </div>
+        <div class="text-right hidden md:block">
+          <span class="inline-flex items-center px-3 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">
+            <svg class="w-3.5 h-3.5 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+            GitOps 零侵入保证
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- SOP Interactive Steps -->
+    <div class="grid grid-cols-1 md:grid-cols-5 gap-4" id="sopStepCards">
+      <!-- Steps cards injected by JS -->
+    </div>
+
+    <!-- Active Step Detail & Copyable Commands -->
+    <div id="sopDetailCard" class="bg-dark-850 border border-dark-750 rounded-2xl p-6">
+      <!-- Injected by renderSopDetail() -->
+    </div>
+  </main>
+
+  <!-- ======================== VIEW 3: ZooKeeper Interactive Playground ======================== -->
+  <main id="viewPlayground" class="hidden flex-1 flex flex-col p-6 max-w-7xl mx-auto w-full gap-4">
+    <!-- Action Bar & Demo Switcher -->
+    <div class="flex items-center justify-between bg-dark-850 px-5 py-3 rounded-xl border border-dark-750">
+      <div class="flex items-center space-x-3">
+        <div class="flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full bg-indigo-500 animate-ping"></span>
+          <span class="font-bold text-sm text-white flex items-center gap-1.5">
+            演示代码库: <span class="font-mono text-indigo-300">infrastructure/zk-service-mesh</span>
+          </span>
+        </div>
+        <span class="text-xs px-2 py-0.5 rounded bg-dark-750 text-slate-400 border border-dark-700">Git branch: main</span>
+      </div>
+
+      <div class="flex items-center space-x-3">
+        <div class="flex items-center space-x-2 text-xs">
+          <span class="text-slate-400">构建模式:</span>
+          <select id="simBuildMode" class="bg-dark-900 border border-dark-700 rounded-lg px-2.5 py-1 text-slate-200 font-mono focus:outline-none focus:border-brand-500 text-xs">
+            <option value="knowledge-only">knowledge-only (日间秒级极速同步)</option>
+            <option value="full">full (夜间深度代码+知识全量)</option>
+          </select>
+        </div>
+
+        <button onclick="triggerSimulatedGitOps()" id="btnTriggerBuild" class="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-2 transition shadow-lg shadow-emerald-600/20">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+          模拟 Git Commit & 触发同步
+        </button>
+      </div>
+    </div>
+
+    <!-- Playground Main 2-Column Grid -->
+    <div class="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 min-h-[580px]">
+      
+      <!-- Left Column: Virtual Repo Editor (5 cols) -->
+      <div class="lg:col-span-5 bg-dark-850 border border-dark-750 rounded-2xl flex flex-col overflow-hidden shadow-xl">
+        <!-- Editor Header: File Tabs -->
+        <div class="bg-dark-900 border-b border-dark-750 px-3 py-2 flex items-center justify-between">
+          <div class="flex items-center space-x-1 overflow-x-auto" id="editorFileTabs">
+            <!-- Tabs rendered by JS -->
+          </div>
+          <button onclick="resetEditorContent()" title="重置为默认内容" class="text-slate-400 hover:text-slate-200 text-xs px-2 py-1 rounded bg-dark-800 hover:bg-dark-750 transition flex items-center gap-1">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+            重置
+          </button>
+        </div>
+
+        <!-- Code Editor Body -->
+        <div class="flex-1 relative flex flex-col">
+          <div class="bg-dark-900/60 px-4 py-1.5 border-b border-dark-800 text-[11px] font-mono text-slate-400 flex items-center justify-between">
+            <span id="editorCurrentPath" class="flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+              doc/knowledge/zk-distributed-lock.md
+            </span>
+            <span class="text-emerald-400">● 实时编辑 (Live Edit)</span>
+          </div>
+          <textarea id="fileEditor" oninput="onEditorChange()" class="flex-1 w-full bg-dark-900 p-4 font-mono text-xs text-slate-200 leading-relaxed resize-none focus:outline-none focus:ring-1 focus:ring-brand-500 border-none select-text" spellcheck="false"></textarea>
+        </div>
+
+        <!-- Terminal Logs Panel (Bottom of Left Column) -->
+        <div class="h-44 border-t border-dark-750 bg-dark-900 flex flex-col font-mono text-xs">
+          <div class="bg-dark-850 px-3 py-1.5 border-b border-dark-750 flex items-center justify-between text-[11px] text-slate-400">
+            <span class="flex items-center gap-1.5 font-bold text-slate-300">
+              <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+              Orchestrator 流水线模拟日志 (Terminal)
+            </span>
+            <span id="logStatusBadge" class="text-emerald-400 text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20">READY</span>
+          </div>
+          <div id="terminalLogs" class="flex-1 p-3 overflow-y-auto space-y-1 text-slate-300 text-[11px] leading-5">
+            <div class="text-slate-500">等待触发构建任务... 点击右上角【模拟 Git Commit & 触发同步】观察执行</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Multi-End Consumption Preview (7 cols) -->
+      <div class="lg:col-span-7 bg-dark-850 border border-dark-750 rounded-2xl flex flex-col overflow-hidden shadow-xl">
+        <!-- Right Column Tabs -->
+        <div class="bg-dark-900 border-b border-dark-750 px-4 py-2 flex items-center justify-between">
+          <div class="flex items-center space-x-2">
+            <button id="tabBtnWiki" onclick="switchRightTab('wiki')" class="px-3 py-1 rounded-lg text-xs font-semibold bg-brand-600 text-white flex items-center gap-1.5 transition">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
+              ① 静态 Wiki 阅读器
+            </button>
+            <button id="tabBtnGraph" onclick="switchRightTab('graph')" class="px-3 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-dark-800 flex items-center gap-1.5 transition">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg>
+              ② 3D 知识图谱并网
+            </button>
+            <button id="tabBtnMcp" onclick="switchRightTab('mcp')" class="px-3 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-dark-800 flex items-center gap-1.5 transition">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
+              ③ Cursor / IDE (MCP) 提问
+            </button>
+          </div>
+          <span class="text-[11px] text-slate-400">实时成果预览</span>
+        </div>
+
+        <!-- Tab 1 Container: Wiki Preview -->
+        <div id="tabContentWiki" class="flex-1 p-6 overflow-y-auto">
+          <!-- Frontmatter Badge -->
+          <div class="mb-4 p-3 bg-dark-900 border border-brand-500/20 rounded-xl flex items-center justify-between text-xs">
+            <div class="flex items-center gap-3">
+              <span class="px-2 py-0.5 rounded bg-brand-500/20 text-brand-300 font-mono text-[11px] font-semibold">type: Knowledge</span>
+              <span id="wikiDocTitle" class="font-bold text-slate-200">ZK 分布式锁落地规范</span>
+            </div>
+            <span class="text-emerald-400 text-[11px] flex items-center gap-1">
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+              已注入图谱索引
+            </span>
+          </div>
+          <!-- Markdown Rendered HTML -->
+          <div id="wikiRenderedArea" class="wiki-prose">
+            <!-- Rendered by marked.js -->
+          </div>
+        </div>
+
+        <!-- Tab 2 Container: Force Graph Simulation -->
+        <div id="tabContentGraph" class="hidden flex-1 relative flex flex-col bg-dark-900">
+          <div class="absolute top-3 left-4 z-10 bg-dark-850/80 backdrop-blur px-3 py-1.5 rounded-lg border border-dark-750 text-xs text-slate-300">
+            <span class="font-bold text-indigo-400">知识拓扑动态图</span> · 拖拽节点可交互 · 绿色: 微服务代码节点 · 紫色: ZK 自定义知识节点
+          </div>
+          <canvas id="graphCanvas" class="flex-1 w-full h-full cursor-grab active:cursor-grabbing"></canvas>
+        </div>
+
+        <!-- Tab 3 Container: MCP Cursor Assistant -->
+        <div id="tabContentMcp" class="hidden flex-1 flex flex-col p-4 bg-dark-900 font-sans">
+          <!-- IDE Header Simulation -->
+          <div class="bg-dark-850 rounded-xl border border-dark-750 p-3 mb-3 flex items-center justify-between text-xs">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-red-400"></span>
+              <span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+              <span class="font-mono text-slate-300 font-semibold ml-2">Cursor Composer / Agent (MCP Mode)</span>
+            </div>
+            <span class="text-[11px] text-indigo-300 font-mono">Connected: openwiki-mcp-server</span>
+          </div>
+
+          <!-- Preset Question Prompts -->
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-xs text-slate-400 whitespace-nowrap">预设提问:</span>
+            <button onclick="askPresetQuestion('lock')" class="px-2.5 py-1 text-xs rounded-lg bg-dark-800 hover:bg-dark-750 text-indigo-300 border border-dark-700 transition">
+              ZK 分布式锁怎么实现防惊群？
+            </button>
+            <button onclick="askPresetQuestion('session')" class="px-2.5 py-1 text-xs rounded-lg bg-dark-800 hover:bg-dark-750 text-indigo-300 border border-dark-700 transition">
+              ZK Session Expired 故障排查
+            </button>
+          </div>
+
+          <!-- Chat History -->
+          <div id="mcpChatHistory" class="flex-1 bg-dark-850 rounded-xl border border-dark-750 p-4 overflow-y-auto space-y-4 text-xs font-sans">
+            <!-- Chat bubble messages dynamically injected -->
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </main>
+
+  <!-- ======================== Modal: Templates & Cheat Sheet ======================== -->
+  <div id="templateModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-dark-850 border border-dark-750 rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-dark-750 pb-3">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+          自定义文档标准化模板库 (一键复制)
+        </h3>
+        <button onclick="closeTemplateModal()" class="text-slate-400 hover:text-white">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <button onclick="selectTemplate('lock')" class="p-3 text-left rounded-xl bg-dark-900 border border-dark-750 hover:border-brand-500 transition">
+          <div class="text-xs font-bold text-white mb-1">ZK 分布式锁规范</div>
+          <div class="text-[11px] text-slate-400">含 ZNode 结构、Watch 监听与释放流程</div>
+        </button>
+        <button onclick="selectTemplate('cluster')" class="p-3 text-left rounded-xl bg-dark-900 border border-dark-750 hover:border-brand-500 transition">
+          <div class="text-xs font-bold text-white mb-1">ZK 集群规划与选主</div>
+          <div class="text-[11px] text-slate-400">含 Leader/Follower/Observer 与容灾</div>
+        </button>
+        <button onclick="selectTemplate('rc')" class="p-3 text-left rounded-xl bg-dark-900 border border-dark-750 hover:border-brand-500 transition">
+          <div class="text-xs font-bold text-white mb-1">.openwikirc 配置文件</div>
+          <div class="text-[11px] text-slate-400">显式指定自定义知识目录</div>
+        </button>
+      </div>
+
+      <div class="relative">
+        <textarea id="modalTemplateCode" readonly class="w-full h-56 bg-dark-900 border border-dark-750 rounded-xl p-4 font-mono text-xs text-indigo-200 select-all focus:outline-none"></textarea>
+        <button onclick="copyModalTemplate()" class="absolute top-3 right-3 px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium flex items-center gap-1.5 shadow">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"></path></svg>
+          <span id="copyBtnText">复制模板代码</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="fixed bottom-6 right-6 z-50 transform translate-y-20 opacity-0 transition-all duration-300 bg-dark-800 text-white border border-brand-500/40 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2.5 text-xs font-medium">
+    <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+    <span id="toastMsg">提示信息</span>
+  </div>
+
+  <!-- ======================== JavaScript Logic ======================== -->
+  <script>
+    /* ======================== DATA: ZK Samples ======================== */
+    const ZK_SAMPLES = {
+      "doc/knowledge/zk-distributed-lock.md": `# ZooKeeper 分布式锁落地与防惊群规范
+
+> **适用范围：** 跨微服务交易结算、防超卖扣减、全局资源互斥。
+
+## 1. 核心设计原则 (Ephemeral Sequential)
+在业务代码中**严禁**使用单一路径（如 \`/lock/resource\`）抢占式创建临时节点，否则所有监听客户端在节点释放时同时被唤醒，引发严重的**惊群效应 (Herd Effect)**。
+
+### 标准加锁机制
+1. 在锁根节点下创建**临时顺序节点**：\`/locks/order_pay/lock-0000000001\`
+2. 客户端获取该目录下所有子节点，进行排序。
+3. 若自己是最小序号节点，则**成功获得锁**；
+4. 若不是最小序号，则仅注册 Watcher 监听比自己**序号恰好小 1 的前序节点**。
+
+\`\`\`
+[客户端 A (001)] <-- 获取锁
+     ↑ 被监听
+[客户端 B (002)] <-- 阻塞等待 A 释放
+     ↑ 被监听
+[客户端 C (003)] <-- 阻塞等待 B 释放
+\`\`\`
+
+## 2. 释放与超时保护
+- **主动释放：** 业务处理完毕后，主动调用 \`client.delete(currentLockPath)\`。
+- **故障容灾：** 若业务进程异常宕机，ZK 会话超时后，临时节点自动删除，前序 Watcher 触发，下一个等待者自动接管锁。
+
+## 3. 关联代码服务
+- 订单微服务: \`order-service/internal/lock/zk_mutex.go\`
+- 支付微服务: \`pay-service/internal/handler/settle.go\``,
+
+      "doc/knowledge/zk-cluster-deployment.md": `# ZooKeeper 生产集群架构与选主机制
+
+## 1. 节点规格与奇数容灾
+生产环境 ZK 集群必须部署**奇数台物理机**（推荐 3 台或 5 台），以保证满足过半机制（Quorum = N/2 + 1）：
+- **3 节点集群：** 最多容忍 1 台机器宕机。
+- **5 节点集群：** 最多容忍 2 台机器宕机。
+
+## 2. 角色职责划分
+- **Leader (领导者)：** 负责接收写请求，发起提议（Proposal）并完成两阶段提交广播（ZAB 协议）。
+- **Follower (跟随者)：** 处理读请求，参与 Leader 选举与写请求投票。
+- **Observer (观察者)：** 不参与投票，仅扩展系统读吞吐量，适用于跨机房远距离读取。
+
+## 3. 选主流程核心判定
+当集群初次启动或当前 Leader 宕机时，进入 Fast Leader Election 流程：
+1. 优先比较节点最大的事务 ID (\`zxid\`)，\`zxid\` 越大表明数据越新，优先当选；
+2. 若 \`zxid\` 相同，则选举服务器 ID (\`myid\`) 最大的节点为 Leader。`,
+
+      "doc/knowledge/zk-troubleshooting-faq.md": `# ZooKeeper 生产排错与高频故障 FAQ
+
+### Q1: 业务频繁收到 "Session Expired" 告警？
+- **根本原因：** 90% 是由于业务宿主机发生长时间 **JVM Full GC (STW)** 或宿主机 CPU 达到 100%，导致客户端心跳未能按时发送，超过了集群配置的 \`tickTime * 2\`。
+- **处置方案：**
+  1. 优化 JVM 垃圾回收器为 ZGC 或 G1，限制最大 STW 时间 < 200ms；
+  2. 调大客户端 \`sessionTimeout\` 参数（建议设置在 20,000ms ~ 30,000ms 之间）。
+
+### Q2: 磁盘满导致 ZK 进程崩溃拒绝服务？
+- **根本原因：** ZK 每次写操作均先落 \`version-2/log.*\` 事务日志并定期生成快照，未配置自动清理任务会导致磁盘被占满。
+- **规约强制要求：** \`zoo.cfg\` 中必须开启自动清理：
+  \`\`\`properties
+  autopurge.purgeInterval=24
+  autopurge.snapRetainCount=5
+  \`\`\``,
+
+      ".openwikirc": `{
+  "knowledge_dir": "doc/knowledge",
+  "comment": "指定业务团队自定义文档的源目录，OpenWiki 构建流水线将按此配置自动导入"
+}`
+    };
+
+    /* ======================== SLIDES CONTENT ======================== */
+    const SLIDES = [
+      {
+        badge: "第 1 幕 · 认知对齐",
+        title: "为什么需要自定义文档？",
+        subtitle: "从“纯代码逆向拓扑”升级为“业务上下文 + 代码架构”双核知识大脑",
+        content: `
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6 my-4">
+            <div class="p-5 rounded-xl bg-dark-900 border border-red-500/30 flex flex-col justify-between">
+              <div>
+                <span class="text-xs font-bold text-red-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <span class="w-2 h-2 rounded-full bg-red-400"></span> 传统文档管理的痛点
+                </span>
+                <h4 class="text-base font-bold text-slate-200 mt-2">文档与代码“脱节漂流”</h4>
+                <ul class="text-xs text-slate-400 space-y-2.5 mt-3">
+                  <li class="flex items-start gap-2">❌ <strong>存放在 Confluence/飞书：</strong> 代码重构了，外部文档无人更新，误导新同学。</li>
+                  <li class="flex items-start gap-2">❌ <strong>AI 智能体感知不到：</strong> 在 Cursor / Claude 中写代码时，无法读取外部孤岛文档。</li>
+                  <li class="flex items-start gap-2">❌ <strong>缺乏版本约束：</strong> 无法跟随 Git 分支（PR）一起评审与回溯变更历史。</li>
+                </ul>
+              </div>
+              <div class="mt-4 pt-3 border-t border-dark-800 text-[11px] text-slate-500">
+                结果：反复的人肉沟通、重复踩坑（如 ZK 惊群、Session Expired）。
+              </div>
+            </div>
+
+            <div class="p-5 rounded-xl bg-dark-900 border border-emerald-500/30 flex flex-col justify-between">
+              <div>
+                <span class="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <span class="w-2 h-2 rounded-full bg-emerald-400"></span> OpenWiki 自定义知识体系
+                </span>
+                <h4 class="text-base font-bold text-slate-200 mt-2">GitOps 驱动的权威知识沉淀</h4>
+                <ul class="text-xs text-slate-400 space-y-2.5 mt-3">
+                  <li class="flex items-start gap-2">✅ <strong>代码与知识同源：</strong> 存放在工程的 <code>doc/knowledge/</code> 中，同源同生灭。</li>
+                  <li class="flex items-start gap-2">✅ <strong>自动融合 3D 知识图谱：</strong> 业务规约直接与服务代码节点连线并网。</li>
+                  <li class="flex items-start gap-2">✅ <strong>IDE 插件（MCP）直接消费：</strong> Cursor 问答自动命中团队 ZK 手册。</li>
+                </ul>
+              </div>
+              <div class="mt-4 pt-3 border-t border-dark-800 text-[11px] text-emerald-400 font-semibold">
+                结论：一次沉淀，多端生效（阅读器 + 3D 图谱 + AI 智能体）。
+              </div>
+            </div>
+          </div>
+        `
+      },
+      {
+        badge: "第 2 幕 · 设计哲学",
+        title: "GitOps 核心设计：零侵入原则",
+        subtitle: "严禁污染业务代码库，物理同步保障安全与纯净",
+        content: `
+          <div class="space-y-4 my-2">
+            <div class="p-4 rounded-xl bg-dark-900 border border-dark-750 flex items-center gap-4">
+              <div class="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center shrink-0 text-indigo-400 font-bold text-xl">
+                0
+              </div>
+              <div>
+                <h4 class="text-sm font-bold text-white">完全不修改 <code>src/</code> 核心业务代码</h4>
+                <p class="text-xs text-slate-400 mt-1">OpenWiki 流水线在拉取代码后，仅读取 <code>doc/knowledge/</code> 并在后台生成独立的规范化知识产物，对开发者的业务逻辑代码保持 100% 绝对纯净，通过严格的自动化测试保障安全。</p>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div class="p-4 rounded-xl bg-dark-900 border border-dark-750">
+                <span class="text-brand-400 text-xs font-mono font-bold">① 代码库层 (Repository)</span>
+                <p class="text-xs text-slate-300 mt-1.5 font-medium">团队维护的原生 Markdown</p>
+                <p class="text-[11px] text-slate-500 mt-1">位于 <code>doc/knowledge/*.md</code>，包含时序图、规约与故障 FAQ。</p>
+              </div>
+              <div class="p-4 rounded-xl bg-dark-900 border border-dark-750">
+                <span class="text-amber-400 text-xs font-mono font-bold">② 规范化调度层 (Orchestrator)</span>
+                <p class="text-xs text-slate-300 mt-1.5 font-medium">知识发现与 Frontmatter 自动补齐</p>
+                <p class="text-[11px] text-slate-500 mt-1">自动提取一级标题，补充 <code>type: Knowledge</code>，镜像同步静态资产。</p>
+              </div>
+              <div class="p-4 rounded-xl bg-dark-900 border border-dark-750">
+                <span class="text-emerald-400 text-xs font-mono font-bold">③ 呈现与智能层 (Portal & MCP)</span>
+                <p class="text-xs text-slate-300 mt-1.5 font-medium">图谱并网与 IDE 直接阅读</p>
+                <p class="text-[11px] text-slate-500 mt-1">生成 3D 节点，并通过 MCP 工具向 Cursor 等 AI 智能体开放。</p>
+              </div>
+            </div>
+          </div>
+        `
+      },
+      {
+        badge: "第 3 幕 · 目录契约",
+        title: "目录约定与探测优先级",
+        subtitle: "开箱即用，支持多种约定及自定义路径配置",
+        content: `
+          <div class="grid grid-cols-1 md:grid-cols-12 gap-5 my-2 items-center">
+            <div class="md:col-span-7 space-y-3">
+              <h4 class="text-sm font-bold text-slate-200">系统发现知识目录的优先顺序：</h4>
+              
+              <div class="flex items-center gap-3 p-3 rounded-lg bg-dark-900 border border-brand-500/40">
+                <span class="px-2 py-0.5 rounded bg-brand-500 text-white font-mono text-xs font-bold">Priority 1</span>
+                <div>
+                  <span class="font-mono text-xs font-bold text-indigo-300">.openwikirc 显式配置</span>
+                  <p class="text-[11px] text-slate-400">若根目录存在配置文件，优先使用配置中指定的目录（如 <code>{"knowledge_dir": "my-docs"}</code>）。</p>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-3 p-3 rounded-lg bg-dark-900 border border-dark-750">
+                <span class="px-2 py-0.5 rounded bg-emerald-600 text-white font-mono text-xs font-bold">Priority 2 (推荐)</span>
+                <div>
+                  <span class="font-mono text-xs font-bold text-emerald-300">doc/knowledge/</span>
+                  <p class="text-[11px] text-slate-400">企业级标准推荐目录，将技术方案、业务知识与通用设计统一收拢。</p>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-3 p-3 rounded-lg bg-dark-900 border border-dark-750">
+                <span class="px-2 py-0.5 rounded bg-dark-750 text-slate-400 font-mono text-xs font-bold">Priority 3 / 4</span>
+                <div>
+                  <span class="font-mono text-xs font-bold text-slate-300">docs/ 或 wiki/</span>
+                  <p class="text-[11px] text-slate-400">兼容已有传统开源项目的习惯，无需重构目录自动适配。</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="md:col-span-5 bg-dark-900 p-4 rounded-xl border border-dark-750 font-mono text-xs text-slate-300">
+              <div class="text-slate-500 text-[10px] pb-2 border-b border-dark-800 flex items-center justify-between">
+                <span>推荐目录结构</span>
+                <span>TREE</span>
+              </div>
+              <pre class="mt-2 text-indigo-200 text-[11px] leading-relaxed">
+your-project-repo/
+├── .openwikirc (可选)
+├── src/ (业务代码，绝对纯净)
+└── doc/
+    └── knowledge/
+        ├── _assets/ (静态图片附件)
+        │   └── zk-cluster.svg
+        ├── zk-distributed-lock.md
+        ├── zk-cluster-deployment.md
+        └── zk-troubleshooting-faq.md
+              </pre>
+            </div>
+          </div>
+        `
+      },
+      {
+        badge: "第 4 幕 · 实战案例",
+        title: "ZooKeeper (ZK) 实战：编写与规范",
+        subtitle: "Frontmatter 自动补齐、Mermaid 流程图与静态图片资产",
+        content: `
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4 my-2">
+            <div class="p-4 rounded-xl bg-dark-900 border border-dark-750">
+              <div class="w-8 h-8 rounded-lg bg-brand-500/20 text-brand-300 flex items-center justify-center font-bold text-sm mb-3">1</div>
+              <h4 class="text-xs font-bold text-white">Frontmatter 自动补全</h4>
+              <p class="text-[11px] text-slate-400 mt-1">即使你没有写头部 YAML，系统也会自动从首个 <code># 一级标题</code> 提取出标题，并自动补齐 <code>type: Knowledge</code>，无心智负担。</p>
+              <div class="mt-3 p-2 rounded bg-dark-850 font-mono text-[10px] text-emerald-400">
+                ---<br>type: Knowledge<br>title: ZK 分布式锁落地规范<br>---
+              </div>
+            </div>
+
+            <div class="p-4 rounded-xl bg-dark-900 border border-dark-750">
+              <div class="w-8 h-8 rounded-lg bg-indigo-500/20 text-indigo-300 flex items-center justify-center font-bold text-sm mb-3">2</div>
+              <h4 class="text-xs font-bold text-white">图片资产镜像同步</h4>
+              <p class="text-[11px] text-slate-400 mt-1">架构设计图放在 <code>doc/knowledge/_assets/</code> 中，流水线在打包发布时会自动进行镜像拷贝，保证静态网页与阅读器中<strong>绝不裂图</strong>。</p>
+              <div class="mt-3 p-2 rounded bg-dark-850 font-mono text-[10px] text-indigo-300">
+                ![ZK架构](_assets/zk-cluster.svg)
+              </div>
+            </div>
+
+            <div class="p-4 rounded-xl bg-dark-900 border border-dark-750">
+              <div class="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-300 flex items-center justify-center font-bold text-sm mb-3">3</div>
+              <h4 class="text-xs font-bold text-white">Mermaid 流程/时序图</h4>
+              <p class="text-[11px] text-slate-400 mt-1">原生支持 Mermaid 流程图与时序图渲染，直观展示临时顺序节点（Ephemeral Sequential）监听链，清晰解释防惊群机制。</p>
+              <div class="mt-3 p-2 rounded bg-dark-850 font-mono text-[10px] text-amber-400">
+                \`\`\`mermaid<br>sequenceDiagram<br>Client->>ZK: create(EPHEMERAL)<br>\`\`\`
+              </div>
+            </div>
+          </div>
+        `
+      },
+      {
+        badge: "第 5 幕 · 极速生效",
+        title: "双阶流水线：白天快速 vs 夜间全量",
+        subtitle: "针对自定义知识优化的秒级生效通道，节省高昂的 LLM Token",
+        content: `
+          <div class="space-y-4 my-2">
+            <div class="p-4 rounded-xl bg-gradient-to-r from-emerald-950/40 to-dark-900 border border-emerald-500/30 flex items-start gap-4">
+              <div class="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-400 shrink-0 font-bold text-sm">
+                白天通道
+              </div>
+              <div class="flex-1">
+                <div class="flex items-center justify-between">
+                  <h4 class="text-sm font-bold text-white flex items-center gap-2">
+                    模式：<code>knowledge-only</code> (极速同步)
+                    <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-mono">耗时 < 3s · 0 Token</span>
+                  </h4>
+                </div>
+                <p class="text-xs text-slate-300 mt-1.5">
+                  日常业务同学提交了 ZK 避坑指南或接口规范，无需等待漫长的大模型全量代码分析。系统直接抽取知识目录、规范化 Frontmatter 并重构 Web 图谱与 MCP 索引，<strong>秒级生效</strong>。
+                </p>
+              </div>
+            </div>
+
+            <div class="p-4 rounded-xl bg-gradient-to-r from-indigo-950/40 to-dark-900 border border-indigo-500/30 flex items-start gap-4">
+              <div class="p-2.5 rounded-xl bg-indigo-500/20 text-indigo-400 shrink-0 font-bold text-sm">
+                夜间通道
+              </div>
+              <div class="flex-1">
+                <div class="flex items-center justify-between">
+                  <h4 class="text-sm font-bold text-white flex items-center gap-2">
+                    模式：<code>full</code> (全量错峰代码增量分析)
+                    <span class="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 font-mono">凌晨自动运行</span>
+                  </h4>
+                </div>
+                <p class="text-xs text-slate-300 mt-1.5">
+                  后台调度器在凌晨 1 点至 5 点自动错峰拉取增量代码，由大模型深度理解代码变更，更新架构拓扑并深度交叉索引业务知识。
+                </p>
+              </div>
+            </div>
+          </div>
+        `
+      },
+      {
+        badge: "第 6 幕 · 终端赋能",
+        title: "Cursor & IDE 智能体深度消费",
+        subtitle: "通过 MCP 协议，让 AI 随时调取团队 ZK 权威规范回答问题",
+        content: `
+          <div class="grid grid-cols-1 md:grid-cols-12 gap-5 my-2 items-center">
+            <div class="md:col-span-6 space-y-3">
+              <h4 class="text-sm font-bold text-slate-200">AI 开发者日常场景体验：</h4>
+              <p class="text-xs text-slate-400 leading-relaxed">
+                在 Cursor 或 Windsurf 中，开发者向 AI 询问：“<span class="text-indigo-300">我用 ZK 实现锁，如何避免惊群？</span>” 或 “<span class="text-indigo-300">线上报 Session Expired 如何排查？</span>”
+              </p>
+              <div class="space-y-2 text-xs">
+                <div class="p-2.5 rounded-lg bg-dark-900 border border-dark-750 flex items-center gap-2">
+                  <span class="text-emerald-400 font-mono font-bold">1. list_repository_docs</span>
+                  <span class="text-slate-400 text-[11px]">AI 自动检索知识库，发现团队 ZK 排错手册</span>
+                </div>
+                <div class="p-2.5 rounded-lg bg-dark-900 border border-dark-750 flex items-center gap-2">
+                  <span class="text-indigo-400 font-mono font-bold">2. read_repository_doc</span>
+                  <span class="text-slate-400 text-[11px]">AI 直接读取文档正文，获取 STW 与参数规约</span>
+                </div>
+                <div class="p-2.5 rounded-lg bg-dark-900 border border-brand-500/40 text-slate-200 text-[11px]">
+                  💡 <strong>效果：</strong> AI 不会给出通用的空泛答案，而是直接搬出团队制定的标准配置（如 <code>tickTime*2</code>、ZGC 参数与 <code>autopurge</code> 规则）！
+                </div>
+              </div>
+            </div>
+
+            <div class="md:col-span-6 bg-dark-900 p-4 rounded-xl border border-dark-750">
+              <div class="flex items-center gap-2 pb-2 border-b border-dark-800 text-[11px] font-mono text-slate-400">
+                <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                <span>Cursor Composer 工具调用模拟</span>
+              </div>
+              <div class="mt-3 space-y-2 font-mono text-[11px]">
+                <div class="text-slate-400">User: 线上 ZK 报 Session Expired 怎么排查？</div>
+                <div class="p-2 rounded bg-dark-850 border border-dark-750 text-indigo-300">
+                  ⚡ Tool Call: <span class="text-amber-300">read_repository_doc</span><br>
+                  Path: "knowledge/zk-troubleshooting-faq.md"
+                </div>
+                <div class="text-slate-300 leading-relaxed text-[11px]">
+                  Assistant: 根据团队《ZK生产排错FAQ》，90% 是由于业务进程发生 JVM Full GC 导致心跳未能按时发送... 建议切换为 ZGC 并调整 sessionTimeout。
+                </div>
+              </div>
+            </div>
+          </div>
+        `
+      }
+    ];
+
+    /* ======================== SOP DATA ======================== */
+    const SOP_STEPS = [
+      {
+        id: 1,
+        title: "SOP-01 规范初始化",
+        desc: "创建标准化知识目录与配置文件",
+        tag: "准备阶段",
+        detail: {
+          goal: "在业务代码工程根目录下初始化标准知识存储目录，确保 Git 跟踪纳管。",
+          actions: [
+            "在仓库根目录下执行 <code>mkdir -p doc/knowledge/_assets</code> 创建标准目录。",
+            "若团队有历史习惯使用其他路径，可在根目录新建 <code>.openwikirc</code> 显式指定目录名。"
+          ],
+          command: `# 1. 进入代码仓库根目录
+cd your-business-project
+
+# 2. 建立标准知识目录与图片附件子目录
+mkdir -p doc/knowledge/_assets
+
+# 3. (可选) 显式配置 .openwikirc
+echo '{"knowledge_dir": "doc/knowledge"}' > .openwikirc`,
+          tip: "强烈推荐遵循 doc/knowledge/ 命名，该目录享有最高自动探测优先级，免去配置烦恼。"
+        }
+      },
+      {
+        id: 2,
+        title: "SOP-02 编写与元数据补全",
+        desc: "撰写 Markdown、时序图与规范标题",
+        tag: "编写阶段",
+        detail: {
+          goal: "按照规范产出技术文档，享受 Frontmatter 自动推导带来的零负担体验。",
+          actions: [
+            "文件第一行必须编写 <code># 文档标题</code>，系统将自动以此提炼为图谱节点名称与知识卡片标题。",
+            "对于分布式锁、时序通信等复杂逻辑，推荐使用 <code>\`\`\`mermaid</code> 原生时序图表达，直观且便于评审。"
+          ],
+          command: `# 快速创建 ZK 分布式锁规范范例
+cat << 'EOF' > doc/knowledge/zk-distributed-lock.md
+# ZooKeeper 分布式锁落地与防惊群规范
+
+> **适用范围：** 跨微服务交易结算、防超卖扣减。
+
+## 1. 核心设计原则 (Ephemeral Sequential)
+严禁使用单一节点抢占！必须创建临时顺序节点并仅监听前序节点。
+EOF`,
+          tip: "无需手动手写 YAML Frontmatter，系统后端知识导入器会自动补全 type: Knowledge。"
+        }
+      },
+      {
+        id: 3,
+        title: "SOP-03 图片与附件纳管",
+        desc: "静态资产镜像归档与相对路径引用",
+        tag: "资源管理",
+        detail: {
+          goal: "解决外部图片防盗链失效与企业内网无法访问公网图床的痛点。",
+          actions: [
+            "将系统架构图、流程示意图（.png / .svg / .jpg / .webp）统一存放在 <code>doc/knowledge/_assets/</code> 下。",
+            "在 Markdown 中使用标准相对路径引用：<code>![架构图](_assets/zk-cluster.svg)</code>。"
+          ],
+          command: `# 将画好的架构图放置进 _assets 目录
+cp ~/Downloads/zk-architecture.svg doc/knowledge/_assets/
+
+# 在文档中直接以相对路径引用
+echo '![ZK 架构规划](_assets/zk-architecture.svg)' >> doc/knowledge/zk-cluster-deployment.md`,
+          tip: "构建流水线会自动将 _assets 镜像同步至静态站点最终发布目录，保障多端渲染绝不丢图。"
+        }
+      },
+      {
+        id: 4,
+        title: "SOP-04 GitOps 提交与快速生效",
+        desc: "代码仓库提交触发秒级知识同步",
+        tag: "发布生效",
+        detail: {
+          goal: "通过 Git 提交触发日间秒级极速通道，跳过昂贵的代码全量分析直接生效。",
+          actions: [
+            "提交 Git 变更并推送至目标分支（如 main / master）。",
+            "在 Portal 页面点击【一键同步】，或通过 Webhook / curl 发起 <code>mode: knowledge-only</code> 请求。"
+          ],
+          command: `# 1. 正常提交流水线
+git add doc/knowledge/
+git commit -m "docs: 沉淀 ZooKeeper 分布式锁规范与排错 FAQ"
+git push origin main
+
+# 2. (可选) 通过命令行调用触发日间快速同步
+curl -X POST http://<portal-host>/api/build/trigger \\
+  -H "Content-Type: application/json" \\
+  -d '{"repo_id": "infrastructure/zk-service-mesh", "mode": "knowledge-only"}'`,
+          tip: "日间使用 knowledge-only 模式耗时一般 < 3 秒，0 Token 开销；夜间由定时任务执行全量代码理解。"
+        }
+      },
+      {
+        id: 5,
+        title: "SOP-05 三端验收标准",
+        desc: "Wiki 阅读、3D 图谱、Cursor MCP 闭环",
+        tag: "验收确认",
+        detail: {
+          goal: "在三大核心消费终端中验证业务知识是否完整可用。",
+          actions: [
+            "<strong>验收 1 (静态 Wiki)：</strong> 打开 Portal 文档树，检查 ZK 规范排版、代码高亮与图片完整性。",
+            "<strong>验收 2 (3D 知识图谱)：</strong> 打开 3D 视图，查看 ZK 知识节点是否与相关的微服务节点完成聚类连线。",
+            "<strong>验收 3 (AI / MCP)：</strong> 在 Cursor / Windsurf 对话框中提问相关业务规则，验证 AI 是否精准命中引用。"
+          ],
+          command: `# 在 MCP 客户端中测试知识直读工具
+{
+  "name": "read_repository_doc",
+  "arguments": {
+    "repo_id": "infrastructure/zk-service-mesh",
+    "doc_path": "knowledge/zk-troubleshooting-faq.md"
+  }
+}`,
+          tip: "三端均成功验证后，即可正式通告业务版块与新加入同学按此规范协同开发。"
+        }
+      }
+    ];
+
+    /* ======================== STATE MANAGEMENT ======================== */
+    let currentSlideIndex = 0;
+    let currentSopIndex = 0;
+    let activeEditorFile = "doc/knowledge/zk-distributed-lock.md";
+    let isBuilding = false;
+
+    /* ======================== VIEW SWITCHING ======================== */
+    function switchView(view) {
+      document.getElementById('viewSlide').classList.add('hidden');
+      document.getElementById('viewSop').classList.add('hidden');
+      document.getElementById('viewPlayground').classList.add('hidden');
+
+      const tabs = [
+        { id: 'navSlide', active: view === 'slide' },
+        { id: 'navSop', active: view === 'sop' },
+        { id: 'navPlayground', active: view === 'playground' }
+      ];
+
+      tabs.forEach(t => {
+        const el = document.getElementById(t.id);
+        if (t.active) {
+          el.className = "px-4 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-2 bg-brand-600 text-white shadow-sm";
+        } else {
+          el.className = "px-4 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-2 text-slate-400 hover:text-slate-200 hover:bg-dark-800";
+        }
+      });
+
+      if (view === 'slide') {
+        document.getElementById('viewSlide').classList.remove('hidden');
+      } else if (view === 'sop') {
+        document.getElementById('viewSop').classList.remove('hidden');
+        renderSopDetail(currentSopIndex);
+      } else if (view === 'playground') {
+        document.getElementById('viewPlayground').classList.remove('hidden');
+        initPlayground();
+      }
+    }
+
+    /* ======================== SLIDES LOGIC ======================== */
+    function renderSlide(index) {
+      if (index < 0) index = 0;
+      if (index >= SLIDES.length) index = SLIDES.length - 1;
+      currentSlideIndex = index;
+
+      const slide = SLIDES[index];
+      const contentEl = document.getElementById('slideContent');
+      contentEl.innerHTML = `
+        <div class="space-y-2">
+          <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-brand-500/10 border border-brand-500/30 text-brand-300 text-xs font-mono font-semibold">
+            ${slide.badge}
+          </div>
+          <h2 class="text-3xl font-extrabold text-white tracking-tight">${slide.title}</h2>
+          <p class="text-sm text-slate-400">${slide.subtitle}</p>
+        </div>
+        <div class="mt-4">
+          ${slide.content}
+        </div>
+      `;
+
+      // Update dots
+      const dotsEl = document.getElementById('slideDots');
+      dotsEl.innerHTML = SLIDES.map((_, i) => `
+        <button onclick="renderSlide(${i})" class="w-2.5 h-2.5 rounded-full transition-all ${i === index ? 'bg-brand-500 w-8' : 'bg-dark-750 hover:bg-dark-700'}"></button>
+      `).join('');
+
+      document.getElementById('slideCounter').innerText = `${index + 1} / ${SLIDES.length}`;
+      document.getElementById('btnPrevSlide').disabled = (index === 0);
+      document.getElementById('btnNextSlide').disabled = (index === SLIDES.length - 1);
+    }
+
+    function prevSlide() { renderSlide(currentSlideIndex - 1); }
+    function nextSlide() { renderSlide(currentSlideIndex + 1); }
+
+    /* ======================== SOP LOGIC ======================== */
+    function renderSopList() {
+      const container = document.getElementById('sopStepCards');
+      container.innerHTML = SOP_STEPS.map((s, i) => `
+        <div onclick="renderSopDetail(${i})" class="p-4 rounded-xl border cursor-pointer transition flex flex-col justify-between ${i === currentSopIndex ? 'bg-brand-950/40 border-brand-500 shadow-lg shadow-brand-500/10' : 'bg-dark-850 border-dark-750 hover:border-dark-700'}">
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-[10px] font-mono px-2 py-0.5 rounded ${i === currentSopIndex ? 'bg-brand-500 text-white' : 'bg-dark-750 text-slate-400'} font-semibold">${s.tag}</span>
+              <span class="text-xs font-bold text-slate-500">0${s.id}</span>
+            </div>
+            <h4 class="text-xs font-bold ${i === currentSopIndex ? 'text-brand-300' : 'text-slate-200'}">${s.title}</h4>
+            <p class="text-[11px] text-slate-400 mt-1 line-clamp-2">${s.desc}</p>
+          </div>
+          <div class="mt-3 pt-2 border-t border-dark-800 text-[10px] ${i === currentSopIndex ? 'text-brand-400 font-bold' : 'text-slate-500'} flex items-center justify-between">
+            <span>点击查看指引</span>
+            <span>→</span>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function renderSopDetail(index) {
+      currentSopIndex = index;
+      renderSopList();
+      const s = SOP_STEPS[index];
+      const card = document.getElementById('sopDetailCard');
+      card.innerHTML = `
+        <div class="space-y-4">
+          <div class="flex items-center justify-between border-b border-dark-750 pb-3">
+            <div>
+              <span class="text-xs font-mono text-brand-400 font-bold">STEP 0${s.id} // ${s.tag}</span>
+              <h3 class="text-lg font-bold text-white mt-1">${s.title}</h3>
+            </div>
+            <span class="text-xs px-3 py-1 rounded-lg bg-dark-800 border border-dark-700 text-slate-300">${s.desc}</span>
+          </div>
+
+          <div>
+            <h5 class="text-xs font-bold text-slate-300 mb-1.5">🎯 步骤目标：</h5>
+            <p class="text-xs text-slate-400 leading-relaxed">${s.detail.goal}</p>
+          </div>
+
+          <div>
+            <h5 class="text-xs font-bold text-slate-300 mb-1.5">📋 执行动作要点：</h5>
+            <ul class="text-xs text-slate-400 space-y-1.5 list-disc pl-5">
+              ${s.detail.actions.map(a => `<li>${a}</li>`).join('')}
+            </ul>
+          </div>
+
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <h5 class="text-xs font-bold text-slate-300">💻 标准执行终端命令：</h5>
+              <button onclick="copyTextToClipboard(\`${s.detail.command.replace(/`/g, '\\`')}\`)" class="text-[11px] text-brand-400 hover:text-brand-300 flex items-center gap-1 font-mono">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"></path></svg>
+                一键复制指令
+              </button>
+            </div>
+            <pre class="bg-dark-900 border border-dark-750 p-4 rounded-xl font-mono text-xs text-indigo-300 overflow-x-auto leading-relaxed">${s.detail.command}</pre>
+          </div>
+
+          <div class="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 flex items-start gap-2">
+            <span class="font-bold shrink-0">💡 踩坑提示:</span>
+            <span>${s.detail.tip}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    /* ======================== PLAYGROUND LOGIC ======================== */
+    function initPlayground() {
+      renderEditorTabs();
+      loadEditorFile(activeEditorFile);
+      renderWikiPreview();
+      initCanvasGraph();
+    }
+
+    function renderEditorTabs() {
+      const container = document.getElementById('editorFileTabs');
+      const files = Object.keys(ZK_SAMPLES);
+      container.innerHTML = files.map(file => {
+        const basename = file.split('/').pop();
+        const isActive = (file === activeEditorFile);
+        return `
+          <button onclick="selectEditorFile('${file}')" class="px-3 py-1 rounded-t-lg text-xs font-mono transition flex items-center gap-1.5 ${isActive ? 'bg-dark-850 text-indigo-300 border-t-2 border-brand-500 font-bold' : 'text-slate-400 hover:text-slate-200'}">
+            <svg class="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            ${basename}
+          </button>
+        `;
+      }).join('');
+    }
+
+    function selectEditorFile(file) {
+      activeEditorFile = file;
+      renderEditorTabs();
+      loadEditorFile(file);
+      document.getElementById('editorCurrentPath').innerText = file;
+      renderWikiPreview();
+    }
+
+    function loadEditorFile(file) {
+      document.getElementById('fileEditor').value = ZK_SAMPLES[file] || '';
+    }
+
+    function onEditorChange() {
+      ZK_SAMPLES[activeEditorFile] = document.getElementById('fileEditor').value;
+      renderWikiPreview();
+    }
+
+    function resetEditorContent() {
+      loadEditorFile(activeEditorFile);
+      renderWikiPreview();
+      showToast("已重置为系统默认样例");
+    }
+
+    function renderWikiPreview() {
+      const content = document.getElementById('fileEditor').value;
+      const previewArea = document.getElementById('wikiRenderedArea');
+      
+      // Extract title
+      const match = content.match(/^#\s+(.+)$/m);
+      const title = match ? match[1].trim() : activeEditorFile;
+      document.getElementById('wikiDocTitle').innerText = title;
+
+      if (activeEditorFile.endsWith('.md')) {
+        previewArea.innerHTML = marked.parse(content);
+      } else {
+        previewArea.innerHTML = `<pre class="text-xs font-mono text-indigo-300 bg-dark-900 p-4 rounded-xl border border-dark-750">${content}</pre>`;
+      }
+    }
+
+    function switchRightTab(tab) {
+      document.getElementById('tabContentWiki').classList.add('hidden');
+      document.getElementById('tabContentGraph').classList.add('hidden');
+      document.getElementById('tabContentMcp').classList.add('hidden');
+
+      const tabs = [
+        { id: 'tabBtnWiki', active: tab === 'wiki' },
+        { id: 'tabBtnGraph', active: tab === 'graph' },
+        { id: 'tabBtnMcp', active: tab === 'mcp' }
+      ];
+
+      tabs.forEach(t => {
+        const el = document.getElementById(t.id);
+        if (t.active) {
+          el.className = "px-3 py-1 rounded-lg text-xs font-semibold bg-brand-600 text-white flex items-center gap-1.5 transition";
+        } else {
+          el.className = "px-3 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-dark-800 flex items-center gap-1.5 transition";
+        }
+      });
+
+      if (tab === 'wiki') {
+        document.getElementById('tabContentWiki').classList.remove('hidden');
+      } else if (tab === 'graph') {
+        document.getElementById('tabContentGraph').classList.remove('hidden');
+        renderCanvasGraph();
+      } else if (tab === 'mcp') {
+        document.getElementById('tabContentMcp').classList.remove('hidden');
+        if (!document.getElementById('mcpChatHistory').children.length) {
+          askPresetQuestion('lock');
+        }
+      }
+    }
+
+    /* ======================== GITOPS TERMINAL SIMULATION ======================== */
+    function triggerSimulatedGitOps() {
+      if (isBuilding) return;
+      isBuilding = true;
+
+      const mode = document.getElementById('simBuildMode').value;
+      const term = document.getElementById('terminalLogs');
+      const badge = document.getElementById('logStatusBadge');
+      const btn = document.getElementById('btnTriggerBuild');
+
+      badge.innerText = "BUILDING...";
+      badge.className = "text-amber-400 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 animate-pulse";
+      btn.disabled = true;
+      btn.classList.add('opacity-50');
+
+      term.innerHTML = '';
+      const now = () => new Date().toTimeString().split(' ')[0];
+
+      const steps = [
+        `[${now()}] [git] Received GitOps push webhook on branch "main" (commit 7a9f2e4)`,
+        `[${now()}] [pipeline] Initializing build pipeline, mode: ${mode}`,
+        `[${now()}] [knowledge] Checking candidate directories: .openwikirc -> doc/knowledge/ -> docs/ -> wiki/`,
+        `[${now()}] [knowledge] Found valid candidate knowledge dir: "doc/knowledge"`,
+        `[${now()}] [knowledge] Normalizing markdown files: injecting frontmatter (type: Knowledge)`,
+        `[${now()}] [knowledge]   - Normalized: zk-distributed-lock.md (Title: ZooKeeper 分布式锁落地与防惊群规范)`,
+        `[${now()}] [knowledge]   - Normalized: zk-cluster-deployment.md (Title: ZooKeeper 生产集群架构与选主机制)`,
+        `[${now()}] [knowledge]   - Normalized: zk-troubleshooting-faq.md (Title: ZooKeeper 生产排错与高频故障 FAQ)`,
+        `[${now()}] [assets] Mirrored 1 media asset to finalStaticDir/knowledge/_assets/`,
+        `[${now()}] [visualizer] Linking 3 knowledge nodes into 3D concept graph topology`,
+        `[${now()}] [mcp] Re-indexing OpenWiki MCP server tools (list_repository_docs / read_repository_doc)`,
+        `[${now()}] [success] Build finished successfully in 1.48s. Token saved: 150,000`
+      ];
+
+      let idx = 0;
+      const interval = setInterval(() => {
+        if (idx < steps.length) {
+          const div = document.createElement('div');
+          div.className = idx === steps.length - 1 ? 'text-emerald-400 font-bold' : 'text-slate-300';
+          div.innerText = steps[idx];
+          term.appendChild(div);
+          term.scrollTop = term.scrollHeight;
+          idx++;
+        } else {
+          clearInterval(interval);
+          isBuilding = false;
+          badge.innerText = "SUCCESS";
+          badge.className = "text-emerald-400 text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20";
+          btn.disabled = false;
+          btn.classList.remove('opacity-50');
+          showToast("GitOps 同步成功！知识图谱与 MCP 索引已就绪");
+        }
+      }, 150);
+    }
+
+    /* ======================== CANVAS 2D GRAPH SIMULATION ======================== */
+    let canvas, ctx;
+    let nodes = [];
+    let links = [];
+    let draggedNode = null;
+    let animId = null;
+
+    function initCanvasGraph() {
+      canvas = document.getElementById('graphCanvas');
+      if (!canvas) return;
+      ctx = canvas.getContext('2d');
+
+      // Resize
+      function resize() {
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * window.devicePixelRatio;
+        canvas.height = rect.height * window.devicePixelRatio;
+        ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+      }
+      resize();
+      window.addEventListener('resize', resize);
+
+      // Node Definition
+      const w = canvas.getBoundingClientRect().width;
+      const h = canvas.getBoundingClientRect().height;
+      const cx = w / 2;
+      const cy = h / 2;
+
+      nodes = [
+        // Code services (green)
+        { id: 'order-service', label: 'order-service (微服务)', type: 'code', x: cx - 120, y: cy - 40, vx: 0, vy: 0, r: 18, color: '#10b981' },
+        { id: 'pay-service', label: 'pay-service (支付服务)', type: 'code', x: cx - 90, y: cy + 90, vx: 0, vy: 0, r: 18, color: '#10b981' },
+        { id: 'zk-client', label: 'zk_client.go (SDK封装)', type: 'code', x: cx + 20, y: cy, vx: 0, vy: 0, r: 15, color: '#059669' },
+        
+        // Custom Knowledge docs (purple/brand)
+        { id: 'zk-lock', label: 'ZK 分布式锁规范 (Doc)', type: 'knowledge', x: cx + 130, y: cy - 80, vx: 0, vy: 0, r: 20, color: '#818cf8' },
+        { id: 'zk-cluster', label: 'ZK 集群规划与选主 (Doc)', type: 'knowledge', x: cx + 170, y: cy + 40, vx: 0, vy: 0, r: 20, color: '#818cf8' },
+        { id: 'zk-faq', label: 'ZK 排错与FAQ (Doc)', type: 'knowledge', x: cx + 70, y: cy + 120, vx: 0, vy: 0, r: 20, color: '#818cf8' },
+      ];
+
+      links = [
+        { source: 'order-service', target: 'zk-client' },
+        { source: 'pay-service', target: 'zk-client' },
+        { source: 'zk-client', target: 'zk-lock' },
+        { source: 'zk-client', target: 'zk-cluster' },
+        { source: 'zk-client', target: 'zk-faq' },
+        { source: 'order-service', target: 'zk-lock' },
+      ];
+
+      // Mouse Dragging
+      canvas.addEventListener('mousedown', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        draggedNode = nodes.find(n => Math.hypot(n.x - mx, n.y - my) < n.r + 5);
+      });
+
+      canvas.addEventListener('mousemove', (e) => {
+        if (!draggedNode) return;
+        const rect = canvas.getBoundingClientRect();
+        draggedNode.x = e.clientX - rect.left;
+        draggedNode.y = e.clientY - rect.top;
+      });
+
+      window.addEventListener('mouseup', () => { draggedNode = null; });
+    }
+
+    function renderCanvasGraph() {
+      if (!canvas) return;
+      const w = canvas.getBoundingClientRect().width;
+      const h = canvas.getBoundingClientRect().height;
+
+      ctx.clearRect(0, 0, w, h);
+
+      // Force physics iteration
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const dx = nodes[j].x - nodes[i].x;
+          const dy = nodes[j].y - nodes[i].y;
+          const dist = Math.hypot(dx, dy) || 1;
+          if (dist < 140) {
+            const force = (140 - dist) * 0.02;
+            const fx = (dx / dist) * force;
+            const fy = (dy / dist) * force;
+            if (nodes[i] !== draggedNode) { nodes[i].x -= fx; nodes[i].y -= fy; }
+            if (nodes[j] !== draggedNode) { nodes[j].x += fx; nodes[j].y += fy; }
+          }
+        }
+      }
+
+      // Draw links
+      ctx.lineWidth = 1.5;
+      links.forEach(link => {
+        const s = nodes.find(n => n.id === link.source);
+        const t = nodes.find(n => n.id === link.target);
+        if (!s || !t) return;
+        ctx.strokeStyle = '#334155';
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y);
+        ctx.lineTo(t.x, t.y);
+        ctx.stroke();
+      });
+
+      // Draw nodes
+      nodes.forEach(n => {
+        // Outer glow
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.r + 4, 0, Math.PI * 2);
+        ctx.fillStyle = n.type === 'knowledge' ? 'rgba(99, 102, 241, 0.2)' : 'rgba(16, 185, 129, 0.15)';
+        ctx.fill();
+
+        // Core circle
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+        ctx.fillStyle = n.color;
+        ctx.fill();
+        ctx.strokeStyle = '#0f172a';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Label
+        ctx.fillStyle = '#f8fafc';
+        ctx.font = '11px Inter, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(n.label, n.x, n.y + n.r + 14);
+      });
+
+      animId = requestAnimationFrame(renderCanvasGraph);
+    }
+
+    /* ======================== MCP CHAT SIMULATION ======================== */
+    function askPresetQuestion(type) {
+      const history = document.getElementById('mcpChatHistory');
+      let question = "";
+      let toolName = "read_repository_doc";
+      let toolPath = "";
+      let answer = "";
+
+      if (type === 'lock') {
+        question = "请基于团队规范，说明生产环境下如何使用 ZooKeeper 实现分布式锁并避免惊群？";
+        toolPath = "knowledge/zk-distributed-lock.md";
+        answer = `根据团队知识库文档 <code>zk-distributed-lock.md</code> 明确要求：
+<ol class="list-decimal pl-5 mt-2 space-y-1">
+  <li><strong>严禁单点抢占：</strong> 禁止所有客户端争抢创建同一个临时节点，避免释放时触发所有节点监听（惊群效应）。</li>
+  <li><strong>临时顺序节点机制：</strong> 客户端在 <code>/locks/resource</code> 下创建 <code>EPHEMERAL_SEQUENTIAL</code> 节点。</li>
+  <li><strong>前序监听：</strong> 排序后，每个客户端仅对<strong>序号恰好比自己小 1 的前序节点</strong>注册 Watcher。</li>
+  <li><strong>超时保证：</strong> 若进程宕机，会话超时后该临时节点自动释放，后序节点自动接管锁。</li>
+</ol>`;
+      } else {
+        question = "生产环境排查到 ZK 报 Session Expired，团队规约的处理思路是什么？";
+        toolPath = "knowledge/zk-troubleshooting-faq.md";
+        answer = `根据团队知识库文档 <code>zk-troubleshooting-faq.md</code> 规约：
+<ul class="list-disc pl-5 mt-2 space-y-1">
+  <li><strong>根本原因定位：</strong> 90% 事故源自应用宿主机长时间 <strong>JVM Full GC (STW)</strong> 或 CPU 满载导致心跳超限（超过 <code>tickTime*2</code>）。</li>
+  <li><strong>参数调优要求：</strong> 将应用 JVM 升级为 ZGC，STW 严格控制在 200ms 以内；同时将客户端 <code>sessionTimeout</code> 适当调高至 20,000ms ~ 30,000ms。</li>
+  <li><strong>磁盘快照防护：</strong> 必须在 <code>zoo.cfg</code> 中配置 <code>autopurge.purgeInterval=24</code> 和 <code>autopurge.snapRetainCount=5</code> 防止快照打满磁盘。</li>
+</ul>`;
+      }
+
+      history.innerHTML = `
+        <!-- User Query -->
+        <div class="flex items-start gap-2.5">
+          <div class="w-6 h-6 rounded-full bg-slate-700 flex items-center justify-center text-[10px] font-bold text-slate-300 shrink-0">YOU</div>
+          <div class="bg-dark-800 border border-dark-750 p-3 rounded-xl rounded-tl-none text-slate-200 max-w-xl">
+            ${question}
+          </div>
+        </div>
+
+        <!-- MCP Tool Call Badge -->
+        <div class="flex items-center gap-2 pl-9">
+          <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] font-mono">
+            <svg class="w-3.5 h-3.5 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+            MCP Call: ${toolName}(doc_path="${toolPath}")
+          </span>
+          <span class="text-[10px] text-emerald-400 font-mono">200 OK (842 bytes)</span>
+        </div>
+
+        <!-- Assistant Answer -->
+        <div class="flex items-start gap-2.5">
+          <div class="w-6 h-6 rounded-full bg-brand-600 flex items-center justify-center text-[10px] font-bold text-white shrink-0">AI</div>
+          <div class="bg-dark-900 border border-brand-500/30 p-3.5 rounded-xl rounded-tl-none text-slate-200 leading-relaxed max-w-xl">
+            <div class="text-[11px] text-brand-300 font-semibold mb-1 flex items-center gap-1">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+              已检索到团队权威规范 (doc/knowledge/${toolPath.split('/').pop()})：
+            </div>
+            ${answer}
+          </div>
+        </div>
+      `;
+      history.scrollTop = history.scrollHeight;
+    }
+
+    /* ======================== TEMPLATE MODAL ======================== */
+    function openTemplateModal() {
+      selectTemplate('lock');
+      document.getElementById('templateModal').classList.remove('hidden');
+    }
+
+    function closeTemplateModal() {
+      document.getElementById('templateModal').classList.add('hidden');
+    }
+
+    function selectTemplate(type) {
+      const codeArea = document.getElementById('modalTemplateCode');
+      if (type === 'lock') {
+        codeArea.value = ZK_SAMPLES['doc/knowledge/zk-distributed-lock.md'];
+      } else if (type === 'cluster') {
+        codeArea.value = ZK_SAMPLES['doc/knowledge/zk-cluster-deployment.md'];
+      } else if (type === 'rc') {
+        codeArea.value = ZK_SAMPLES['.openwikirc'];
+      }
+    }
+
+    function copyModalTemplate() {
+      const text = document.getElementById('modalTemplateCode').value;
+      copyTextToClipboard(text);
+      document.getElementById('copyBtnText').innerText = "已复制到剪贴板！";
+      setTimeout(() => {
+        document.getElementById('copyBtnText').innerText = "复制模板代码";
+      }, 2000);
+    }
+
+    /* ======================== UTILITIES ======================== */
+    function copyTextToClipboard(text) {
+      navigator.clipboard.writeText(text).then(() => {
+        showToast("已成功复制到剪贴板");
+      }).catch(() => {
+        // Fallback
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        showToast("已成功复制到剪贴板");
+      });
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      document.getElementById('toastMsg').innerText = msg;
+      toast.classList.remove('translate-y-20', 'opacity-0');
+      setTimeout(() => {
+        toast.classList.add('translate-y-20', 'opacity-0');
+      }, 2500);
+    }
+
+    function toggleFullScreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        if (document.exitFullscreen) {
+          document.exitFullscreen().catch(() => {});
+        }
+      }
+    }
+
+    // Keyboard Shortcuts
+    window.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+      if (e.key === 'ArrowRight' || e.key === ' ') {
+        e.preventDefault();
+        nextSlide();
+      } else if (e.key === 'ArrowLeft' || e.key === 'Backspace') {
+        e.preventDefault();
+        prevSlide();
+      } else if (e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        toggleFullScreen();
+      }
+    });
+
+    // Initialize View
+    window.addEventListener('DOMContentLoaded', () => {
+      renderSlide(0);
+      renderSopList();
+    });
+  </script>
+</body>
+</html>
+
