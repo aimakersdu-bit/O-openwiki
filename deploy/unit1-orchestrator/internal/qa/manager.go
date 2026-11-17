@@ -162,6 +162,82 @@ func findNodeBinary() string {
 	return "node"
 }
 
+// resolveQAHomesRootDir locates the .qa_homes directory sibling to the current .openwiki directory.
+func resolveQAHomesRootDir() (string, string) {
+	baseOpenwiki := os.Getenv("OPENWIKI_HOME")
+	if baseOpenwiki == "" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			baseOpenwiki = filepath.Join(home, ".openwiki")
+		}
+	}
+	if baseOpenwiki == "" {
+		baseOpenwiki = ".openwiki"
+	}
+	baseOpenwiki = filepath.Clean(baseOpenwiki)
+
+	var parentDir string
+	if filepath.Base(baseOpenwiki) == ".openwiki" {
+		parentDir = filepath.Dir(baseOpenwiki)
+	} else {
+		parentDir = baseOpenwiki
+	}
+	return filepath.Join(parentDir, ".qa_homes"), baseOpenwiki
+}
+
+// prepareWorkerHomeDir creates an isolated OPENWIKI_HOME directory for a QA worker
+// under <sibling>/.qa_homes/<category>/<id> and syncs the base .env file if present.
+func prepareWorkerHomeDir(category, id string) (string, error) {
+	qaHomesRoot, baseOpenwiki := resolveQAHomesRootDir()
+	cleanID := filepath.Clean(strings.TrimPrefix(id, "/"))
+	if cleanID == "." || cleanID == "" || strings.HasPrefix(cleanID, "..") {
+		cleanID = "default"
+	}
+	workerHome := filepath.Join(qaHomesRoot, category, cleanID)
+	if err := os.MkdirAll(workerHome, 0o700); err != nil {
+		return "", err
+	}
+	if baseOpenwiki != "" {
+		srcEnv := filepath.Join(baseOpenwiki, ".env")
+		if envData, err := os.ReadFile(srcEnv); err == nil {
+			_ = os.WriteFile(filepath.Join(workerHome, ".env"), envData, 0o600)
+		}
+	}
+	return workerHome, nil
+}
+
+func upsertWorkerEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	for i, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			env[i] = prefix + value
+			return env
+		}
+	}
+	return append(env, prefix+value)
+}
+
+func buildWorkerEnv(distDir, workerHome string) []string {
+	env := os.Environ()
+	hasPath := false
+	for i, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			env[i] = "PATH=/opt/openwiki/node22/bin:" + strings.TrimPrefix(e, "PATH=") + ":/usr/local/bin:/opt/homebrew/bin"
+			hasPath = true
+			break
+		}
+	}
+	if !hasPath {
+		env = append(env, "PATH=/opt/openwiki/node22/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin")
+	}
+	if distDir != "" {
+		env = upsertWorkerEnv(env, "OPENWIKI_DIST_DIR", distDir)
+	}
+	if workerHome != "" {
+		env = upsertWorkerEnv(env, "OPENWIKI_HOME", workerHome)
+	}
+	return env
+}
+
 // getOrStartWorker returns an active, healthy worker for repo, or launches a new one.
 func (m *Manager) getOrStartWorker(ctx context.Context, repo *db.Repo) (*WorkerProcess, error) {
 	m.mu.Lock()
@@ -215,23 +291,11 @@ func (m *Manager) getOrStartWorker(ctx context.Context, repo *db.Repo) (*WorkerP
 		cmd.Dir = repo.LocalPath
 	}
 
-	// Environment variables - ensure PATH includes node22 and common node installation directories
-	env := os.Environ()
-	hasPath := false
-	for i, e := range env {
-		if strings.HasPrefix(e, "PATH=") {
-			env[i] = "PATH=/opt/openwiki/node22/bin:" + strings.TrimPrefix(e, "PATH=") + ":/usr/local/bin:/opt/homebrew/bin"
-			hasPath = true
-			break
-		}
+	workerHome, err := prepareWorkerHomeDir("repos", repo.ID)
+	if err != nil {
+		log.Printf("[QA-Manager] Warning: failed to prepare isolated QA home for repo %s: %v", repo.ID, err)
 	}
-	if !hasPath {
-		env = append(env, "PATH=/opt/openwiki/node22/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin")
-	}
-	if m.distDir != "" {
-		env = append(env, fmt.Sprintf("OPENWIKI_DIST_DIR=%s", m.distDir))
-	}
-	cmd.Env = env
+	cmd.Env = buildWorkerEnv(m.distDir, workerHome)
 
 	// Capture stderr for debugging
 	var stderrBuf bytes.Buffer
@@ -534,21 +598,12 @@ func (m *Manager) getOrStartProjectWorker(ctx context.Context, proj *db.Project)
 		cmd.Dir = proj.LocalPath
 	}
 
-	env := os.Environ()
-	hasPath := false
-	for i, e := range env {
-		if strings.HasPrefix(e, "PATH=") {
-			env[i] = e + ":/usr/local/bin:/opt/homebrew/bin"
-			hasPath = true
-			break
-		}
+	workerHome, err := prepareWorkerHomeDir("projects", proj.ID)
+	if err != nil {
+		log.Printf("[QA-Manager] Warning: failed to prepare isolated QA home for project %s: %v", proj.ID, err)
 	}
-	if !hasPath {
-		env = append(env, "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin")
-	}
-	if m.distDir != "" {
-		env = append(env, fmt.Sprintf("OPENWIKI_DIST_DIR=%s", m.distDir))
-	}
+	cmd.Env = buildWorkerEnv(m.distDir, workerHome)
+
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 	cmd.Stdout = os.Stdout

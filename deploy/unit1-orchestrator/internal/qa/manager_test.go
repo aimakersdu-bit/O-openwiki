@@ -172,3 +172,62 @@ func TestBuildSocketPathAndMultiSegmentRepoID(t *testing.T) {
 		t.Fatalf("expected worker socket inside %q, got %q", tmpDir, wp.SocketPath)
 	}
 }
+
+func TestPrepareWorkerHomeDirAndEnvIsolation(t *testing.T) {
+	rootDir := t.TempDir()
+	baseOpenwiki := filepath.Join(rootDir, ".openwiki")
+	if err := os.MkdirAll(baseOpenwiki, 0700); err != nil {
+		t.Fatal(err)
+	}
+	expectedEnvContent := "OPENAI_API_KEY=qa-secret-key\nOPENWIKI_MODEL_ID=glm-5\n"
+	if err := os.WriteFile(filepath.Join(baseOpenwiki, ".env"), []byte(expectedEnvContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENWIKI_HOME", baseOpenwiki)
+
+	// 1. 验证多段 RepoID 的专属 OPENWIKI_HOME 路径位于 .openwiki 同级的 .qa_homes/repos 下
+	repoHome, err := prepareWorkerHomeDir("repos", "bxbank/CAC/source")
+	if err != nil {
+		t.Fatalf("prepareWorkerHomeDir for repo failed: %v", err)
+	}
+	expectedRepoHome := filepath.Join(rootDir, ".qa_homes", "repos", "bxbank", "CAC", "source")
+	if repoHome != expectedRepoHome {
+		t.Fatalf("expected repo worker home %q, got %q", expectedRepoHome, repoHome)
+	}
+
+	// 2. 验证全局 .env 已自动同步至该仓库专属目录
+	syncedEnv, err := os.ReadFile(filepath.Join(repoHome, ".env"))
+	if err != nil {
+		t.Fatalf("expected .env synced to repo worker home: %v", err)
+	}
+	if string(syncedEnv) != expectedEnvContent {
+		t.Fatalf("unexpected synced .env content: %q", string(syncedEnv))
+	}
+
+	// 3. 验证聚合项目的专属 OPENWIKI_HOME 位于 .qa_homes/projects 下，与单仓互不干扰
+	projHome, err := prepareWorkerHomeDir("projects", "proj-deo")
+	if err != nil {
+		t.Fatalf("prepareWorkerHomeDir for project failed: %v", err)
+	}
+	expectedProjHome := filepath.Join(rootDir, ".qa_homes", "projects", "proj-deo")
+	if projHome != expectedProjHome {
+		t.Fatalf("expected project worker home %q, got %q", expectedProjHome, projHome)
+	}
+
+	// 4. 验证 buildWorkerEnv 正确覆盖注入 OPENWIKI_HOME 与 OPENWIKI_DIST_DIR
+	env := buildWorkerEnv("/opt/openwiki/dist", repoHome)
+	envMap := make(map[string]string)
+	for _, item := range env {
+		parts := strings.SplitN(item, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+	if envMap["OPENWIKI_HOME"] != repoHome {
+		t.Fatalf("expected OPENWIKI_HOME=%q, got %q", repoHome, envMap["OPENWIKI_HOME"])
+	}
+	if envMap["OPENWIKI_DIST_DIR"] != "/opt/openwiki/dist" {
+		t.Fatalf("expected OPENWIKI_DIST_DIR=/opt/openwiki/dist, got %q", envMap["OPENWIKI_DIST_DIR"])
+	}
+}
+

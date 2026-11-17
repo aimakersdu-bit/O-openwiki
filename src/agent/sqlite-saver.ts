@@ -79,8 +79,10 @@ export class SqliteSaver extends BaseCheckpointSaver {
     if (this.isSetup) return;
     if (typeof this.db.pragma === "function") {
       this.db.pragma("journal_mode=WAL");
+      this.db.pragma("busy_timeout=30000");
     } else {
       this.db.exec("PRAGMA journal_mode=WAL;");
+      this.db.exec("PRAGMA busy_timeout=30000;");
     }
     this.db.exec(`
 CREATE TABLE IF NOT EXISTS checkpoints (

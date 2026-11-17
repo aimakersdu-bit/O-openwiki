@@ -208,6 +208,30 @@ function touch() {
   lastAccessedAt = Date.now();
 }
 
+const MAX_IDLE_SQLITE_BYTES = 100 * 1024 * 1024; // 100 MB
+
+function pruneOversizedSqliteOnIdleExit() {
+  try {
+    const homeDir = process.env.OPENWIKI_HOME;
+    if (!homeDir) return;
+    const sqliteFile = path.join(homeDir, 'openwiki.sqlite');
+    if (fs.existsSync(sqliteFile)) {
+      const stat = fs.statSync(sqliteFile);
+      if (stat.size > MAX_IDLE_SQLITE_BYTES) {
+        console.log(`[QA-Daemon] openwiki.sqlite size (${stat.size} bytes) exceeds 100MB on idle exit; pruning...`);
+        for (const suffix of ['', '-wal', '-shm']) {
+          const target = sqliteFile + suffix;
+          if (fs.existsSync(target)) {
+            try { fs.unlinkSync(target); } catch { }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[QA-Daemon] Warning: failed to prune oversized sqlite:', err);
+  }
+}
+
 function cleanupAndExit(code = 0) {
   try {
     server.close(() => {
@@ -216,9 +240,11 @@ function cleanupAndExit(code = 0) {
           fs.unlinkSync(socketPath);
         }
       } catch { }
+      pruneOversizedSqliteOnIdleExit();
       process.exit(code);
     });
   } catch {
+    pruneOversizedSqliteOnIdleExit();
     process.exit(code);
   }
 }

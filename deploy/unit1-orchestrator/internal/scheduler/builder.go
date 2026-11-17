@@ -118,6 +118,11 @@ func (b *Builder) createOpenWikiCmd(repoPath string, args ...string) *exec.Cmd {
 
 // createOpenWikiCmdWithBuildID constructs an exec.Cmd with LLM proxy environment variables and build attribution.
 func (b *Builder) createOpenWikiCmdWithBuildID(buildID int64, repoPath string, args ...string) *exec.Cmd {
+	return b.createOpenWikiCmdWithHome(buildID, "", repoPath, args...)
+}
+
+// createOpenWikiCmdWithHome constructs an exec.Cmd with LLM proxy environment variables, build attribution, and isolated task OPENWIKI_HOME.
+func (b *Builder) createOpenWikiCmdWithHome(buildID int64, taskHomeDir, repoPath string, args ...string) *exec.Cmd {
 	cli := b.OpenwikiCLI
 	if cli == "" {
 		cli = "openwiki"
@@ -193,7 +198,11 @@ func (b *Builder) createOpenWikiCmdWithBuildID(buildID int64, repoPath string, a
 	if b.OpenwikiDistDir != "" {
 		env = append(env, fmt.Sprintf("OPENWIKI_DIST_DIR=%s", b.OpenwikiDistDir))
 	}
-	if os.Getenv("OPENWIKI_HOME") == "" {
+
+	// Task-isolated OPENWIKI_HOME prevents concurrent SQLite lock contention
+	if taskHomeDir != "" {
+		env = upsertEnv(env, "OPENWIKI_HOME", taskHomeDir)
+	} else if os.Getenv("OPENWIKI_HOME") == "" {
 		home, _ := os.UserHomeDir()
 		if home != "" {
 			env = append(env, fmt.Sprintf("OPENWIKI_HOME=%s", filepath.Join(home, ".openwiki")))
@@ -289,6 +298,30 @@ func setEnvIfUnset(env []string, key, value string) []string {
 	return append(env, prefix+value)
 }
 
+// resolveSiblingTmpDir locates or computes the .tmp directory sibling to the current .openwiki directory.
+// Returns the .tmp directory path and the base .openwiki directory path.
+func resolveSiblingTmpDir() (string, string) {
+	baseOpenwiki := os.Getenv("OPENWIKI_HOME")
+	if baseOpenwiki == "" {
+		home, err := os.UserHomeDir()
+		if err == nil && home != "" {
+			baseOpenwiki = filepath.Join(home, ".openwiki")
+		}
+	}
+	if baseOpenwiki == "" {
+		baseOpenwiki = ".openwiki"
+	}
+	baseOpenwiki = filepath.Clean(baseOpenwiki)
+
+	var tmpParent string
+	if filepath.Base(baseOpenwiki) == ".openwiki" {
+		tmpParent = filepath.Dir(baseOpenwiki)
+	} else {
+		tmpParent = baseOpenwiki
+	}
+	return filepath.Join(tmpParent, ".tmp"), baseOpenwiki
+}
+
 // BuildRepo runs the full build pipeline for a single repository.
 func (b *Builder) BuildRepo(repoID, repoPath, wikiDir string, onProgress ...func(string)) *BuildResult {
 	return b.BuildRepoWithBuildID(0, repoID, repoPath, wikiDir, onProgress...)
@@ -317,11 +350,46 @@ func (b *Builder) BuildRepoWithMode(buildID int64, repoID, repoPath, wikiDir str
 	// Resolve static output directory for this repo, and create a staging directory for zero-downtime atomic swap
 	finalStaticDir := filepath.Join(b.StaticOutputDir, repoID)
 	stagingDir := filepath.Join(b.StaticOutputDir, fmt.Sprintf("%s_tmp_%d", strings.ReplaceAll(repoID, "/", "_"), time.Now().UnixNano()))
+
+	// Setup isolated temporary OPENWIKI_HOME under sibling .tmp directory (only when CLI execution is needed)
+	var taskHomeDir string
+	if mode != BuildModeKnowledgeOnly {
+		tmpRootDir, baseOpenwiki := resolveSiblingTmpDir()
+		_ = os.MkdirAll(tmpRootDir, 0755)
+
+		safeRepoName := strings.ReplaceAll(strings.ReplaceAll(repoID, "/", "_"), "\\", "_")
+		taskHomeDir = filepath.Join(tmpRootDir, fmt.Sprintf("build_%d_%s_%d", buildID, safeRepoName, time.Now().UnixNano()))
+		if err := os.MkdirAll(taskHomeDir, 0700); err != nil {
+			b.logStep(repoID, fmt.Sprintf("WARNING: failed to create task home %s: %v, falling back to base home", taskHomeDir, err), &logBuf, onProgress...)
+			taskHomeDir = ""
+		} else if baseOpenwiki != "" {
+			// Inherit base .env if present (e.g. DeepSeek tokens or private configs)
+			srcEnv := filepath.Join(baseOpenwiki, ".env")
+			if envData, err := os.ReadFile(srcEnv); err == nil {
+				_ = os.WriteFile(filepath.Join(taskHomeDir, ".env"), envData, 0600)
+			}
+		}
+	}
+
 	defer func() {
 		// Clean up staging directory if it still exists (e.g. on build failure)
 		if _, err := os.Stat(stagingDir); err == nil {
 			os.RemoveAll(stagingDir)
 		}
+
+		// Clean up task temporary home ONLY if build succeeded without any CLI error.
+		// If init or update failed (even if offline static export continued), preserve for troubleshooting.
+		if taskHomeDir != "" {
+			if result.Success && result.Error == "" {
+				if _, err := os.Stat(taskHomeDir); err == nil {
+					_ = os.RemoveAll(taskHomeDir)
+				}
+			} else {
+				b.logStep(repoID, fmt.Sprintf("Build failed; preserving temporary home directory for troubleshooting: %s", taskHomeDir), &logBuf, onProgress...)
+			}
+		}
+		// Always sync final logBuf snapshot so deferred troubleshooting messages are persisted in DB
+		result.Log = logBuf.String()
 	}()
 
 	ranInit := false
@@ -329,7 +397,7 @@ func (b *Builder) BuildRepoWithMode(buildID int64, repoID, repoPath, wikiDir str
 		// Step 0: Check if wiki directory exists; if not, run openwiki code --init --print first
 		if _, err := os.Stat(wikiDir); os.IsNotExist(err) {
 			b.logStep(repoID, fmt.Sprintf("=== Step 0: openwiki code --init --print --language %s ===", lang), &logBuf, onProgress...)
-			cmdInit := b.createOpenWikiCmdWithBuildID(buildID, repoPath, "code", "--init", "--print", "--language", lang)
+			cmdInit := b.createOpenWikiCmdWithHome(buildID, taskHomeDir, repoPath, "code", "--init", "--print", "--language", lang)
 			var stdoutInit, stderrInit bytes.Buffer
 			cmdInit.Stdout = &stdoutInit
 			cmdInit.Stderr = &stderrInit
@@ -364,7 +432,7 @@ func (b *Builder) BuildRepoWithMode(buildID int64, repoID, repoPath, wikiDir str
 		b.logStep(repoID, "openwiki init already generated fresh wiki, skipping redundant openwiki update", &logBuf, onProgress...)
 	} else {
 		b.logStep(repoID, fmt.Sprintf("=== Step 1: openwiki code --update --print --language %s ===", lang), &logBuf, onProgress...)
-		cmd := b.createOpenWikiCmdWithBuildID(buildID, repoPath, "code", "--update", "--print", "--language", lang)
+		cmd := b.createOpenWikiCmdWithHome(buildID, taskHomeDir, repoPath, "code", "--update", "--print", "--language", lang)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr

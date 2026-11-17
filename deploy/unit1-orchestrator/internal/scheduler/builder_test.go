@@ -340,4 +340,128 @@ func TestBuilder_BuildModesDefined(t *testing.T) {
 	}
 }
 
+func TestResolveSiblingTmpDir(t *testing.T) {
+	// Case 1: OPENWIKI_HOME ends with .openwiki
+	t.Setenv("OPENWIKI_HOME", "/data/disk0/openwiki/.openwiki")
+	tmpDir, base := resolveSiblingTmpDir()
+	if tmpDir != "/data/disk0/openwiki/.tmp" {
+		t.Fatalf("expected /data/disk0/openwiki/.tmp, got %s", tmpDir)
+	}
+	if base != "/data/disk0/openwiki/.openwiki" {
+		t.Fatalf("expected base /data/disk0/openwiki/.openwiki, got %s", base)
+	}
+
+	// Case 2: OPENWIKI_HOME is a parent directory
+	t.Setenv("OPENWIKI_HOME", "/data/disk0/openwiki")
+	tmpDir2, _ := resolveSiblingTmpDir()
+	if tmpDir2 != "/data/disk0/openwiki/.tmp" {
+		t.Fatalf("expected /data/disk0/openwiki/.tmp, got %s", tmpDir2)
+	}
+}
+
+func TestBuilderTaskHomeIsolation(t *testing.T) {
+	b := &Builder{}
+	mockHome := "/data/disk0/openwiki/.tmp/build_999_test_repo"
+
+	cmd := b.createOpenWikiCmdWithHome(999, mockHome, "/tmp/mock-repo", "code", "--update")
+	envMap := make(map[string]string)
+	for _, e := range cmd.Env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	if envMap["OPENWIKI_HOME"] != mockHome {
+		t.Fatalf("expected OPENWIKI_HOME=%s, got %s", mockHome, envMap["OPENWIKI_HOME"])
+	}
+}
+
+func TestBuilderTaskHomeLifecycle_SuccessDeletes_FailurePreserves(t *testing.T) {
+	rootDir := t.TempDir()
+	baseOpenwiki := filepath.Join(rootDir, ".openwiki")
+	if err := os.MkdirAll(baseOpenwiki, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(baseOpenwiki, ".env"), []byte("OPENAI_API_KEY=test-key\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENWIKI_HOME", baseOpenwiki)
+
+	tmpSiblingDir := filepath.Join(rootDir, ".tmp")
+
+	// 准备伪造的成功脚本与失败脚本
+	okScript := filepath.Join(rootDir, "mock-openwiki-ok.sh")
+	if err := os.WriteFile(okScript, []byte("#!/bin/sh\nmkdir -p openwiki\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	failScript := filepath.Join(rootDir, "mock-openwiki-fail.sh")
+	if err := os.WriteFile(failScript, []byte("#!/bin/sh\necho 'database is locked' >&2\nexit 1\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 场景 1: BuildModeKnowledgeOnly 不应创建任何 .tmp/build_* 子目录
+	repoKnowledge := filepath.Join(rootDir, "repo-knowledge")
+	_ = os.MkdirAll(repoKnowledge, 0755)
+	bKnowledge := NewBuilder(okScript, "", "", filepath.Join(rootDir, "static"))
+	resKnowledge := bKnowledge.BuildRepoWithMode(101, "org/repo-k", repoKnowledge, "", BuildModeKnowledgeOnly)
+	if !resKnowledge.Success {
+		t.Fatalf("expected knowledge-only build to succeed, got error: %s", resKnowledge.Error)
+	}
+	if entries, err := os.ReadDir(tmpSiblingDir); err == nil && len(entries) > 0 {
+		t.Fatalf("expected no .tmp/build_* directories for KnowledgeOnly mode, found %d", len(entries))
+	}
+
+	// 场景 2: Full 模式成功构建后，应自动删除 .tmp/build_* 目录
+	repoSuccess := filepath.Join(rootDir, "repo-success")
+	_ = os.MkdirAll(repoSuccess, 0755)
+	bSuccess := NewBuilder(okScript, "", "", filepath.Join(rootDir, "static"))
+	resSuccess := bSuccess.BuildRepoWithMode(102, "org/repo-ok", repoSuccess, "", BuildModeFull)
+	if !resSuccess.Success || resSuccess.Error != "" {
+		t.Fatalf("expected full build to succeed cleanly, got success=%v err=%q", resSuccess.Success, resSuccess.Error)
+	}
+	if entries, err := os.ReadDir(tmpSiblingDir); err != nil || len(entries) != 0 {
+		t.Fatalf("expected .tmp directory to be empty after successful build, got len=%d err=%v", len(entries), err)
+	}
+
+	// 场景 3: Step 0 (init) 失败时，必须保留 .tmp/build_* 目录，且 result.Log 中包含该排查路径
+	repoInitFail := filepath.Join(rootDir, "repo-init-fail")
+	_ = os.MkdirAll(repoInitFail, 0755)
+	bInitFail := NewBuilder(failScript, "", "", filepath.Join(rootDir, "static"))
+	resInitFail := bInitFail.BuildRepoWithMode(103, "org/repo-init-fail", repoInitFail, "", BuildModeFull)
+	if resInitFail.Success {
+		t.Fatalf("expected init failure to return Success=false")
+	}
+	entriesInitFail, err := os.ReadDir(tmpSiblingDir)
+	if err != nil || len(entriesInitFail) != 1 {
+		t.Fatalf("expected 1 preserved .tmp/build_* dir after init failure, got %d (err=%v)", len(entriesInitFail), err)
+	}
+	preservedInitPath := filepath.Join(tmpSiblingDir, entriesInitFail[0].Name())
+	if !strings.Contains(resInitFail.Log, preservedInitPath) {
+		t.Fatalf("expected result.Log to contain preserved path %q, got log:\n%s", preservedInitPath, resInitFail.Log)
+	}
+	if _, err := os.Stat(filepath.Join(preservedInitPath, ".env")); err != nil {
+		t.Fatalf("expected .env to be copied into preserved task home: %v", err)
+	}
+	_ = os.RemoveAll(preservedInitPath)
+
+	// 场景 4: Step 1 (update) 失败但触发离线发布降级时（result.Error != ""），同样必须保留 .tmp/build_* 目录
+	repoUpdateFail := filepath.Join(rootDir, "repo-update-fail")
+	_ = os.MkdirAll(filepath.Join(repoUpdateFail, "openwiki"), 0755) // 已有 openwiki 目录，跳过 init 直接进 update
+	bUpdateFail := NewBuilder(failScript, "", "", filepath.Join(rootDir, "static"))
+	resUpdateFail := bUpdateFail.BuildRepoWithMode(104, "org/repo-update-fail", repoUpdateFail, "", BuildModeFull)
+	if resUpdateFail.Error == "" {
+		t.Fatalf("expected update failure to set result.Error")
+	}
+	entriesUpdateFail, err := os.ReadDir(tmpSiblingDir)
+	if err != nil || len(entriesUpdateFail) != 1 {
+		t.Fatalf("expected 1 preserved .tmp/build_* dir after update failure, got %d (err=%v)", len(entriesUpdateFail), err)
+	}
+	preservedUpdatePath := filepath.Join(tmpSiblingDir, entriesUpdateFail[0].Name())
+	if !strings.Contains(resUpdateFail.Log, preservedUpdatePath) {
+		t.Fatalf("expected result.Log to contain preserved path %q on update failure, got log:\n%s", preservedUpdatePath, resUpdateFail.Log)
+	}
+}
+
+
 
