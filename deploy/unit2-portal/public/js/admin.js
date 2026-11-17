@@ -693,6 +693,142 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   let cachedProjects = [];
 
+  // Project Search & Filter & Pagination Elements
+  const projSearchInput = document.getElementById('projSearchInput');
+  const projClearSearchBtn = document.getElementById('projClearSearchBtn');
+  const projDomainFilter = document.getElementById('projDomainFilter');
+  const projStatusFilter = document.getElementById('projStatusFilter');
+  const projPageSizeSelect = document.getElementById('projPageSizeSelect');
+  const projPaginationBar = document.getElementById('projPaginationBar');
+
+  // Project Search & Filter State
+  let projSearchKeyword = '';
+  let projDomainFilterVal = 'all';
+  let projStatusFilterVal = 'all';
+  let projCurrentPage = 1;
+  let projPageSize = '10';
+  let projSearchDebounceTimer = null;
+
+  // Search input listeners
+  if (projSearchInput) {
+    projSearchInput.addEventListener('input', (e) => {
+      const val = e.target.value.trim();
+      if (projClearSearchBtn) {
+        projClearSearchBtn.style.display = val ? 'block' : 'none';
+      }
+      clearTimeout(projSearchDebounceTimer);
+      projSearchDebounceTimer = setTimeout(() => {
+        projSearchKeyword = val;
+        projCurrentPage = 1;
+        renderProjectTable();
+      }, 200);
+    });
+  }
+
+  if (projClearSearchBtn) {
+    projClearSearchBtn.addEventListener('click', () => {
+      if (projSearchInput) {
+        projSearchInput.value = '';
+        projSearchInput.focus();
+      }
+      projClearSearchBtn.style.display = 'none';
+      projSearchKeyword = '';
+      projCurrentPage = 1;
+      renderProjectTable();
+    });
+  }
+
+  if (projDomainFilter) {
+    projDomainFilter.addEventListener('change', (e) => {
+      projDomainFilterVal = e.target.value;
+      projCurrentPage = 1;
+      renderProjectTable();
+    });
+  }
+
+  if (projStatusFilter) {
+    projStatusFilter.addEventListener('change', (e) => {
+      projStatusFilterVal = e.target.value;
+      projCurrentPage = 1;
+      renderProjectTable();
+    });
+  }
+
+  if (projPageSizeSelect) {
+    projPageSizeSelect.addEventListener('change', (e) => {
+      projPageSize = e.target.value;
+      projCurrentPage = 1;
+      renderProjectTable();
+    });
+  }
+
+  // Update dynamic options for project domain filter
+  function updateProjectDomainFilterOptions() {
+    if (!projDomainFilter) return;
+    const currentVal = projDomainFilterVal;
+    const domains = new Set();
+    (cachedProjects || []).forEach(p => {
+      if (p.business_domain && p.business_domain.trim()) {
+        domains.add(p.business_domain.trim());
+      }
+    });
+    const sortedDomains = Array.from(domains).sort();
+
+    let html = '<option value="all">全部业务域</option>';
+    sortedDomains.forEach(d => {
+      const selected = (d === currentVal) ? 'selected' : '';
+      html += `<option value="${API.escapeHTML(d)}" ${selected}>${API.escapeHTML(d)}</option>`;
+    });
+    projDomainFilter.innerHTML = html;
+    if (sortedDomains.includes(currentVal)) {
+      projDomainFilter.value = currentVal;
+    } else {
+      projDomainFilterVal = 'all';
+      projDomainFilter.value = 'all';
+    }
+  }
+
+  // Filter projects based on searchKeyword, domain filter, and status filter
+  function getFilteredProjects() {
+    if (!cachedProjects || cachedProjects.length === 0) return [];
+    const q = projSearchKeyword.toLowerCase();
+
+    return cachedProjects.filter(p => {
+      // 1. Business Domain Filter
+      if (projDomainFilterVal !== 'all' && (p.business_domain || '') !== projDomainFilterVal) {
+        return false;
+      }
+
+      // 2. Status Filter
+      if (projStatusFilterVal !== 'all') {
+        const st = p.task_status || p.status || 'never_built';
+        if (projStatusFilterVal === 'running') {
+          if (st !== 'queued' && st !== 'running' && st !== 'building') return false;
+        } else if (projStatusFilterVal === 'success') {
+          if (st !== 'success' && st !== 'completed') return false;
+        } else if (projStatusFilterVal === 'failed') {
+          if (st !== 'failed' && st !== 'interrupted') return false;
+        } else if (projStatusFilterVal === 'never_built') {
+          if (st !== 'never_built') return false;
+        }
+      }
+
+      // 3. Keyword Search
+      if (!q) return true;
+
+      const subReposText = (p.repos || []).map(r => `${r.alias_name || ''} ${r.repo_id || ''} ${r.role || ''}`).join(' ').toLowerCase();
+
+      return (p.id && p.id.toLowerCase().includes(q)) ||
+             (p.name && p.name.toLowerCase().includes(q)) ||
+             (p.tri_code && p.tri_code.toLowerCase().includes(q)) ||
+             (p.query_key && p.query_key.toLowerCase().includes(q)) ||
+             (p.business_domain && p.business_domain.toLowerCase().includes(q)) ||
+             (p.description && p.description.toLowerCase().includes(q)) ||
+             (p.local_path && p.local_path.toLowerCase().includes(q)) ||
+             subReposText.includes(q);
+    });
+  }
+
   function showProjAlert(msg, type) {
     projAlert.textContent = msg;
     projAlert.className = `alert alert-${type}`;
@@ -872,14 +1008,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     return `${badge}${detailHtml}`;
   }
 
-  // Render Projects Table
-  function renderProjectTable(projects = []) {
-    if (!projects || projects.length === 0) {
-      adminProjectTableBody.innerHTML = '<tr><td colspan="7" style="text-align:center; color: var(--text-secondary); padding: 2rem;">暂无微服务项目，点击右上角“创建微服务项目”开始编排。</td></tr>';
+  // Render Projects Table with Filtering & Pagination
+  function renderProjectTable() {
+    const filtered = getFilteredProjects();
+    const totalItems = filtered.length;
+    const size = (projPageSize === 'all') ? (totalItems || 1) : parseInt(projPageSize, 10);
+    const totalPages = Math.max(1, Math.ceil(totalItems / size));
+
+    if (projCurrentPage > totalPages) projCurrentPage = totalPages;
+    if (projCurrentPage < 1) projCurrentPage = 1;
+
+    if (totalItems === 0) {
+      if (!cachedProjects || cachedProjects.length === 0) {
+        adminProjectTableBody.innerHTML = '<tr><td colspan="7" style="text-align:center; color: var(--text-secondary); padding: 2rem;">暂无微服务项目，点击右上角“创建微服务项目”开始编排。</td></tr>';
+      } else {
+        adminProjectTableBody.innerHTML = '<tr><td colspan="7" style="text-align:center; color: var(--text-secondary); padding: 2rem;">没有找到匹配的微服务项目。</td></tr>';
+      }
+      renderProjectPagination(0, 1, 1);
       return;
     }
 
-    adminProjectTableBody.innerHTML = projects.map(proj => {
+    const startIndex = (projPageSize === 'all') ? 0 : (projCurrentPage - 1) * size;
+    const endIndex = (projPageSize === 'all') ? totalItems : Math.min(startIndex + size, totalItems);
+    const pageProjects = filtered.slice(startIndex, endIndex);
+
+    adminProjectTableBody.innerHTML = pageProjects.map(proj => {
       const reposBadges = (proj.repos || []).map(r => `
         <span class="badge" style="background:var(--bg-secondary); border:1px solid var(--border-color); margin-right:4px; margin-bottom:4px; display:inline-block; font-size:0.75rem;">
           <strong>${API.escapeHTML(r.alias_name)}</strong>
@@ -900,7 +1053,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             <div style="display:flex; align-items:center; flex-wrap:wrap; gap:2px;">
               <strong>${API.escapeHTML(proj.name)}</strong>${triBadge}
             </div>
-            <div style="font-size:0.75rem; color:var(--text-secondary);">ID: <code>${API.escapeHTML(proj.id)}</code> · MCP Key: <code>${API.escapeHTML(queryKey)}</code></div>
+            <div style="font-size:0.75rem; color:var(--text-secondary); margin-top:2px;">
+              <code>${API.escapeHTML(proj.id)}</code> · MCP Key: <code>${API.escapeHTML(queryKey)}</code>
+            </div>
             ${proj.description ? `<div style="font-size:0.75rem; color:var(--text-secondary); margin-top:2px;">${API.escapeHTML(proj.description)}</div>` : ''}
           </td>
           <td><span class="badge" style="background:#1e293b; border:1px solid #475569;">${API.escapeHTML(proj.business_domain || '-')}</span></td>
@@ -909,17 +1064,68 @@ document.addEventListener('DOMContentLoaded', async () => {
           <td class="col-center col-nowrap">${formatProjectTaskStatusCell(proj)}</td>
           <td class="col-center col-nowrap" style="font-size:0.8rem;">${API.formatDate(proj.updated_at)}</td>
           <td class="col-center col-nowrap">
-            <button class="btn btn-primary btn-sm trigger-project-build-btn" data-id="${proj.id}" data-name="${API.escapeHTML(proj.name)}" ${isBusy ? 'disabled' : ''}>${isBusy ? '⏳ 构建中...' : '🛠️ 聚合构建'}</button>
-            <button class="btn btn-secondary btn-sm view-project-log-btn" data-id="${proj.id}" data-name="${API.escapeHTML(proj.name)}">📋 日志</button>
-            <button class="btn btn-secondary btn-sm inspect-links-btn" data-id="${proj.id}" data-name="${API.escapeHTML(proj.name)}">🔗 软链巡检</button>
-            <button class="btn btn-secondary btn-sm edit-project-btn" data-id="${proj.id}">✏️ 编辑</button>
-            <button class="btn btn-danger btn-sm delete-project-btn" data-id="${proj.id}">🗑️ 删除</button>
+            <div style="display:inline-flex; gap:0.35rem; align-items:center;">
+              <button class="btn btn-primary btn-sm trigger-project-build-btn" data-id="${proj.id}" data-name="${API.escapeHTML(proj.name)}" ${isBusy ? 'disabled' : ''}>${isBusy ? '⏳ 构建中...' : '🛠️ 聚合构建'}</button>
+              <button class="btn btn-secondary btn-sm view-project-log-btn" data-id="${proj.id}" data-name="${API.escapeHTML(proj.name)}">📋 日志</button>
+              <button class="btn btn-secondary btn-sm inspect-links-btn" data-id="${proj.id}" data-name="${API.escapeHTML(proj.name)}">🔗 软链巡检</button>
+              <button class="btn btn-secondary btn-sm edit-project-btn" data-id="${proj.id}">✏️ 编辑</button>
+              <button class="btn btn-danger btn-sm delete-project-btn" data-id="${proj.id}">🗑️ 删除</button>
+            </div>
           </td>
         </tr>
       `;
     }).join('');
 
-    // Attach listeners
+    renderProjectPagination(totalItems, projCurrentPage, totalPages);
+    bindProjectActionButtons();
+  }
+
+  // Render Project Pagination Bar
+  function renderProjectPagination(totalItems, page, totalPages) {
+    if (!projPaginationBar) return;
+    if (totalItems === 0 || projPageSize === 'all' || totalPages <= 1) {
+      projPaginationBar.innerHTML = `<span style="font-size:0.85rem; color:var(--text-secondary);">共 ${totalItems} 个微服务项目</span>`;
+      return;
+    }
+
+    let html = `
+      <div style="font-size:0.85rem; color:var(--text-secondary);">
+        共 ${totalItems} 个项目 · 第 ${page} / ${totalPages} 页
+      </div>
+      <div class="pagination-controls" style="display:inline-flex; gap:0.25rem; align-items:center;">
+        <button class="btn btn-secondary btn-sm proj-page-btn" ${page <= 1 ? 'disabled' : ''} data-page="${page - 1}">« 上一页</button>
+    `;
+
+    for (let p = 1; p <= totalPages; p++) {
+      if (totalPages > 7) {
+        if (p > 1 && p < page - 1 && p === 2) { html += '<span style="color:var(--text-secondary); padding:0 0.2rem;">...</span>'; continue; }
+        if (p > page + 1 && p < totalPages && p === totalPages - 1) { html += '<span style="color:var(--text-secondary); padding:0 0.2rem;">...</span>'; continue; }
+        if (p !== 1 && p !== totalPages && Math.abs(p - page) > 1) continue;
+      }
+      html += `<button class="btn ${p === page ? 'btn-primary' : 'btn-secondary'} btn-sm proj-page-btn" data-page="${p}">${p}</button>`;
+    }
+
+    html += `
+        <button class="btn btn-secondary btn-sm proj-page-btn" ${page >= totalPages ? 'disabled' : ''} data-page="${page + 1}">下一页 »</button>
+      </div>
+    `;
+
+    projPaginationBar.innerHTML = html;
+
+    projPaginationBar.querySelectorAll('.proj-page-btn:not(:disabled)').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const targetPage = parseInt(btn.getAttribute('data-page'), 10);
+        if (!isNaN(targetPage) && targetPage !== projCurrentPage) {
+          projCurrentPage = targetPage;
+          renderProjectTable();
+          document.querySelector('#adminProjectTable')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      });
+    });
+  }
+
+  // Bind Action Buttons for Microservice Projects
+  function bindProjectActionButtons() {
     document.querySelectorAll('.trigger-project-build-btn').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         const projId = e.currentTarget.getAttribute('data-id');
@@ -1078,7 +1284,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       const projects = await API.getProjects();
       cachedProjects = projects || [];
-      renderProjectTable(cachedProjects);
+      updateProjectDomainFilterOptions();
+      renderProjectTable();
       const hasActiveProjectBuild = cachedProjects.some(p => {
         const st = p.task_status || p.status;
         return st === 'queued' || st === 'running' || st === 'building';

@@ -282,23 +282,62 @@
         </div>
       </div>
 
-      <div class="table-responsive">
+      <!-- 搜索查询、分类筛选与每页条数控制栏 -->
+      <div class="dashboard-toolbar" style="margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
+        <div style="display: flex; gap: 0.5rem; align-items: center; flex: 1; max-width: 480px; position: relative;">
+          <input type="text" id="projSearchInput" class="toolbar-input" placeholder="🔍 搜索微服务项目 ID、名称、三字码、业务域、组件仓库..." style="width: 100%; padding: 0.45rem 0.75rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);" />
+          <button id="projClearSearchBtn" style="display:none; position: absolute; right: 8px; background: transparent; border: none; color: var(--text-secondary); cursor: pointer; font-size: 0.9rem;">✕</button>
+        </div>
+        <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+          <div style="display: flex; gap: 0.35rem; align-items: center; font-size: 0.85rem; color: var(--text-secondary);">
+            <span>业务域:</span>
+            <select id="projDomainFilter" style="padding: 0.35rem 0.6rem; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);">
+              <option value="all">全部业务域</option>
+            </select>
+          </div>
+          <div style="display: flex; gap: 0.35rem; align-items: center; font-size: 0.85rem; color: var(--text-secondary);">
+            <span>运行状态:</span>
+            <select id="projStatusFilter" style="padding: 0.35rem 0.6rem; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);">
+              <option value="all">全部状态</option>
+              <option value="running">🔄 构建中 / 运行中</option>
+              <option value="success">✅ 构建完成</option>
+              <option value="failed">❌ 失败 / 中断</option>
+              <option value="never_built">⏳ 尚未构建</option>
+            </select>
+          </div>
+          <div style="display: flex; gap: 0.5rem; align-items: center; font-size: 0.85rem; color: var(--text-secondary);">
+            <span>每页显示:</span>
+            <select id="projPageSizeSelect" style="padding: 0.35rem 0.6rem; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);">
+              <option value="10">10 条</option>
+              <option value="20">20 条</option>
+              <option value="50">50 条</option>
+              <option value="all">全部</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="table-responsive" style="overflow-x: auto;">
         <table class="data-table" id="adminProjectTable">
           <thead>
             <tr>
-              <th style="min-width: 170px;">项目 ID / 三字码 / 名称</th>
+              <th style="min-width: 190px;">项目 ID / 三字码 / 名称</th>
               <th style="min-width: 110px;">业务域</th>
               <th style="min-width: 240px;">包含微服务组件与角色</th>
               <th style="min-width: 180px;">虚拟工作区目录</th>
               <th class="col-center col-nowrap" style="min-width: 140px;">任务运行状态</th>
               <th class="col-center col-nowrap" style="min-width: 120px;">更新时间</th>
-              <th class="col-center col-nowrap" style="min-width: 260px;">操作</th>
+              <th class="col-center col-nowrap" style="min-width: 320px;">操作</th>
             </tr>
           </thead>
           <tbody>
             <tr><td colspan="7" style="text-align:center; color:var(--text-secondary);">正在加载微服务项目...</td></tr>
           </tbody>
         </table>
+      </div>
+
+      <!-- 分页栏容器 -->
+      <div id="projPaginationBar" class="pagination-bar" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
       </div>
     </section>
 
@@ -863,6 +902,6 @@ credit-audit,信贷风控审批,https://github.com/bank/credit-audit.git,master,
 
   <script src="js/auth.js?v=20261111a"></script>
   <script src="js/api.js?v=20261111c"></script>
-  <script src="js/admin.js?v=20261111c"></script>
+  <script src="js/admin.js?v=20261117a"></script>
 </body>
 </html>

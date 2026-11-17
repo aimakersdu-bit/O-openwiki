@@ -233,6 +233,47 @@ input:focus, select:focus, textarea:focus {
   margin-bottom: 1rem;
 }
 
+/* ===== Admin Tab Navigation ===== */
+.ow-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  border-bottom: 2px solid var(--border-color);
+  margin-bottom: 0;
+  padding: 0.25rem;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: var(--bg-primary);
+}
+.ow-tab {
+  padding: 0.55rem 1rem;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-weight: 500;
+  border-bottom: 3px solid transparent;
+  border-radius: 6px 6px 0 0;
+  transition: all 0.15s;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.ow-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+}
+.ow-tab.active {
+  color: var(--primary-color, #3b82f6);
+  border-bottom-color: var(--primary-color, #3b82f6);
+  font-weight: 600;
+}
+.ow-tab-panel { display: none; }
+.ow-tab-panel.active { display: block; }
+
 .alert-error {
   background: rgba(248, 113, 113, 0.15);
   color: var(--error-color);
@@ -291,6 +332,13 @@ input:focus, select:focus, textarea:focus {
   display: flex;
   gap: 0.75rem;
   margin-top: 1rem;
+}
+
+/* Responsive Table Container */
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Data Table */
@@ -695,8 +743,10 @@ input:focus, select:focus, textarea:focus {
   background: rgba(0, 0, 0, 0.75);
   backdrop-filter: blur(6px);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  overflow-y: auto;
+  padding: 2vh 1rem;
   z-index: 200;
 }
 
@@ -705,9 +755,18 @@ input:focus, select:focus, textarea:focus {
   border: 1px solid var(--border-color);
   border-radius: 12px;
   width: 90%;
-  max-width: 700px;
+  max-width: 720px;
+  max-height: 88vh;
   padding: 1.5rem;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-card .modal-body {
+  overflow-y: auto;
+  flex: 1 1 auto;
+  padding-right: 0.25rem;
 }
 
 .modal-header {
@@ -914,5 +973,10 @@ input:focus, select:focus, textarea:focus {
   padding: 0.45rem 0.25rem;
   font-weight: 600;
   user-select: none;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.9); }
 }
 
