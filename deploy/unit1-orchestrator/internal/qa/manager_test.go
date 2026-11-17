@@ -226,6 +226,9 @@ func TestPrepareWorkerHomeDirAndEnvIsolation(t *testing.T) {
 	if envMap["OPENWIKI_HOME"] != repoHome {
 		t.Fatalf("expected OPENWIKI_HOME=%q, got %q", repoHome, envMap["OPENWIKI_HOME"])
 	}
+	if envMap["OPENWIKI_CONFIG_DIR"] != repoHome {
+		t.Fatalf("expected OPENWIKI_CONFIG_DIR=%q, got %q", repoHome, envMap["OPENWIKI_CONFIG_DIR"])
+	}
 	if envMap["OPENWIKI_DIST_DIR"] != "/opt/openwiki/dist" {
 		t.Fatalf("expected OPENWIKI_DIST_DIR=/opt/openwiki/dist, got %q", envMap["OPENWIKI_DIST_DIR"])
 	}

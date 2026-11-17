@@ -44,9 +44,16 @@ if (typeof globalThis.require === 'undefined') {
   };
 }
 
-// Ensure OPENWIKI_HOME is set so global ~/.openwiki/.env (DeepSeek credentials) is loaded
-if (!process.env.OPENWIKI_HOME) {
-  process.env.OPENWIKI_HOME = path.join(os.homedir(), '.openwiki');
+// Ensure OPENWIKI_HOME and OPENWIKI_CONFIG_DIR are synchronized so all OpenWiki modules resolve the isolated home
+if (!process.env.OPENWIKI_CONFIG_DIR && process.env.OPENWIKI_HOME) {
+  process.env.OPENWIKI_CONFIG_DIR = process.env.OPENWIKI_HOME;
+}
+if (!process.env.OPENWIKI_HOME && process.env.OPENWIKI_CONFIG_DIR) {
+  process.env.OPENWIKI_HOME = process.env.OPENWIKI_CONFIG_DIR;
+}
+if (!process.env.OPENWIKI_CONFIG_DIR) {
+  process.env.OPENWIKI_CONFIG_DIR = path.join(os.homedir(), '.openwiki');
+  process.env.OPENWIKI_HOME = process.env.OPENWIKI_CONFIG_DIR;
 }
 
 // Ensure working directory is set
@@ -212,7 +219,7 @@ const MAX_IDLE_SQLITE_BYTES = 100 * 1024 * 1024; // 100 MB
 
 function pruneOversizedSqliteOnIdleExit() {
   try {
-    const homeDir = process.env.OPENWIKI_HOME;
+    const homeDir = process.env.OPENWIKI_CONFIG_DIR || process.env.OPENWIKI_HOME;
     if (!homeDir) return;
     const sqliteFile = path.join(homeDir, 'openwiki.sqlite');
     if (fs.existsSync(sqliteFile)) {

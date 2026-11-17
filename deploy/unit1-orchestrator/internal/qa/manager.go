@@ -164,7 +164,10 @@ func findNodeBinary() string {
 
 // resolveQAHomesRootDir locates the .qa_homes directory sibling to the current .openwiki directory.
 func resolveQAHomesRootDir() (string, string) {
-	baseOpenwiki := os.Getenv("OPENWIKI_HOME")
+	baseOpenwiki := os.Getenv("OPENWIKI_CONFIG_DIR")
+	if baseOpenwiki == "" {
+		baseOpenwiki = os.Getenv("OPENWIKI_HOME")
+	}
 	if baseOpenwiki == "" {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
 			baseOpenwiki = filepath.Join(home, ".openwiki")
@@ -234,6 +237,7 @@ func buildWorkerEnv(distDir, workerHome string) []string {
 	}
 	if workerHome != "" {
 		env = upsertWorkerEnv(env, "OPENWIKI_HOME", workerHome)
+		env = upsertWorkerEnv(env, "OPENWIKI_CONFIG_DIR", workerHome)
 	}
 	return env
 }

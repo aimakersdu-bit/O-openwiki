@@ -199,13 +199,16 @@ func (b *Builder) createOpenWikiCmdWithHome(buildID int64, taskHomeDir, repoPath
 		env = append(env, fmt.Sprintf("OPENWIKI_DIST_DIR=%s", b.OpenwikiDistDir))
 	}
 
-	// Task-isolated OPENWIKI_HOME prevents concurrent SQLite lock contention
+	// Task-isolated OPENWIKI_HOME & OPENWIKI_CONFIG_DIR prevents concurrent SQLite lock contention
 	if taskHomeDir != "" {
 		env = upsertEnv(env, "OPENWIKI_HOME", taskHomeDir)
-	} else if os.Getenv("OPENWIKI_HOME") == "" {
+		env = upsertEnv(env, "OPENWIKI_CONFIG_DIR", taskHomeDir)
+	} else if os.Getenv("OPENWIKI_HOME") == "" && os.Getenv("OPENWIKI_CONFIG_DIR") == "" {
 		home, _ := os.UserHomeDir()
 		if home != "" {
-			env = append(env, fmt.Sprintf("OPENWIKI_HOME=%s", filepath.Join(home, ".openwiki")))
+			defaultHome := filepath.Join(home, ".openwiki")
+			env = append(env, fmt.Sprintf("OPENWIKI_HOME=%s", defaultHome))
+			env = append(env, fmt.Sprintf("OPENWIKI_CONFIG_DIR=%s", defaultHome))
 		}
 	}
 
@@ -301,7 +304,10 @@ func setEnvIfUnset(env []string, key, value string) []string {
 // resolveSiblingTmpDir locates or computes the .tmp directory sibling to the current .openwiki directory.
 // Returns the .tmp directory path and the base .openwiki directory path.
 func resolveSiblingTmpDir() (string, string) {
-	baseOpenwiki := os.Getenv("OPENWIKI_HOME")
+	baseOpenwiki := os.Getenv("OPENWIKI_CONFIG_DIR")
+	if baseOpenwiki == "" {
+		baseOpenwiki = os.Getenv("OPENWIKI_HOME")
+	}
 	if baseOpenwiki == "" {
 		home, err := os.UserHomeDir()
 		if err == nil && home != "" {

@@ -375,6 +375,9 @@ func TestBuilderTaskHomeIsolation(t *testing.T) {
 	if envMap["OPENWIKI_HOME"] != mockHome {
 		t.Fatalf("expected OPENWIKI_HOME=%s, got %s", mockHome, envMap["OPENWIKI_HOME"])
 	}
+	if envMap["OPENWIKI_CONFIG_DIR"] != mockHome {
+		t.Fatalf("expected OPENWIKI_CONFIG_DIR=%s, got %s", mockHome, envMap["OPENWIKI_CONFIG_DIR"])
+	}
 }
 
 func TestBuilderTaskHomeLifecycle_SuccessDeletes_FailurePreserves(t *testing.T) {
