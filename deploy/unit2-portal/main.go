@@ -33,7 +33,14 @@ func main() {
 		cfg = config.DefaultConfig()
 	}
 
-	// Initialize MySQL Database
+	// Initialize MySQL Database (support PORTAL_DB_DSN and fallback to DB_DSN)
+	if cfg.DBDSN == "" {
+		if envDSN := os.Getenv("PORTAL_DB_DSN"); envDSN != "" {
+			cfg.DBDSN = envDSN
+		} else if envDSN := os.Getenv("DB_DSN"); envDSN != "" {
+			cfg.DBDSN = envDSN
+		}
+	}
 	if cfg.DBDSN == "" {
 		log.Fatalf("PORTAL_DB_DSN is required (MySQL DSN, e.g. openwiki:pass@tcp(127.0.0.1:3306)/openwiki?parseTime=true)")
 	}
