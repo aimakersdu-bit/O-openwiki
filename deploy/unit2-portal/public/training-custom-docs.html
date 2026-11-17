@@ -431,6 +431,9 @@
 
       "doc/knowledge/zk-cluster-deployment.md": `# ZooKeeper 生产集群架构与选主机制
 
+> **架构全景：**
+> ![ZK 架构规划全景](_assets/zk-architecture.svg)
+
 ## 1. 节点规格与奇数容灾
 生产环境 ZK 集群必须部署**奇数台物理机**（推荐 3 台或 5 台），以保证满足过半机制（Quorum = N/2 + 1）：
 - **3 节点集群：** 最多容忍 1 台机器宕机。
