@@ -1,27 +1,54 @@
 package db
 
 import (
+	"database/sql"
+	"fmt"
+	"math/rand"
 	"os"
-	"path/filepath"
 	"testing"
+	"time"
 )
 
 func setupTestDB(t *testing.T) (*DB, func()) {
-	tmpDir, err := os.MkdirTemp("", "unit1_test_db_*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
+	baseDSN := os.Getenv("TEST_DB_DSN")
+	if baseDSN == "" {
+		baseDSN = "root:@tcp(127.0.0.1:3306)/"
 	}
-
-	dbPath := filepath.Join(tmpDir, "test.db")
-	database, err := Open(dbPath)
+	dbName := fmt.Sprintf("test_db_%d_%d", time.Now().UnixNano(), rand.Intn(10000))
+	adminDB, err := sql.Open("mysql", baseDSN)
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		t.Skipf("skipping test, cannot connect to mysql: %v", err)
+		return nil, func() {}
+	}
+	if err := adminDB.Ping(); err != nil {
+		adminDB.Close()
+		t.Skipf("skipping test, mysql not reachable: %v", err)
+		return nil, func() {}
+	}
+	if _, err := adminDB.Exec("CREATE DATABASE `" + dbName + "`"); err != nil {
+		adminDB.Close()
+		t.Fatalf("failed to create test db %s: %v", dbName, err)
+	}
+	adminDB.Close()
+
+	dsn := fmt.Sprintf("root:@tcp(127.0.0.1:3306)/%s?parseTime=true", dbName)
+	database, err := Open(dsn)
+	if err != nil {
+		admin, _ := sql.Open("mysql", baseDSN)
+		if admin != nil {
+			_, _ = admin.Exec("DROP DATABASE `" + dbName + "`")
+			admin.Close()
+		}
 		t.Fatalf("failed to open test db: %v", err)
 	}
 
 	cleanup := func() {
 		database.Close()
-		os.RemoveAll(tmpDir)
+		admin, err := sql.Open("mysql", baseDSN)
+		if err == nil {
+			_, _ = admin.Exec("DROP DATABASE `" + dbName + "`")
+			admin.Close()
+		}
 	}
 
 	return database, cleanup
@@ -527,4 +554,50 @@ func TestResetBatchFailedTasks(t *testing.T) {
 		t.Fatalf("expected error when no failed or pending tasks remain")
 	}
 }
+
+func TestGetLatestFinishedBuild(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repoID := "repo-finish-test"
+	_ = database.CreateRepo(&Repo{ID: repoID, Name: "Test Repo", GitURL: "http://example.com/test.git", LocalPath: "/tmp/repo"})
+
+	// 1. 无任何构建时返回 nil
+	latest, err := database.GetLatestFinishedBuild(repoID)
+	if err != nil {
+		t.Fatalf("unexpected error on empty builds: %v", err)
+	}
+	if latest != nil {
+		t.Fatalf("expected nil when no builds exist, got %+v", latest)
+	}
+
+	// 2. 只有 running 构建时仍返回 nil
+	b1ID, _ := database.CreateBuild(repoID, "head-1", "running")
+	latest, err = database.GetLatestFinishedBuild(repoID)
+	if err != nil || latest != nil {
+		t.Fatalf("expected nil when only running builds exist, got %+v (err=%v)", latest, err)
+	}
+
+	// 3. 第一次失败构建
+	_ = database.FinishBuild(b1ID, "failed", "build error log", "exit 1")
+	latest, err = database.GetLatestFinishedBuild(repoID)
+	if err != nil || latest == nil || latest.Status != "failed" || latest.ID != b1ID {
+		t.Fatalf("expected latest finished build to be failed b1 (%d), got %+v", b1ID, latest)
+	}
+
+	// 4. 第二次构建正在 running，不应干扰查询上一次 finished 的构建
+	b2ID, _ := database.CreateBuild(repoID, "head-2", "running")
+	latest, err = database.GetLatestFinishedBuild(repoID)
+	if err != nil || latest == nil || latest.Status != "failed" || latest.ID != b1ID {
+		t.Fatalf("expected latest finished build to remain failed b1 (%d), got %+v", b1ID, latest)
+	}
+
+	// 5. 第二次构建完成为 completed
+	_ = database.FinishBuild(b2ID, "completed", "success log", "")
+	latest, err = database.GetLatestFinishedBuild(repoID)
+	if err != nil || latest == nil || latest.Status != "completed" || latest.ID != b2ID {
+		t.Fatalf("expected latest finished build to be completed, got %+v", latest)
+	}
+}
+
 

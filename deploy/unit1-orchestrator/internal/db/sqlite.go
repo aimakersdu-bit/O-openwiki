@@ -149,6 +149,10 @@ func GetLatestBuild(repoID string) (*Build, error) {
 	return globalDB.GetLatestBuild(repoID)
 }
 
+func GetLatestFinishedBuild(repoID string) (*Build, error) {
+	return globalDB.GetLatestFinishedBuild(repoID)
+}
+
 func RecordQASession(sessionID, repoID, userID, question, answer string) error {
 	return globalDB.CreateQASession(sessionID, repoID, userID, question, answer)
 }
@@ -686,6 +690,28 @@ func (db *DB) GetLatestBuild(repoID string) (*Build, error) {
 		return nil, nil
 	}
 	return &builds[0], nil
+}
+
+// GetLatestFinishedBuild returns the most recent build for a repo that has finished (status: completed, failed, or skipped).
+func (db *DB) GetLatestFinishedBuild(repoID string) (*Build, error) {
+	query := `SELECT id, repo_id, COALESCE(git_head,''), status,
+		COALESCE(started_at,''), COALESCE(finished_at,''), COALESCE(log,''), COALESCE(error,''),
+		COALESCE(rate_limited_retries, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(total_tokens, 0), COALESCE(saved_tokens, 0)
+		FROM builds
+		WHERE repo_id = ? AND status IN ('completed', 'failed', 'skipped')
+		ORDER BY id DESC LIMIT 1`
+
+	row := db.conn.QueryRow(query, repoID)
+	var b Build
+	if err := row.Scan(&b.ID, &b.RepoID, &b.GitHead, &b.Status,
+		&b.StartedAt, &b.FinishedAt, &b.Log, &b.Error,
+		&b.RateLimitedRetries, &b.PromptTokens, &b.CompletionTokens, &b.TotalTokens, &b.SavedTokens); err != nil {
+		if errors.Is(err, sql.ErrNoRows) || err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &b, nil
 }
 
 // --- QA Session CRUD ---
