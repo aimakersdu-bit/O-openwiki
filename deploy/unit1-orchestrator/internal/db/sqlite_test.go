@@ -599,5 +599,3 @@ func TestGetLatestFinishedBuild(t *testing.T) {
 		t.Fatalf("expected latest finished build to be completed, got %+v", latest)
 	}
 }
-
-

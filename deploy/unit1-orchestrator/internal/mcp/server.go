@@ -386,7 +386,7 @@ func isProjectWikiReady(p db.Project, latestBuild *db.Build) (taskStatus string,
 		switch latestBuild.Status {
 		case "running":
 			taskStatus = "running"
-		case "completed", "success":
+		case "completed", "success", "skipped":
 			taskStatus = "completed"
 			ready = true
 		case "failed", "interrupted":
@@ -440,7 +440,7 @@ func (s *Server) handleListRepositories(ctx context.Context) (*CallToolResult, e
 		}
 		if build, err := s.database.GetLatestBuild(r.ID); err == nil && build != nil {
 			entry.LastBuildStatus = build.Status
-			if build.Status == "success" || build.Status == "completed" {
+			if build.Status == "success" || build.Status == "completed" || build.Status == "skipped" {
 				entry.WikiReady = true
 			}
 		}

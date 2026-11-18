@@ -70,7 +70,7 @@ func deriveProjectTaskStatus(proj db.Project, latestBuild *db.Build) string {
 		switch latestBuild.Status {
 		case "running":
 			return "running"
-		case "completed", "success":
+		case "completed", "success", "skipped":
 			return "completed"
 		case "failed":
 			return "failed"
@@ -458,7 +458,7 @@ func (s *Server) handleBatchCompletedProjects(batchID string, tasks []db.BatchTa
 	}
 	var readyRepoIDs []string
 	for _, t := range tasks {
-		if t.Status == "success" || t.Status == "skipped" {
+		if t.Status == "completed" || t.Status == "success" || t.Status == "skipped" {
 			readyRepoIDs = append(readyRepoIDs, t.RepoID)
 		}
 	}

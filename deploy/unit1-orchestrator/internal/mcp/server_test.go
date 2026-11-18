@@ -655,3 +655,118 @@ func TestMCP_ToolsRegistered(t *testing.T) {
 		t.Errorf("expected read_repository_doc to be registered in GetTools")
 	}
 }
+
+func TestMCP_SkippedBuildTreatedAsWikiReady(t *testing.T) {
+	server, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// 1. 注册一个仓库，最近一次构建状态为 skipped
+	repoID := "repo-skipped-ready-test"
+	_ = server.database.CreateRepo(&db.Repo{
+		ID:        repoID,
+		Name:      "Skipped Repo",
+		LocalPath: "/tmp/" + repoID,
+		Status:    "active",
+	})
+	bID, _ := server.database.CreateBuild(repoID, "head-skip", "running")
+	_ = server.database.FinishBuild(bID, "skipped", "no updates, static complete", "")
+
+	// 2. 注册一个微服务项目，最近一次构建状态为 skipped
+	projID := "proj-skipped-test"
+	_ = server.database.CreateProject(&db.Project{
+		ID:        projID,
+		Name:      "Skipped Proj",
+		TriCode:   "SKP",
+		LocalPath: "/tmp/" + projID,
+		Status:    "active",
+	})
+	pbID, _ := server.database.CreateBuild(projID, "head-skip-proj", "running")
+	_ = server.database.FinishBuild(pbID, "skipped", "no updates, static complete", "")
+
+	// 3. 调用 list_repositories 检查 WikiReady
+	repoResp, err := server.ProcessJSONRPC(context.Background(), nil, []byte(`{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"list_repositories","arguments":{}}}`))
+	if err != nil || repoResp.Error != nil {
+		t.Fatalf("list_repositories failed: %v", err)
+	}
+	repoText := repoResp.Result.(*CallToolResult).Content[0].Text
+
+	var repoEntries []struct {
+		ID              string `json:"id"`
+		LastBuildStatus string `json:"last_build_status"`
+		WikiReady       bool   `json:"wiki_ready"`
+	}
+	if err := json.Unmarshal([]byte(repoText), &repoEntries); err != nil {
+		t.Fatalf("failed to unmarshal list_repositories response: %v", err)
+	}
+
+	foundRepo := false
+	foundProj := false
+	for _, entry := range repoEntries {
+		if entry.ID == repoID {
+			foundRepo = true
+			if !entry.WikiReady {
+				t.Errorf("expected repo with skipped build to have wiki_ready=true, got %+v", entry)
+			}
+			if entry.LastBuildStatus != "skipped" {
+				t.Errorf("expected last_build_status=skipped, got %s", entry.LastBuildStatus)
+			}
+		}
+		if entry.ID == projID {
+			foundProj = true
+			if !entry.WikiReady {
+				t.Errorf("expected proj with skipped build to have wiki_ready=true, got %+v", entry)
+			}
+		}
+	}
+	if !foundRepo || !foundProj {
+		t.Fatalf("did not find test repo or proj in list_repositories: foundRepo=%v foundProj=%v", foundRepo, foundProj)
+	}
+
+	// 4. 调用 list_projects 检查 task_status 和 wiki_ready
+	projResp, err := server.ProcessJSONRPC(context.Background(), nil, []byte(`{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"list_projects","arguments":{}}}`))
+	if err != nil || projResp.Error != nil {
+		t.Fatalf("list_projects failed: %v", err)
+	}
+	projText := projResp.Result.(*CallToolResult).Content[0].Text
+
+	var projEntries []struct {
+		ID         string `json:"id"`
+		TaskStatus string `json:"task_status"`
+		WikiReady  bool   `json:"wiki_ready"`
+	}
+	if err := json.Unmarshal([]byte(projText), &projEntries); err != nil {
+		t.Fatalf("failed to unmarshal list_projects response: %v", err)
+	}
+
+	foundProjInList := false
+	for _, p := range projEntries {
+		if p.ID == projID {
+			foundProjInList = true
+			if !p.WikiReady {
+				t.Errorf("expected project with skipped build to have wiki_ready=true, got %+v", p)
+			}
+			if p.TaskStatus != "completed" {
+				t.Errorf("expected project task_status=completed for skipped build, got %s", p.TaskStatus)
+			}
+		}
+	}
+	if !foundProjInList {
+		t.Fatalf("did not find test project in list_projects")
+	}
+}
+
+func TestIsProjectWikiReady_SkippedIsReady(t *testing.T) {
+	proj := db.Project{ID: "p1", Status: "active"}
+	build := &db.Build{ID: 1, RepoID: "p1", Status: "skipped"}
+
+	taskStatus, lastBuildStatus, ready := isProjectWikiReady(proj, build)
+	if !ready {
+		t.Errorf("expected ready=true when status is skipped")
+	}
+	if taskStatus != "completed" {
+		t.Errorf("expected taskStatus=completed, got %s", taskStatus)
+	}
+	if lastBuildStatus != "skipped" {
+		t.Errorf("expected lastBuildStatus=skipped, got %s", lastBuildStatus)
+	}
+}
