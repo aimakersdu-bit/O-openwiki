@@ -12,6 +12,7 @@ import (
 
 	"github.com/openwiki/orchestrator/internal/db"
 	"github.com/openwiki/orchestrator/internal/project"
+	"github.com/openwiki/orchestrator/internal/scheduler"
 )
 
 type ProjectRepoInput struct {
@@ -59,7 +60,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func deriveProjectTaskStatus(proj db.Project, latestBuild *db.Build) string {
+func deriveProjectTaskStatus(proj db.Project, latestBuild *db.Build, staticBaseDir ...string) string {
 	switch proj.Status {
 	case "queued":
 		return "queued"
@@ -71,7 +72,20 @@ func deriveProjectTaskStatus(proj db.Project, latestBuild *db.Build) string {
 		case "running":
 			return "running"
 		case "completed", "success", "skipped":
-			return "completed"
+			wikiDir := filepath.Join(proj.LocalPath, "openwiki")
+			wikiComplete := scheduler.IsWikiDirComplete(wikiDir)
+			staticComplete := true
+			if len(staticBaseDir) > 0 && staticBaseDir[0] != "" {
+				staticDir := filepath.Join(staticBaseDir[0], "projects", proj.ID)
+				if !scheduler.IsStaticDirComplete(staticDir) {
+					staticDir = filepath.Join(staticBaseDir[0], proj.ID)
+				}
+				staticComplete = scheduler.IsStaticDirComplete(staticDir)
+			}
+			if wikiComplete && staticComplete {
+				return "completed"
+			}
+			return "incomplete"
 		case "failed":
 			return "failed"
 		case "interrupted":
@@ -116,7 +130,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 		res = append(res, ProjectResponse{
 			Project:     p,
 			QueryKey:    queryKey,
-			TaskStatus:  deriveProjectTaskStatus(p, latestBuild),
+			TaskStatus:  deriveProjectTaskStatus(p, latestBuild, s.config.StaticOutputDir),
 			LatestBuild: buildSummary,
 			Repos:       repos,
 		})

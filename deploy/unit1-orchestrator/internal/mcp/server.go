@@ -17,6 +17,7 @@ import (
 	"github.com/openwiki/orchestrator/internal/config"
 	"github.com/openwiki/orchestrator/internal/db"
 	"github.com/openwiki/orchestrator/internal/qa"
+	"github.com/openwiki/orchestrator/internal/scheduler"
 )
 
 type Server struct {
@@ -376,7 +377,7 @@ func (s *Server) streamQAWithProgress(
 	}, nil
 }
 
-func isProjectWikiReady(p db.Project, latestBuild *db.Build) (taskStatus string, lastBuildStatus string, ready bool) {
+func isProjectWikiReady(p db.Project, latestBuild *db.Build, staticBaseDir ...string) (taskStatus string, lastBuildStatus string, ready bool) {
 	if p.Status == "queued" {
 		taskStatus = "queued"
 	} else if p.Status == "building" {
@@ -387,8 +388,27 @@ func isProjectWikiReady(p db.Project, latestBuild *db.Build) (taskStatus string,
 		case "running":
 			taskStatus = "running"
 		case "completed", "success", "skipped":
-			taskStatus = "completed"
-			ready = true
+			// 严格按资产深度完整性校验，确认 Wiki 与静态资源在磁盘上真正具备条件
+			wikiDir := filepath.Join(p.LocalPath, "openwiki")
+			wikiComplete := scheduler.IsWikiDirComplete(wikiDir)
+
+			staticComplete := true
+			if len(staticBaseDir) > 0 && staticBaseDir[0] != "" {
+				staticDir := filepath.Join(staticBaseDir[0], "projects", p.ID)
+				if !scheduler.IsStaticDirComplete(staticDir) {
+					// 兼容根路径 StaticOutputDir/<projectID>
+					staticDir = filepath.Join(staticBaseDir[0], p.ID)
+				}
+				staticComplete = scheduler.IsStaticDirComplete(staticDir)
+			}
+
+			if wikiComplete && staticComplete {
+				taskStatus = "completed"
+				ready = true
+			} else {
+				taskStatus = "incomplete"
+				ready = false
+			}
 		case "failed", "interrupted":
 			taskStatus = latestBuild.Status
 		default:
@@ -441,15 +461,33 @@ func (s *Server) handleListRepositories(ctx context.Context) (*CallToolResult, e
 		if build, err := s.database.GetLatestBuild(r.ID); err == nil && build != nil {
 			entry.LastBuildStatus = build.Status
 			if build.Status == "success" || build.Status == "completed" || build.Status == "skipped" {
-				entry.WikiReady = true
+				// 严格校验是否真正具备 Wiki 文档与静态资源完整条件
+				wikiDir := r.WikiDir
+				if wikiDir == "" {
+					wikiDir = filepath.Join(r.LocalPath, "openwiki")
+				}
+				wikiComplete := scheduler.IsWikiDirComplete(wikiDir)
+				staticComplete := true
+				if s.cfg != nil && s.cfg.StaticOutputDir != "" {
+					staticDir := filepath.Join(s.cfg.StaticOutputDir, r.ID)
+					staticComplete = scheduler.IsStaticDirComplete(staticDir)
+				}
+				if wikiComplete && staticComplete {
+					entry.WikiReady = true
+				}
 			}
 		}
 		results = append(results, entry)
 	}
 
+	staticBaseDir := ""
+	if s.cfg != nil {
+		staticBaseDir = s.cfg.StaticOutputDir
+	}
+
 	for _, p := range projects {
 		latestBuild, _ := s.database.GetLatestBuild(p.ID)
-		taskStatus, lastBuildStatus, ready := isProjectWikiReady(p, latestBuild)
+		taskStatus, lastBuildStatus, ready := isProjectWikiReady(p, latestBuild, staticBaseDir)
 		queryKey := p.ID
 		if strings.TrimSpace(p.TriCode) != "" {
 			queryKey = strings.TrimSpace(p.TriCode)
@@ -507,10 +545,15 @@ func (s *Server) handleListProjects(ctx context.Context) (*CallToolResult, error
 		MemberRepos     []MemberRepoSummary `json:"member_repos"`
 	}
 
+	staticBaseDir := ""
+	if s.cfg != nil {
+		staticBaseDir = s.cfg.StaticOutputDir
+	}
+
 	results := make([]ProjectSummary, 0, len(projects))
 	for _, p := range projects {
 		latestBuild, _ := s.database.GetLatestBuild(p.ID)
-		taskStatus, lastBuildStatus, ready := isProjectWikiReady(p, latestBuild)
+		taskStatus, lastBuildStatus, ready := isProjectWikiReady(p, latestBuild, staticBaseDir)
 		queryKey := p.ID
 		if strings.TrimSpace(p.TriCode) != "" {
 			queryKey = strings.TrimSpace(p.TriCode)

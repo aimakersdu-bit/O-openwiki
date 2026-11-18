@@ -756,17 +756,61 @@ func TestMCP_SkippedBuildTreatedAsWikiReady(t *testing.T) {
 }
 
 func TestIsProjectWikiReady_SkippedIsReady(t *testing.T) {
-	proj := db.Project{ID: "p1", Status: "active"}
+	tmpDir := t.TempDir()
+	projPath := filepath.Join(tmpDir, "p1")
+	wikiDir := filepath.Join(projPath, "openwiki")
+	_ = os.MkdirAll(wikiDir, 0755)
+
+	proj := db.Project{ID: "p1", LocalPath: projPath, Status: "active"}
 	build := &db.Build{ID: 1, RepoID: "p1", Status: "skipped"}
 
+	// 1. 初始状态：wikiDir 为空，即使构建状态为 skipped，也应判定为 incomplete/not ready
 	taskStatus, lastBuildStatus, ready := isProjectWikiReady(proj, build)
+	if ready {
+		t.Errorf("expected ready=false when wiki output is incomplete on disk")
+	}
+	if taskStatus != "incomplete" {
+		t.Errorf("expected taskStatus=incomplete, got %s", taskStatus)
+	}
+	if lastBuildStatus != "skipped" {
+		t.Errorf("expected lastBuildStatus=skipped, got %s", lastBuildStatus)
+	}
+
+	// 2. 写入完整的 wiki 标志 (.last-update.json)
+	_ = os.WriteFile(filepath.Join(wikiDir, ".last-update.json"), []byte(`{"updatedAt":"2026-11-19T00:00:00Z"}`), 0644)
+	taskStatus, _, ready = isProjectWikiReady(proj, build)
 	if !ready {
-		t.Errorf("expected ready=true when status is skipped")
+		t.Errorf("expected ready=true when wiki output is complete and no staticDir provided")
 	}
 	if taskStatus != "completed" {
 		t.Errorf("expected taskStatus=completed, got %s", taskStatus)
 	}
-	if lastBuildStatus != "skipped" {
-		t.Errorf("expected lastBuildStatus=skipped, got %s", lastBuildStatus)
+
+	// 3. 提供 staticDir 但静态资源尚未生成
+	staticBase := filepath.Join(tmpDir, "static")
+	_ = os.MkdirAll(staticBase, 0755)
+	taskStatus, _, ready = isProjectWikiReady(proj, build, staticBase)
+	if ready {
+		t.Errorf("expected ready=false when staticDir is provided but files are missing")
+	}
+	if taskStatus != "incomplete" {
+		t.Errorf("expected taskStatus=incomplete, got %s", taskStatus)
+	}
+
+	// 4. 生成完整的静态资源
+	projStatic := filepath.Join(staticBase, "projects", "p1")
+	_ = os.MkdirAll(filepath.Join(projStatic, "api"), 0755)
+	_ = os.MkdirAll(filepath.Join(projStatic, "vendor"), 0755)
+	for _, f := range []string{"index.html", "client.js", "client-lib.js", "vendor/force-graph.min.js", "vendor/marked.min.js", "vendor/dompurify.min.js", "vendor/mermaid.min.js"} {
+		_ = os.WriteFile(filepath.Join(projStatic, f), []byte("content"), 0644)
+	}
+	_ = os.WriteFile(filepath.Join(projStatic, "api", "graph"), []byte(`{"nodes":[{"id":"n1"}],"links":[]}`), 0644)
+
+	taskStatus, _, ready = isProjectWikiReady(proj, build, staticBase)
+	if !ready {
+		t.Errorf("expected ready=true when both wiki and static output are complete")
+	}
+	if taskStatus != "completed" {
+		t.Errorf("expected taskStatus=completed, got %s", taskStatus)
 	}
 }

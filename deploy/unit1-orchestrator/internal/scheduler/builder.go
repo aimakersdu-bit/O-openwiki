@@ -885,13 +885,12 @@ var requiredStaticFiles = []string{
 // static output missing/incomplete and must be regenerated.
 func (b *Builder) IsStaticOutputComplete(repoID string) bool {
 	staticDir := filepath.Join(b.StaticOutputDir, repoID)
-	return isStaticDirComplete(staticDir)
+	return IsStaticDirComplete(staticDir)
 }
 
-// isStaticDirComplete checks that staticDir exists and contains every required
-// asset file. It is separated from IsStaticOutputComplete so it can be unit
-// tested without constructing a full Builder.
-func isStaticDirComplete(staticDir string) bool {
+// IsStaticDirComplete checks that staticDir exists, contains every required
+// asset file with non-zero size, and has valid api/graph JSON.
+func IsStaticDirComplete(staticDir string) bool {
 	if info, err := os.Stat(staticDir); err != nil || !info.IsDir() {
 		return false
 	}
@@ -917,16 +916,20 @@ func isStaticDirComplete(staticDir string) bool {
 	return true
 }
 
+func isStaticDirComplete(staticDir string) bool {
+	return IsStaticDirComplete(staticDir)
+}
+
 // IsWikiComplete reports whether the wiki directory for a repo contains at least
 // one Markdown document, indicating that a prior openwiki init/update produced
 // real wiki content rather than leaving the directory empty/absent.
 func (b *Builder) IsWikiComplete(wikiDir string) bool {
-	return isWikiDirComplete(wikiDir)
+	return IsWikiDirComplete(wikiDir)
 }
 
-// isWikiDirComplete returns true when wikiDir exists and contains at least one
-// .md file (recursively). Separated for unit testing.
-func isWikiDirComplete(wikiDir string) bool {
+// IsWikiDirComplete returns true when wikiDir exists and contains either
+// .last-update.json or substantial markdown documentation (> 100 bytes).
+func IsWikiDirComplete(wikiDir string) bool {
 	if wikiDir == "" {
 		return false
 	}
@@ -954,6 +957,10 @@ func isWikiDirComplete(wikiDir string) bool {
 		return nil
 	})
 	return hasSubstantialDoc
+}
+
+func isWikiDirComplete(wikiDir string) bool {
+	return IsWikiDirComplete(wikiDir)
 }
 
 // ExportActiveGraph re-exports api/graph for the currently active deployed version of a repo (used after QA creates/updates wiki docs).
