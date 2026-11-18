@@ -367,6 +367,7 @@ func (b *Builder) BuildRepoWithModeCtx(ctx context.Context, buildID int64, repoI
 
 	// Resolve static output directory for this repo, and create a staging directory for zero-downtime atomic swap
 	finalStaticDir := filepath.Join(b.StaticOutputDir, repoID)
+	defer InvalidateCompletenessCache(finalStaticDir, wikiDir)
 	stagingDir := filepath.Join(b.StaticOutputDir, fmt.Sprintf("%s_tmp_%d", strings.ReplaceAll(repoID, "/", "_"), time.Now().UnixNano()))
 
 	// Setup isolated temporary OPENWIKI_HOME under sibling .tmp directory (only when CLI execution is needed)
@@ -892,28 +893,45 @@ func (b *Builder) IsStaticOutputComplete(repoID string) bool {
 // asset file with non-zero size, and has valid api/graph JSON.
 func IsStaticDirComplete(staticDir string) bool {
 	if info, err := os.Stat(staticDir); err != nil || !info.IsDir() {
+		InvalidateCompletenessCache(staticDir, "")
 		return false
 	}
+	var graphInfo os.FileInfo
 	for _, rel := range requiredStaticFiles {
 		target := filepath.Join(staticDir, rel)
 		fi, err := os.Stat(target)
 		if err != nil || fi.IsDir() || fi.Size() == 0 {
+			InvalidateCompletenessCache(staticDir, "")
 			return false
 		}
+		if rel == "api/graph" {
+			graphInfo = fi
+		}
 	}
+	if graphInfo == nil {
+		InvalidateCompletenessCache(staticDir, "")
+		return false
+	}
+	modTime := graphInfo.ModTime().UnixNano()
+	size := graphInfo.Size()
+	if cached, ok := getCachedStaticComplete(staticDir, modTime, size); ok {
+		return cached
+	}
+
 	// 验证 api/graph 具有合法非空的 JSON 结构
+	valid := false
 	graphBytes, err := os.ReadFile(filepath.Join(staticDir, "api", "graph"))
-	if err != nil || len(graphBytes) < 10 {
-		return false
+	if err == nil && len(graphBytes) >= 10 {
+		var g struct {
+			Nodes []interface{} `json:"nodes"`
+			Links []interface{} `json:"links"`
+		}
+		if err := json.Unmarshal(graphBytes, &g); err == nil {
+			valid = true
+		}
 	}
-	var g struct {
-		Nodes []interface{} `json:"nodes"`
-		Links []interface{} `json:"links"`
-	}
-	if err := json.Unmarshal(graphBytes, &g); err != nil {
-		return false
-	}
-	return true
+	setCachedStaticComplete(staticDir, modTime, size, valid)
+	return valid
 }
 
 func isStaticDirComplete(staticDir string) bool {
@@ -933,14 +951,20 @@ func IsWikiDirComplete(wikiDir string) bool {
 	if wikiDir == "" {
 		return false
 	}
+	if cached, ok := getCachedWikiComplete(wikiDir); ok {
+		return cached
+	}
+
 	info, err := os.Stat(wikiDir)
 	if err != nil || !info.IsDir() {
+		setCachedWikiComplete(wikiDir, false)
 		return false
 	}
 
 	// 1. 若存在 OpenWiki 官方完成标记戳，直接判定完整
 	lastUpdateFile := filepath.Join(wikiDir, ".last-update.json")
 	if fi, err := os.Stat(lastUpdateFile); err == nil && !fi.IsDir() && fi.Size() > 0 {
+		setCachedWikiComplete(wikiDir, true)
 		return true
 	}
 
@@ -956,6 +980,7 @@ func IsWikiDirComplete(wikiDir string) bool {
 		}
 		return nil
 	})
+	setCachedWikiComplete(wikiDir, hasSubstantialDoc)
 	return hasSubstantialDoc
 }
 
@@ -966,6 +991,7 @@ func isWikiDirComplete(wikiDir string) bool {
 // ExportActiveGraph re-exports api/graph for the currently active deployed version of a repo (used after QA creates/updates wiki docs).
 func (b *Builder) ExportActiveGraph(repoID, wikiDir string) error {
 	staticDir := filepath.Join(b.StaticOutputDir, repoID)
+	defer InvalidateCompletenessCache(staticDir, wikiDir)
 	var logBuf strings.Builder
 	return b.exportGraph(wikiDir, staticDir, &logBuf)
 }

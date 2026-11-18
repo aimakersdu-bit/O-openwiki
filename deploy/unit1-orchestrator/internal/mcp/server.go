@@ -394,12 +394,9 @@ func isProjectWikiReady(p db.Project, latestBuild *db.Build, staticBaseDir ...st
 
 			staticComplete := true
 			if len(staticBaseDir) > 0 && staticBaseDir[0] != "" {
-				staticDir := filepath.Join(staticBaseDir[0], "projects", p.ID)
-				if !scheduler.IsStaticDirComplete(staticDir) {
-					// 兼容根路径 StaticOutputDir/<projectID>
-					staticDir = filepath.Join(staticBaseDir[0], p.ID)
-				}
-				staticComplete = scheduler.IsStaticDirComplete(staticDir)
+				projStaticDir := filepath.Join(staticBaseDir[0], "projects", p.ID)
+				rootStaticDir := filepath.Join(staticBaseDir[0], p.ID)
+				staticComplete = scheduler.IsStaticDirComplete(projStaticDir) || scheduler.IsStaticDirComplete(rootStaticDir)
 			}
 
 			if wikiComplete && staticComplete {

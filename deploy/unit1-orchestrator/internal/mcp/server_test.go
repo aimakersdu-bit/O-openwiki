@@ -16,6 +16,7 @@ import (
 	"github.com/openwiki/orchestrator/internal/config"
 	"github.com/openwiki/orchestrator/internal/db"
 	"github.com/openwiki/orchestrator/internal/qa"
+	"github.com/openwiki/orchestrator/internal/scheduler"
 )
 
 func setupTestServer(t *testing.T) (*Server, func()) {
@@ -778,6 +779,7 @@ func TestIsProjectWikiReady_SkippedIsReady(t *testing.T) {
 
 	// 2. 写入完整的 wiki 标志 (.last-update.json)
 	_ = os.WriteFile(filepath.Join(wikiDir, ".last-update.json"), []byte(`{"updatedAt":"2026-11-19T00:00:00Z"}`), 0644)
+	scheduler.InvalidateCompletenessCache("", wikiDir)
 	taskStatus, _, ready = isProjectWikiReady(proj, build)
 	if !ready {
 		t.Errorf("expected ready=true when wiki output is complete and no staticDir provided")

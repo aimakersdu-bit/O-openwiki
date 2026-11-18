@@ -76,11 +76,9 @@ func deriveProjectTaskStatus(proj db.Project, latestBuild *db.Build, staticBaseD
 			wikiComplete := scheduler.IsWikiDirComplete(wikiDir)
 			staticComplete := true
 			if len(staticBaseDir) > 0 && staticBaseDir[0] != "" {
-				staticDir := filepath.Join(staticBaseDir[0], "projects", proj.ID)
-				if !scheduler.IsStaticDirComplete(staticDir) {
-					staticDir = filepath.Join(staticBaseDir[0], proj.ID)
-				}
-				staticComplete = scheduler.IsStaticDirComplete(staticDir)
+				projStaticDir := filepath.Join(staticBaseDir[0], "projects", proj.ID)
+				rootStaticDir := filepath.Join(staticBaseDir[0], proj.ID)
+				staticComplete = scheduler.IsStaticDirComplete(projStaticDir) || scheduler.IsStaticDirComplete(rootStaticDir)
 			}
 			if wikiComplete && staticComplete {
 				return "completed"

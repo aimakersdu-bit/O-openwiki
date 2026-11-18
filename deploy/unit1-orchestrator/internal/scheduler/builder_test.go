@@ -668,6 +668,7 @@ func TestIsWikiDirComplete_RequiresSubstantialDocs(t *testing.T) {
 
 	// 存在 .last-update.json 完成戳，应判定为完整
 	_ = os.WriteFile(filepath.Join(wikiDir, ".last-update.json"), []byte(`{"updatedAt":"2026-11-18T20:00:00Z"}`), 0644)
+	InvalidateCompletenessCache("", wikiDir)
 	if !isWikiDirComplete(wikiDir) {
 		t.Fatalf("expected isWikiDirComplete to return true when .last-update.json exists")
 	}
@@ -679,5 +680,50 @@ func TestIsWikiDirComplete_RequiresSubstantialDocs(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(wikiDir2, "architecture.md"), []byte(substantialContent), 0644)
 	if !isWikiDirComplete(wikiDir2) {
 		t.Fatalf("expected isWikiDirComplete to return true when substantial markdown exists")
+	}
+}
+
+func TestCompletenessCache_StaticAndWikiInvalidation(t *testing.T) {
+	tmp := t.TempDir()
+	staticDir := filepath.Join(tmp, "static-cache-test")
+	_ = os.MkdirAll(filepath.Join(staticDir, "vendor"), 0755)
+	_ = os.MkdirAll(filepath.Join(staticDir, "api"), 0755)
+
+	for _, rel := range requiredStaticFiles {
+		_ = os.WriteFile(filepath.Join(staticDir, rel), []byte("non-empty"), 0644)
+	}
+	graphPath := filepath.Join(staticDir, "api", "graph")
+	_ = os.WriteFile(graphPath, []byte(`{"nodes":[{"id":"n1"}],"links":[]}`), 0644)
+
+	InvalidateCompletenessCache(staticDir, "")
+	if !IsStaticDirComplete(staticDir) {
+		t.Fatal("expected IsStaticDirComplete=true on valid static dir")
+	}
+
+	// Corrupt api/graph with different size -> cache must detect size/mtime change and return false
+	_ = os.WriteFile(graphPath, []byte(`{"bad`), 0644)
+	if IsStaticDirComplete(staticDir) {
+		t.Fatal("expected IsStaticDirComplete=false immediately after api/graph is corrupted")
+	}
+
+	// Restore valid graph -> returns true again
+	_ = os.WriteFile(graphPath, []byte(`{"nodes":[{"id":"n1"},{"id":"n2"}],"links":[]}`), 0644)
+	if !IsStaticDirComplete(staticDir) {
+		t.Fatal("expected IsStaticDirComplete=true after restoring valid api/graph")
+	}
+
+	// Wiki cache test: create valid wiki dir, verify true, delete .last-update.json, invalidate, verify false
+	wikiDir := filepath.Join(tmp, "wiki-cache-test")
+	_ = os.MkdirAll(wikiDir, 0755)
+	marker := filepath.Join(wikiDir, ".last-update.json")
+	_ = os.WriteFile(marker, []byte(`{"updatedAt":"2026-11-19T00:00:00Z"}`), 0644)
+	InvalidateCompletenessCache("", wikiDir)
+	if !IsWikiDirComplete(wikiDir) {
+		t.Fatal("expected IsWikiDirComplete=true when marker exists")
+	}
+	_ = os.Remove(marker)
+	InvalidateCompletenessCache("", wikiDir)
+	if IsWikiDirComplete(wikiDir) {
+		t.Fatal("expected IsWikiDirComplete=false after marker removed and cache invalidated")
 	}
 }
