@@ -598,4 +598,20 @@ func TestGetLatestFinishedBuild(t *testing.T) {
 	if err != nil || latest == nil || latest.Status != "completed" || latest.ID != b2ID {
 		t.Fatalf("expected latest finished build to be completed, got %+v", latest)
 	}
+
+	// 6. 第三次构建完成为 success
+	b3ID, _ := database.CreateBuild(repoID, "head-3", "running")
+	_ = database.FinishBuild(b3ID, "success", "success status log", "")
+	latest, err = database.GetLatestFinishedBuild(repoID)
+	if err != nil || latest == nil || latest.Status != "success" || latest.ID != b3ID {
+		t.Fatalf("expected latest finished build to be success b3 (%d), got %+v (err=%v)", b3ID, latest, err)
+	}
+
+	// 7. 第四次构建完成为 interrupted
+	b4ID, _ := database.CreateBuild(repoID, "head-4", "running")
+	_ = database.FinishBuild(b4ID, "interrupted", "interrupted log", "process restarted")
+	latest, err = database.GetLatestFinishedBuild(repoID)
+	if err != nil || latest == nil || latest.Status != "interrupted" || latest.ID != b4ID {
+		t.Fatalf("expected latest finished build to be interrupted b4 (%d), got %+v (err=%v)", b4ID, latest, err)
+	}
 }

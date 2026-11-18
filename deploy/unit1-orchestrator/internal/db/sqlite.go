@@ -768,13 +768,13 @@ func (db *DB) GetLatestBuild(repoID string) (*Build, error) {
 	return &builds[0], nil
 }
 
-// GetLatestFinishedBuild returns the most recent build for a repo that has finished (status: completed, failed, or skipped).
+// GetLatestFinishedBuild returns the most recent build for a repo that has reached a terminal state (completed, success, failed, skipped, or interrupted).
 func (db *DB) GetLatestFinishedBuild(repoID string) (*Build, error) {
 	query := `SELECT id, repo_id, COALESCE(git_head,''), status,
 		COALESCE(started_at,''), COALESCE(finished_at,''), COALESCE(log,''), COALESCE(error,''),
 		COALESCE(rate_limited_retries, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(total_tokens, 0), COALESCE(saved_tokens, 0)
 		FROM builds
-		WHERE repo_id = ? AND status IN ('completed', 'failed', 'skipped')
+		WHERE repo_id = ? AND status IN ('completed', 'success', 'failed', 'skipped', 'interrupted')
 		ORDER BY id DESC LIMIT 1`
 
 	row := db.conn.QueryRow(query, repoID)
