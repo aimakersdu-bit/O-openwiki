@@ -270,19 +270,35 @@ func (s *Scheduler) runBuildWithMode(repo db.Repo, force bool, mode BuildMode) {
 			return
 		}
 		if !status.HasUpdates {
-			logBuf.WriteString(fmt.Sprintf("No updates detected (HEAD=%s).\n", status.LocalHead))
-			log.Printf("[build][%s] no updates (HEAD=%s)", repo.ID, status.LocalHead)
-			s.finishBuild(buildID, "skipped", logBuf.String(), "")
-			return
+			var prevBuildSuccess bool
+			if s.db != nil {
+				if latest, err := s.db.GetLatestFinishedBuild(repo.ID); err == nil && latest != nil {
+					prevBuildSuccess = (latest.Status == "completed" || latest.Status == "success" || latest.Status == "skipped")
+				}
+			}
+			wikiComplete := s.builder.IsWikiComplete(repo.WikiDir)
+			staticComplete := s.builder.IsStaticOutputComplete(repo.ID)
+			if prevBuildSuccess && wikiComplete && staticComplete {
+				logBuf.WriteString(fmt.Sprintf("No updates detected (HEAD=%s) and build output is complete.\n", status.LocalHead))
+				log.Printf("[build][%s] no updates (HEAD=%s), skipping", repo.ID, status.LocalHead)
+				s.finishBuild(buildID, "skipped", logBuf.String(), "")
+				return
+			}
+			regenMsg := fmt.Sprintf("No git updates (HEAD=%s), but prior build/output is incomplete (prev_ok=%v, wiki_ok=%v, static_ok=%v); skipping git pull and regenerating.\n",
+				status.LocalHead, prevBuildSuccess, wikiComplete, staticComplete)
+			logBuf.WriteString(regenMsg)
+			log.Printf("[build][%s] %s", repo.ID, strings.TrimSpace(regenMsg))
+			_ = s.db.UpdateBuildLog(buildID, logBuf.String(), "")
+		} else {
+			if err := GitPull(repo.LocalPath, repo.Branch); err != nil {
+				errStr := fmt.Sprintf("git pull failed: %v", err)
+				log.Printf("[build][%s] %s", repo.ID, errStr)
+				s.finishBuild(buildID, "failed", logBuf.String(), errStr)
+				return
+			}
+			logBuf.WriteString("Git pull completed successfully.\n")
+			_ = s.db.UpdateBuildLog(buildID, logBuf.String(), "")
 		}
-		if err := GitPull(repo.LocalPath, repo.Branch); err != nil {
-			errStr := fmt.Sprintf("git pull failed: %v", err)
-			log.Printf("[build][%s] %s", repo.ID, errStr)
-			s.finishBuild(buildID, "failed", logBuf.String(), errStr)
-			return
-		}
-		logBuf.WriteString("Git pull completed successfully.\n")
-		_ = s.db.UpdateBuildLog(buildID, logBuf.String(), "")
 	} else {
 		// Manual trigger: attempt pull if repo exists
 		logBuf.WriteString("Manual trigger forced build. Pulling latest code...\n")
