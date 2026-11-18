@@ -453,7 +453,8 @@ func TestBuilderTaskHomeLifecycle_SuccessDeletes_FailurePreserves(t *testing.T) 
 
 	// 场景 4: Step 1 (update) 失败但触发离线发布降级时（result.Error != ""），同样必须保留 .tmp/build_* 目录
 	repoUpdateFail := filepath.Join(rootDir, "repo-update-fail")
-	_ = os.MkdirAll(filepath.Join(repoUpdateFail, "openwiki"), 0755) // 已有 openwiki 目录，跳过 init 直接进 update
+	_ = os.MkdirAll(filepath.Join(repoUpdateFail, "openwiki"), 0755) // 已有完整 openwiki 目录，跳过 init 直接进 update
+	_ = os.WriteFile(filepath.Join(repoUpdateFail, "openwiki", ".last-update.json"), []byte(`{"updatedAt":"2026-11-18T20:00:00Z"}`), 0644)
 	bUpdateFail := NewBuilder(failScript, "", "", filepath.Join(rootDir, "static"))
 	resUpdateFail := bUpdateFail.BuildRepoWithMode(104, "org/repo-update-fail", repoUpdateFail, "", BuildModeFull)
 	if resUpdateFail.Error == "" {
@@ -529,7 +530,11 @@ func TestIsStaticDirComplete(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(full, []byte("x"), 0644); err != nil {
+		content := []byte("x")
+		if rel == "api/graph" {
+			content = []byte(`{"nodes":[],"links":[]}`)
+		}
+		if err := os.WriteFile(full, content, 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -563,20 +568,20 @@ func TestIsWikiDirComplete(t *testing.T) {
 		t.Fatal("expected false for wiki dir with no markdown")
 	}
 
-	// Dir with a .md file
+	// Dir with a substantial .md file (> 100 bytes)
 	wikiDir := filepath.Join(tmp, "wiki")
 	nested := filepath.Join(wikiDir, "architecture")
 	if err := os.MkdirAll(nested, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(nested, "overview.md"), []byte("# Overview"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(nested, "overview.md"), []byte(strings.Repeat("# Overview\nDetailed substantial documentation.\n", 5)), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(wikiDir, "notes.txt"), []byte("ignore"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if !isWikiDirComplete(wikiDir) {
-		t.Fatal("expected true when wiki dir contains at least one .md file")
+		t.Fatal("expected true when wiki dir contains at least one substantial .md file")
 	}
 }
 
@@ -600,11 +605,79 @@ func TestIsStaticOutputCompleteViaBuilder(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(full, []byte("x"), 0644); err != nil {
+		content := []byte("x")
+		if rel == "api/graph" {
+			content = []byte(`{"nodes":[],"links":[]}`)
+		}
+		if err := os.WriteFile(full, content, 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if !b.IsStaticOutputComplete("org/repo-y") {
 		t.Fatal("expected true after populating all required static assets")
+	}
+}
+
+func TestIsStaticDirComplete_EmptyFilesAndCorruptJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	staticDir := filepath.Join(tmpDir, "static-check")
+	_ = os.MkdirAll(filepath.Join(staticDir, "vendor"), 0755)
+	_ = os.MkdirAll(filepath.Join(staticDir, "api"), 0755)
+
+	// 创建所有必需文件，但均为 0 字节
+	for _, rel := range requiredStaticFiles {
+		_ = os.WriteFile(filepath.Join(staticDir, rel), []byte(""), 0644)
+	}
+
+	// 0 字节空文件必须判定为不完整
+	if isStaticDirComplete(staticDir) {
+		t.Fatalf("expected isStaticDirComplete to return false for 0-byte placeholder files")
+	}
+
+	// 写入非空常规文件，但 api/graph 写入损坏的 JSON
+	for _, rel := range requiredStaticFiles {
+		_ = os.WriteFile(filepath.Join(staticDir, rel), []byte("non-empty content"), 0644)
+	}
+	_ = os.WriteFile(filepath.Join(staticDir, "api", "graph"), []byte("invalid-json{"), 0644)
+
+	// api/graph JSON 无效应判定为不完整
+	if isStaticDirComplete(staticDir) {
+		t.Fatalf("expected isStaticDirComplete to return false for corrupt api/graph JSON")
+	}
+
+	// 写入有效 graph JSON
+	validGraph := `{"nodes":[{"id":"test","label":"Test"}],"links":[]}`
+	_ = os.WriteFile(filepath.Join(staticDir, "api", "graph"), []byte(validGraph), 0644)
+
+	// 现在全部有效，应判定为完整
+	if !isStaticDirComplete(staticDir) {
+		t.Fatalf("expected isStaticDirComplete to return true for complete valid assets")
+	}
+}
+
+func TestIsWikiDirComplete_RequiresSubstantialDocs(t *testing.T) {
+	tmpDir := t.TempDir()
+	wikiDir := filepath.Join(tmpDir, "wiki-check")
+	_ = os.MkdirAll(wikiDir, 0755)
+
+	// 只有 1 个小于 20 字节的空 md 文件（例如残缺创建），应判定为不完整
+	_ = os.WriteFile(filepath.Join(wikiDir, "stub.md"), []byte("# Title\n"), 0644)
+	if isWikiDirComplete(wikiDir) {
+		t.Fatalf("expected isWikiDirComplete to return false for tiny stub markdown")
+	}
+
+	// 存在 .last-update.json 完成戳，应判定为完整
+	_ = os.WriteFile(filepath.Join(wikiDir, ".last-update.json"), []byte(`{"updatedAt":"2026-11-18T20:00:00Z"}`), 0644)
+	if !isWikiDirComplete(wikiDir) {
+		t.Fatalf("expected isWikiDirComplete to return true when .last-update.json exists")
+	}
+
+	// 测试无 .last-update.json 但有 > 100 字节的实质性文档
+	wikiDir2 := filepath.Join(tmpDir, "wiki-substantial")
+	_ = os.MkdirAll(wikiDir2, 0755)
+	substantialContent := strings.Repeat("This is a detailed wiki documentation page that exceeds 100 bytes.\n", 3)
+	_ = os.WriteFile(filepath.Join(wikiDir2, "architecture.md"), []byte(substantialContent), 0644)
+	if !isWikiDirComplete(wikiDir2) {
+		t.Fatalf("expected isWikiDirComplete to return true when substantial markdown exists")
 	}
 }

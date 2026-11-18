@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -411,8 +412,8 @@ func (b *Builder) BuildRepoWithModeCtx(ctx context.Context, buildID int64, repoI
 
 	ranInit := false
 	if mode != BuildModeKnowledgeOnly {
-		// Step 0: Check if wiki directory exists; if not, run openwiki code --init --print first
-		if _, err := os.Stat(wikiDir); os.IsNotExist(err) {
+		// Step 0: Check if wiki directory is complete; if not, run openwiki code --init --print first
+		if !b.IsWikiComplete(wikiDir) {
 			b.logStep(repoID, fmt.Sprintf("=== Step 0: openwiki code --init --print --language %s ===", lang), &logBuf, onProgress...)
 			cmdInit := b.createOpenWikiCmdWithHome(buildID, taskHomeDir, repoPath, "code", "--init", "--print", "--language", lang)
 			if err := b.runCommandWithStreaming(ctx, cmdInit, repoID, &logBuf, onProgress...); err != nil {
@@ -895,9 +896,23 @@ func isStaticDirComplete(staticDir string) bool {
 		return false
 	}
 	for _, rel := range requiredStaticFiles {
-		if _, err := os.Stat(filepath.Join(staticDir, rel)); err != nil {
+		target := filepath.Join(staticDir, rel)
+		fi, err := os.Stat(target)
+		if err != nil || fi.IsDir() || fi.Size() == 0 {
 			return false
 		}
+	}
+	// 验证 api/graph 具有合法非空的 JSON 结构
+	graphBytes, err := os.ReadFile(filepath.Join(staticDir, "api", "graph"))
+	if err != nil || len(graphBytes) < 10 {
+		return false
+	}
+	var g struct {
+		Nodes []interface{} `json:"nodes"`
+		Links []interface{} `json:"links"`
+	}
+	if err := json.Unmarshal(graphBytes, &g); err != nil {
+		return false
 	}
 	return true
 }
@@ -919,18 +934,26 @@ func isWikiDirComplete(wikiDir string) bool {
 	if err != nil || !info.IsDir() {
 		return false
 	}
-	found := false
+
+	// 1. 若存在 OpenWiki 官方完成标记戳，直接判定完整
+	lastUpdateFile := filepath.Join(wikiDir, ".last-update.json")
+	if fi, err := os.Stat(lastUpdateFile); err == nil && !fi.IsDir() && fi.Size() > 0 {
+		return true
+	}
+
+	// 2. 检查是否有有效的大于 100 字节的实质性文档
+	hasSubstantialDoc := false
 	_ = filepath.Walk(wikiDir, func(path string, fi os.FileInfo, err error) error {
 		if err != nil || fi == nil || fi.IsDir() {
 			return nil
 		}
-		if strings.EqualFold(filepath.Ext(path), ".md") {
-			found = true
+		if strings.EqualFold(filepath.Ext(path), ".md") && fi.Size() > 100 {
+			hasSubstantialDoc = true
 			return filepath.SkipDir
 		}
 		return nil
 	})
-	return found
+	return hasSubstantialDoc
 }
 
 // ExportActiveGraph re-exports api/graph for the currently active deployed version of a repo (used after QA creates/updates wiki docs).
