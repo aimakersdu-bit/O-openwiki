@@ -453,3 +453,4 @@ git commit -m "build: compile and sync updated orchestrator binaries with idempo
 1. **Spec Coverage:** 用户要求“如果静态资源没有生成或生成不全应该继续跑，跳过下载代码做 git pull 的幂等，后面逻辑要走” -> 在 Task 2、Task 3 完整覆盖。
 2. **No Placeholders:** 每一个 Task 都提供了完整可运行的代码、测试命令与预期输出，无任何 TODO/TBD。
 3. **Type Consistency:** `GetLatestFinishedBuild` 方法签名、结构体类型与 `Pipeline` 的调用全部对齐。
+
