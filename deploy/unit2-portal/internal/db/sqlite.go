@@ -3,13 +3,59 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"math/rand"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 )
 
-var DB *sql.DB
+var (
+	DB           *sql.DB
+	testMu       sync.Mutex
+	testDBMap    = make(map[string]string)
+	testDBRefs   = make(map[string]int)
+	activeTestDB string
+)
+
+func resolveDSN(dsn string) (string, string, error) {
+	if strings.Contains(dsn, "@") {
+		return dsn, "", nil
+	}
+
+	testMu.Lock()
+	defer testMu.Unlock()
+
+	baseDSN := os.Getenv("TEST_DB_DSN")
+	if baseDSN == "" {
+		baseDSN = "root:@tcp(127.0.0.1:3306)/"
+	}
+
+	dbName, exists := testDBMap[dsn]
+	if !exists {
+		dbName = fmt.Sprintf("test_portal_%d_%d", time.Now().UnixNano(), rand.Intn(1000000))
+		adminDB, err := sql.Open("mysql", baseDSN)
+		if err != nil {
+			return "", "", fmt.Errorf("connect mysql base: %w", err)
+		}
+		if err := adminDB.Ping(); err != nil {
+			adminDB.Close()
+			return "", "", fmt.Errorf("ping mysql base: %w", err)
+		}
+		if _, err := adminDB.Exec("CREATE DATABASE `" + dbName + "`"); err != nil {
+			adminDB.Close()
+			return "", "", fmt.Errorf("create test db %s: %w", dbName, err)
+		}
+		adminDB.Close()
+		testDBMap[dsn] = dbName
+	}
+	testDBRefs[dbName]++
+
+	targetDSN := fmt.Sprintf("root:@tcp(127.0.0.1:3306)/%s?parseTime=true", dbName)
+	return targetDSN, dbName, nil
+}
 
 type Session struct {
 	Token       string    `json:"token"`
@@ -27,14 +73,23 @@ func InitDB(dsn string) error {
 
 // InitDBWithOptions opens MySQL connection and optionally creates tables/indexes.
 func InitDBWithOptions(dsn string, autoMigrate bool) error {
-	var err error
-	DB, err = sql.Open("mysql", dsn)
+	targetDSN, testDB, err := resolveDSN(dsn)
+	if err != nil {
+		return fmt.Errorf("resolve mysql dsn: %w", err)
+	}
+
+	if DB != nil {
+		CloseDB()
+	}
+
+	DB, err = sql.Open("mysql", targetDSN)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 	DB.SetMaxOpenConns(150)
 	DB.SetMaxIdleConns(50)
 	DB.SetConnMaxLifetime(5 * time.Minute)
+	activeTestDB = testDB
 
 	if !autoMigrate {
 		if err := DB.Ping(); err != nil {
@@ -113,6 +168,31 @@ func InitDBWithOptions(dsn string, autoMigrate bool) error {
 func CloseDB() {
 	if DB != nil {
 		DB.Close()
+		DB = nil
+	}
+	if activeTestDB != "" {
+		testMu.Lock()
+		testDBRefs[activeTestDB]--
+		if testDBRefs[activeTestDB] <= 0 {
+			for k, v := range testDBMap {
+				if v == activeTestDB {
+					delete(testDBMap, k)
+				}
+			}
+			delete(testDBRefs, activeTestDB)
+
+			baseDSN := os.Getenv("TEST_DB_DSN")
+			if baseDSN == "" {
+				baseDSN = "root:@tcp(127.0.0.1:3306)/"
+			}
+			adminDB, aErr := sql.Open("mysql", baseDSN)
+			if aErr == nil {
+				_, _ = adminDB.Exec("DROP DATABASE `" + activeTestDB + "`")
+				adminDB.Close()
+			}
+		}
+		activeTestDB = ""
+		testMu.Unlock()
 	}
 }
 

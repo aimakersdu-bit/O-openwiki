@@ -194,6 +194,54 @@ input:focus, textarea:focus {
   margin-bottom: 1rem;
 }
 
+.alert-success {
+/* ===== Admin Tab Navigation ===== */
+.ow-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  border-bottom: 2px solid var(--border-color);
+  margin-bottom: 0;
+  padding: 0 0.25rem;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: var(--bg-primary);
+}
+.ow-tab {
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-weight: 500;
+  border-bottom: 3px solid transparent;
+  border-radius: 6px 6px 0 0;
+  transition: all 0.15s;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.ow-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+}
+.ow-tab.active {
+  color: var(--primary-color, #3b82f6);
+  border-bottom-color: var(--primary-color, #3b82f6);
+  font-weight: 600;
+}
+.ow-tab-panel { display: none; }
+.ow-tab-panel.active { display: block; }
+
+
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--success-color);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
 .alert-error {
   background: rgba(248, 113, 113, 0.15);
   color: var(--error-color);

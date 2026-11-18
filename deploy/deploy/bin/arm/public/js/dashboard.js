@@ -26,6 +26,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const chatInput = document.getElementById('chatInput');
   const sendChatBtn = document.getElementById('sendChatBtn');
 
+  const viewReposBtn = document.getElementById('viewReposBtn');
+  const viewProjectsBtn = document.getElementById('viewProjectsBtn');
+  let viewMode = 'repos'; // 'repos' | 'projects'
+  let allProjects = [];
+
   let activeRepo = null;
 
   // Dashboard Repos State
@@ -41,8 +46,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Helper to parse build list into display status
   function parseBuildStatus(repo, builds = []) {
     const latestBuild = builds[0];
-    const hasSuccess = builds.some(b => b.status === 'success' || b.status === 'skipped');
-    const isBuilding = latestBuild && (latestBuild.status === 'pending' || latestBuild.status === 'running');
+   const hasSuccess = builds.some(b => b.status === 'success' || b.status === 'skipped');
+   const hasCompleted = builds.some(b => b.status === 'completed' || b.status === 'success' || b.status === 'skipped');
+   const isBuilding = latestBuild && (latestBuild.status === 'pending' || latestBuild.status === 'running');
 
     let statusKey = 'unbuilt'; // 'ready', 'building', 'unbuilt'
     let statusHtml = '';
@@ -50,7 +56,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (isBuilding) {
       statusKey = 'building';
       statusHtml = `<span style="color: var(--accent-color);">⚡ 增量构建中 (Build #${latestBuild.id})...</span>`;
-    } else if (latestBuild && latestBuild.status === 'success') {
+   } else if (latestBuild && (latestBuild.status === 'success' || latestBuild.status === 'completed')) {
       statusKey = 'ready';
       statusHtml = `<span style="color: var(--success-color);">✅ 已构建完成</span>`;
     } else if (latestBuild && latestBuild.status === 'skipped') {
@@ -64,7 +70,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusKey = 'unbuilt';
         statusHtml = `<span style="color: var(--error-color, #ef4444);">❌ 构建失败</span>`;
       }
-    } else if (hasSuccess) {
+   } else if (hasCompleted) {
       statusKey = 'ready';
       statusHtml = `<span style="color: var(--success-color);">✅ 已构建完成</span>`;
     } else {
@@ -72,17 +78,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       statusHtml = `<span style="color: var(--text-secondary);">⏳ 尚未构建</span>`;
     }
 
-    const wikiActionHtml = hasSuccess
+   const wikiActionHtml = hasCompleted
       ? `<a href="${repo.wiki_url}" target="_blank" class="btn btn-primary btn-sm">📖 查看 Wiki</a>`
       : `<button class="btn btn-primary btn-sm" disabled style="opacity: 0.5; cursor: not-allowed;" title="仓库尚未生成 Wiki 页面">📖 尚未构建</button>`;
 
-    const chatActionHtml = hasSuccess
+   const chatActionHtml = hasCompleted
       ? `<button class="btn btn-secondary btn-sm chat-btn" data-id="${repo.id}" data-name="${API.escapeHTML(repo.name)}">💬 AI 问答</button>`
       : `<button class="btn btn-secondary btn-sm" disabled style="opacity: 0.5; cursor: not-allowed;" title="知识库尚未就绪，请先完成构建">💬 AI 问答</button>`;
 
     return {
       statusKey,
-      hasSuccess,
+     hasSuccess,
+     hasCompleted,
       isBuilding,
       latestBuild,
       statusHtml,
@@ -224,7 +231,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       btn.addEventListener('click', (e) => {
         const repoId = e.currentTarget.getAttribute('data-id');
         const repoName = e.currentTarget.getAttribute('data-name');
-        openChat(repoId, repoName);
+        const isProj = e.currentTarget.getAttribute('data-is-project') === 'true';
+        openChat(repoId, repoName, isProj);
       });
     });
 
@@ -328,6 +336,117 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  // Load Microservice Projects
+  async function loadProjects() {
+    repoList.innerHTML = '<p style="color: var(--text-secondary);">加载微服务项目中...</p>';
+    if (repoCountStats) repoCountStats.textContent = '加载中...';
+    try {
+      allProjects = (await API.getProjects()) || [];
+      renderProjectsList();
+    } catch (err) {
+      repoList.innerHTML = `<p style="color: var(--error-color);">加载微服务项目失败: ${err.message}</p>`;
+      if (repoCountStats) repoCountStats.textContent = '加载失败';
+    }
+  }
+
+  function renderProjectsList() {
+    if (allProjects.length === 0) {
+      repoList.innerHTML = `
+        <div class="card" style="grid-column: 1 / -1; text-align: center; padding: 3rem;">
+          <p style="color: var(--text-secondary); margin-bottom: 1rem;">暂无已创建的微服务项目。</p>
+          <a href="admin.html" class="btn btn-primary">➕ 前往运维管理创建微服务项目</a>
+        </div>
+      `;
+      if (repoCountStats) repoCountStats.textContent = '共 0 个微服务项目';
+      if (paginationBar) paginationBar.style.display = 'none';
+      return;
+    }
+
+    const filtered = allProjects.filter(p => {
+      if (!searchQuery) return true;
+      const q = searchQuery.toLowerCase();
+      return (p.name && p.name.toLowerCase().includes(q)) ||
+             (p.id && p.id.toLowerCase().includes(q)) ||
+             (p.description && p.description.toLowerCase().includes(q));
+    });
+
+    if (repoCountStats) repoCountStats.textContent = `共 ${filtered.length} 个微服务项目`;
+    if (paginationBar) paginationBar.style.display = 'none';
+
+    if (filtered.length === 0) {
+      repoList.innerHTML = '<div class="card" style="grid-column: 1 / -1; text-align: center; padding: 2rem; color: var(--text-secondary);">未找到匹配的微服务项目。</div>';
+      return;
+    }
+
+    repoList.innerHTML = filtered.map(proj => {
+      const isBuilding = proj.status === 'building';
+      const statusHtml = isBuilding
+        ? `<span style="color: var(--accent-color);">⚡ 聚合构建中...</span>`
+        : `<span style="color: var(--success-color);">✅ 就绪</span>`;
+
+      const badges = (proj.repos || []).map(r => `
+        <span class="badge" style="background:var(--bg-secondary); border:1px solid var(--border-color); font-size:0.75rem; margin-right:4px; margin-bottom:4px; display:inline-block;">
+          <strong>${API.escapeHTML(r.alias_name)}</strong> <span style="opacity:0.7;">(${r.role})</span>
+        </span>
+      `).join('') || '<span style="color:var(--text-secondary); font-size:0.8rem;">尚未绑定微服务</span>';
+
+      return `
+        <div class="repo-card">
+          <div>
+            <div class="repo-title">🏢 ${API.escapeHTML(proj.name)}</div>
+            <div class="repo-meta">
+              <div>项目标识: <code>${API.escapeHTML(proj.id)}</code></div>
+              <div>状态: ${statusHtml}</div>
+              ${proj.description ? `<div style="margin-top:4px; color:var(--text-secondary); font-size:0.85rem;">${API.escapeHTML(proj.description)}</div>` : ''}
+            </div>
+            <div style="margin: 0.75rem 0;">
+              <div style="font-size:0.8rem; color:var(--text-secondary); margin-bottom:4px;">包含微服务 (${(proj.repos || []).length} 个):</div>
+              <div style="display:flex; flex-wrap:wrap; gap:4px;">${badges}</div>
+            </div>
+          </div>
+          <div class="repo-actions" style="margin-top:auto;">
+            <a href="${proj.wiki_url}" target="_blank" class="btn btn-primary btn-sm">📖 查看系统架构 Wiki</a>
+            <button class="btn btn-secondary btn-sm chat-btn" data-id="${proj.id}" data-name="${API.escapeHTML(proj.name)}" data-is-project="true">💬 项目全景 AI 问答</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    repoList.querySelectorAll('.chat-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const id = e.currentTarget.getAttribute('data-id');
+        const name = e.currentTarget.getAttribute('data-name');
+        const isProj = e.currentTarget.getAttribute('data-is-project') === 'true';
+        openChat(id, name, isProj);
+      });
+    });
+  }
+
+  // View Mode Switcher Handlers
+  if (viewReposBtn && viewProjectsBtn) {
+    viewReposBtn.addEventListener('click', () => {
+      viewMode = 'repos';
+      viewReposBtn.className = 'btn btn-sm btn-primary';
+      viewProjectsBtn.className = 'btn btn-sm btn-secondary';
+      const statusWrapper = document.querySelector('.filter-select-wrapper');
+      if (statusWrapper) statusWrapper.style.display = 'block';
+      const sizeWrapper = document.querySelector('.page-size-wrapper');
+      if (sizeWrapper) sizeWrapper.style.display = 'block';
+      applyFiltersAndRender(true);
+    });
+
+    viewProjectsBtn.addEventListener('click', () => {
+      viewMode = 'projects';
+      viewProjectsBtn.className = 'btn btn-sm btn-primary';
+      viewReposBtn.className = 'btn btn-sm btn-secondary';
+      const statusWrapper = document.querySelector('.filter-select-wrapper');
+      if (statusWrapper) statusWrapper.style.display = 'none';
+      const sizeWrapper = document.querySelector('.page-size-wrapper');
+      if (sizeWrapper) sizeWrapper.style.display = 'none';
+      loadProjects();
+    });
+  }
+
   // Toolbar Event Listeners
   if (repoSearchInput) {
     repoSearchInput.addEventListener('input', (e) => {
@@ -338,7 +457,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       clearTimeout(searchDebounceTimer);
       searchDebounceTimer = setTimeout(() => {
         searchQuery = val;
-        applyFiltersAndRender(true);
+        if (viewMode === 'projects') {
+          renderProjectsList();
+        } else {
+          applyFiltersAndRender(true);
+        }
       }, 200);
     });
   }
@@ -351,7 +474,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
       clearSearchBtn.style.display = 'none';
       searchQuery = '';
-      applyFiltersAndRender(true);
+      if (viewMode === 'projects') {
+        renderProjectsList();
+      } else {
+        applyFiltersAndRender(true);
+      }
     });
   }
 
@@ -371,8 +498,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   if (refreshBtn) {
     refreshBtn.addEventListener('click', () => {
-      buildStatusCache.clear();
-      loadRepos();
+      if (viewMode === 'projects') {
+        loadProjects();
+      } else {
+        buildStatusCache.clear();
+        loadRepos();
+      }
     });
   }
 
@@ -442,13 +573,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   let currentSessionId = generateSessionId();
 
   function resetChatMessages() {
+    const isProj = activeRepo && activeRepo.isProject;
     chatMessages.innerHTML = `
       <div class="chat-welcome">
-        <p>🤖 您正在针对该仓库进行 百信 RepoWiki 智能问答。</p>
+        <p>🤖 您正在针对${isProj ? '【微服务项目】' : '该代码仓库'}进行 百信 RepoWiki 智能问答。</p>
         <p>示例问题：</p>
         <ul>
-          <li>“这个项目的核心模块架构是怎样的？”</li>
-          <li>“如何在本地方便地启动调试此服务？”</li>
+          ${isProj
+            ? `<li>“从网关到支付成功的全链路跨服务调用流程是怎样的？”</li>
+               <li>“系统内各个微服务是如何通过 MQ 或 RPC 交互的？”</li>`
+            : `<li>“这个项目的核心模块架构是怎样的？”</li>
+               <li>“如何在本地方便地启动调试此服务？”</li>`}
         </ul>
       </div>
     `;
@@ -458,16 +593,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     currentSessionId = generateSessionId();
     resetChatMessages();
     if (sessionHistoryPanel) sessionHistoryPanel.style.display = 'none';
-    if (activeRepo) {
+    if (activeRepo && !activeRepo.isProject) {
       loadSessionHistory();
     }
   }
 
-  async function openChat(repoId, repoName) {
-    const isNewRepo = (!activeRepo || activeRepo.id !== repoId);
-    activeRepo = { id: repoId, name: repoName };
+  async function openChat(repoId, repoName, isProject = false) {
+    const isNewRepo = (!activeRepo || activeRepo.id !== repoId || activeRepo.isProject !== isProject);
+    activeRepo = { id: repoId, name: repoName, isProject };
     chatRepoTitle.textContent = repoName;
-    chatRepoBadge.textContent = repoId;
+    chatRepoBadge.textContent = isProject ? `🏢 项目: ${repoId}` : `📦 仓库: ${repoId}`;
     chatDrawer.classList.add('open');
 
     if (isNewRepo) {
@@ -578,7 +713,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!activeRepo || !sessionList) return;
     sessionList.innerHTML = '<div style="color: var(--text-secondary); font-size: 0.8rem; padding: 0.5rem;">加载会话历史中...</div>';
     try {
-      const sessions = await API.getUserQASessions(activeRepo.id);
+      const sessions = await API.getUserQASessions(activeRepo.id, !!activeRepo.isProject);
       if (!sessions || sessions.length === 0) {
         sessionList.innerHTML = '<div style="color: var(--text-secondary); font-size: 0.8rem; padding: 0.5rem;">暂无历史会话记录</div>';
         return;
@@ -768,8 +903,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         headers: { 'Content-Type': 'application/json' },
         signal: activeAbortController.signal,
         body: JSON.stringify({
-          repo_id: activeRepo.id,
-          user_id: currentUser.user_id,
+          repo_id: (activeRepo && activeRepo.isProject) ? undefined : activeRepo.id,
+          project_id: (activeRepo && activeRepo.isProject) ? activeRepo.id : undefined,
+          user_id: currentUser ? currentUser.user_id : 'anonymous',
           session_id: currentSessionId,
           question: question
         })

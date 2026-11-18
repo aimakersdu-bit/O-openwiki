@@ -48,20 +48,22 @@ window.Auth = {
 
     // Toggle admin-only elements
     const adminElements = document.querySelectorAll('.admin-only');
-    adminElements.forEach(el => {
-      if (user && user.role === 'admin') {
-        el.style.display = '';
-      } else {
-        el.style.display = 'none';
-      }
-    });
+   adminElements.forEach(el => {
+      const isAdmin = user && (user.role === 'admin' || user.role === 'super_admin');
+      if (isAdmin) {
+       el.style.display = '';
+     } else {
+       el.style.display = 'none';
+     }
+   });
 
     if (!userContainer) return;
 
     if (user) {
       const name = user.display_name || user.user_id;
       const initial = name.charAt(0).toUpperCase();
-      const roleBadge = user.role === 'admin' ? '<span class="badge badge-admin" style="background:#0284c7;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:4px;">管理员</span>' : '<span class="badge badge-user" style="background:#64748b;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:4px;">普通用户</span>';
+      const isAdminRole = user.role === 'admin' || user.role === 'super_admin';
+      const roleBadge = isAdminRole ? '<span class="badge badge-admin" style="background:#0284c7;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:4px;">管理员</span>' : '<span class="badge badge-user" style="background:#64748b;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:4px;">普通用户</span>';
       userContainer.innerHTML = `
         <div class="user-info" style="display:flex;align-items:center;gap:8px;">
           <span class="user-avatar">${initial}</span>

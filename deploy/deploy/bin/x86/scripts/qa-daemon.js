@@ -44,9 +44,16 @@ if (typeof globalThis.require === 'undefined') {
   };
 }
 
-// Ensure OPENWIKI_HOME is set so global ~/.openwiki/.env (DeepSeek credentials) is loaded
-if (!process.env.OPENWIKI_HOME) {
-  process.env.OPENWIKI_HOME = path.join(os.homedir(), '.openwiki');
+// Ensure OPENWIKI_HOME and OPENWIKI_CONFIG_DIR are synchronized so all OpenWiki modules resolve the isolated home
+if (!process.env.OPENWIKI_CONFIG_DIR && process.env.OPENWIKI_HOME) {
+  process.env.OPENWIKI_CONFIG_DIR = process.env.OPENWIKI_HOME;
+}
+if (!process.env.OPENWIKI_HOME && process.env.OPENWIKI_CONFIG_DIR) {
+  process.env.OPENWIKI_HOME = process.env.OPENWIKI_CONFIG_DIR;
+}
+if (!process.env.OPENWIKI_CONFIG_DIR) {
+  process.env.OPENWIKI_CONFIG_DIR = path.join(os.homedir(), '.openwiki');
+  process.env.OPENWIKI_HOME = process.env.OPENWIKI_CONFIG_DIR;
 }
 
 // Ensure working directory is set
@@ -56,32 +63,16 @@ try {
   console.error(`[QA-Daemon] Failed to change cwd to ${repoDir}:`, err);
 }
 
-import { execSync } from 'node:child_process';
-
 // 2. Dynamically import runOpenWikiAgent
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let agentModulePath = '';
 
-let globalNpmDist = '';
-try {
-  const globalRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
-  if (globalRoot) {
-    globalNpmDist = path.join(globalRoot, 'openwiki', 'dist', 'agent', 'index.js');
-  }
-} catch (e) {}
-
-let requireResolved = '';
-try {
-  const req = createRequire(import.meta.url);
-  requireResolved = req.resolve('openwiki/dist/agent/index.js');
-} catch (e) {}
-
 const candidates = [
   process.env.OPENWIKI_DIST_DIR ? path.join(process.env.OPENWIKI_DIST_DIR, 'agent', 'index.js') : '',
-  requireResolved,
-  globalNpmDist,
-  path.resolve(__dirname, '../../../dist/agent/index.js'),
+  path.resolve(__dirname, '../dist/agent/index.js'),
   path.resolve(__dirname, '../../dist/agent/index.js'),
+  path.resolve(__dirname, '../../../dist/agent/index.js'),
+  '/opt/openwiki/dist/agent/index.js',
   path.resolve(repoDir, 'node_modules/openwiki/dist/agent/index.js'),
   path.resolve('/app/dist/agent/index.js')
 ].filter(Boolean);
@@ -163,9 +154,12 @@ class CodeAntiLeakFilter {
         this.inCodeBlock = true;
         this.codeLineCount = 0;
         this.redacted = false;
+        const lang = trimmed.slice(3).trim().toLowerCase();
+        this.isDiagram = ['mermaid', 'plantuml', 'dot', 'sequence'].some(d => lang.startsWith(d));
         return line;
       } else {
         this.inCodeBlock = false;
+        this.isDiagram = false;
         this.redacted = false;
         this.codeLineCount = 0;
         return line;
@@ -173,6 +167,9 @@ class CodeAntiLeakFilter {
     }
 
     if (this.inCodeBlock) {
+      if (this.isDiagram) {
+        return line;
+      }
       this.codeLineCount++;
       if (this.codeLineCount > this.maxCodeLines) {
         if (!this.redacted) {
@@ -218,6 +215,30 @@ function touch() {
   lastAccessedAt = Date.now();
 }
 
+const MAX_IDLE_SQLITE_BYTES = 100 * 1024 * 1024; // 100 MB
+
+function pruneOversizedSqliteOnIdleExit() {
+  try {
+    const homeDir = process.env.OPENWIKI_CONFIG_DIR || process.env.OPENWIKI_HOME;
+    if (!homeDir) return;
+    const sqliteFile = path.join(homeDir, 'openwiki.sqlite');
+    if (fs.existsSync(sqliteFile)) {
+      const stat = fs.statSync(sqliteFile);
+      if (stat.size > MAX_IDLE_SQLITE_BYTES) {
+        console.log(`[QA-Daemon] openwiki.sqlite size (${stat.size} bytes) exceeds 100MB on idle exit; pruning...`);
+        for (const suffix of ['', '-wal', '-shm']) {
+          const target = sqliteFile + suffix;
+          if (fs.existsSync(target)) {
+            try { fs.unlinkSync(target); } catch { }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[QA-Daemon] Warning: failed to prune oversized sqlite:', err);
+  }
+}
+
 function cleanupAndExit(code = 0) {
   try {
     server.close(() => {
@@ -225,10 +246,12 @@ function cleanupAndExit(code = 0) {
         if (socketPath && fs.existsSync(socketPath)) {
           fs.unlinkSync(socketPath);
         }
-      } catch {}
+      } catch { }
+      pruneOversizedSqliteOnIdleExit();
       process.exit(code);
     });
   } catch {
+    pruneOversizedSqliteOnIdleExit();
     process.exit(code);
   }
 }
@@ -287,7 +310,7 @@ const server = http.createServer(async (req, res) => {
     const sendSSE = (event, data) => {
       try {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-      } catch {}
+      } catch { }
     };
 
     // Client disconnect handling
@@ -299,9 +322,13 @@ const server = http.createServer(async (req, res) => {
     });
 
     try {
+      const requestQueuedAt = Date.now();
       // Execute within FIFO queue to ensure only 1 run per repo worker at any time
       await queue.enqueue(async () => {
-        if (clientDisconnected) return;
+        if (clientDisconnected) {
+          console.log(`[QA-Daemon] Skipping queued request for "${question}" (client disconnected while waiting in queue)`);
+          return;
+        }
 
         console.log(`[QA-Daemon] Starting agent run for question: "${question}" in ${repoDir}`);
         sendSSE('status', { stage: 'start', message: 'Agent initialized' });
@@ -309,7 +336,20 @@ const server = http.createServer(async (req, res) => {
         const effectiveThreadId = thread_id || session_id || undefined;
         const targetLanguage = language || 'zh-CN';
         const codeFilter = new CodeAntiLeakFilter(15);
-        const promptPrefix = `[系统指令：请必须使用中文（zh-CN）回答。为了保障代码安全，禁止直接输出完整源码文件或超过15行的长代码块，请只提供核心逻辑说明和简短片段。]\n\n`;
+        let promptPrefix = `[系统指令：请必须使用中文（zh-CN）回答。为了保障代码安全，禁止直接输出完整源码文件或超过15行的长代码块，请只提供核心逻辑说明和简短片段。如果绘制 Mermaid 图表，请务必保证语法严谨（节点标签含有特殊字符、括号或空格时，请务必使用英文双引号括起，如 id["节点名称"]），确保图表正常解析。]\n\n`;
+
+        // If this is a multi-repo virtual project workspace, inject architecture context
+        const projectMetaPath = path.join(repoDir, '.project-meta.json');
+        if (fs.existsSync(projectMetaPath)) {
+          try {
+            const meta = JSON.parse(fs.readFileSync(projectMetaPath, 'utf-8'));
+            promptPrefix += `[微服务架构上下文：当前工作区为【${meta.name || meta.project_id}】多微服务虚拟项目，包含以下微服务组件：\n`;
+            for (const r of (meta.repos || [])) {
+              promptPrefix += `- 子目录 /${r.alias_name} (服务名: ${r.repo_name || r.repo_id}, 角色: ${r.role || 'service'})\n`;
+            }
+            promptPrefix += `若涉及跨服务调用链或业务全链路流程，请优先查阅 _project_hub/openwiki/ 下的系统全景拓扑与契约文档，并在适当时使用 Mermaid 绘制跨服务交互时序图。]\n\n`;
+          } catch {}
+        }
         let fullAnswer = '';
 
         try {
@@ -322,7 +362,9 @@ const server = http.createServer(async (req, res) => {
               language: targetLanguage,
               threadId: effectiveThreadId,
               onEvent: (event) => {
-                if (clientDisconnected) return;
+                if (clientDisconnected) {
+                  throw new Error('Client disconnected; aborting run to free worker queue');
+                }
                 touch();
 
                 if (event.type === 'text') {
@@ -362,8 +404,10 @@ const server = http.createServer(async (req, res) => {
             res.end();
           }
         } catch (runErr) {
-          console.error('[QA-Daemon] Agent execution error:', runErr);
-          if (!clientDisconnected) {
+          if (clientDisconnected) {
+            console.log('[QA-Daemon] Agent run aborted early because client disconnected');
+          } else {
+            console.error('[QA-Daemon] Agent execution error:', runErr);
             sendSSE('error', {
               error: runErr.message || String(runErr)
             });
@@ -384,18 +428,27 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-// Remove existing socket file if present
+// Ensure socket parent directory exists and remove existing stale socket file if present
 try {
+  const socketDir = path.dirname(socketPath);
+  if (socketDir && !fs.existsSync(socketDir)) {
+    fs.mkdirSync(socketDir, { recursive: true });
+  }
   if (fs.existsSync(socketPath)) {
     fs.unlinkSync(socketPath);
   }
 } catch (err) {
-  console.warn(`[QA-Daemon] Notice: could not remove previous socket ${socketPath}:`, err.message);
+  console.warn(`[QA-Daemon] Notice: could not prepare socket path ${socketPath}:`, err.message);
 }
 
 // Handle signals
 process.on('SIGINT', () => cleanupAndExit(0));
 process.on('SIGTERM', () => cleanupAndExit(0));
+
+server.on('error', (err) => {
+  console.error(`[QA-Daemon] Server error on UDS ${socketPath}:`, err);
+  process.exit(1);
+});
 
 server.listen(socketPath, () => {
   console.log(`[QA-Daemon] Worker listening on UDS ${socketPath} (Repo: ${repoDir}, TTL: ${ttlSeconds}s)`);

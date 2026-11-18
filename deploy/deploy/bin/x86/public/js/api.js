@@ -69,15 +69,17 @@ window.API = {
   },
 
   // Fetch QA Chat Log History (for Audit Page history.html)
-  async getQASessions(repoID) {
-    const res = await fetch(`/portal/sessions?repo_id=${encodeURIComponent(repoID)}`);
+  async getQASessions(id, isProject = false) {
+    const param = isProject ? `project_id=${encodeURIComponent(id)}` : `repo_id=${encodeURIComponent(id)}`;
+    const res = await fetch(`/portal/sessions?${param}`);
     if (!res.ok) throw new Error('无法获取问答历史 (' + res.status + ')');
     return await res.json();
   },
 
-  // Fetch user QA sessions for a repo
-  async getUserQASessions(repoID) {
-    const res = await fetch(`/portal/qa/sessions?repo_id=${encodeURIComponent(repoID)}`);
+  // Fetch user QA sessions for a repo or project
+  async getUserQASessions(id, isProject = false) {
+    const param = isProject ? `project_id=${encodeURIComponent(id)}` : `repo_id=${encodeURIComponent(id)}`;
+    const res = await fetch(`/portal/qa/sessions?${param}`);
     if (!res.ok) throw new Error('无法获取历史会话列表 (' + res.status + ')');
     return await res.json();
   },
@@ -97,6 +99,67 @@ window.API = {
     if (!res.ok) {
       const errText = await res.text();
       throw new Error(errText || '删除会话失败');
+    }
+    return await res.json();
+  },
+
+  // Fetch projects list via Portal proxy
+  async getProjects() {
+    const res = await fetch('/portal/projects');
+    if (!res.ok) throw new Error('无法获取项目列表 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // Create new project
+  async createProject(projectData) {
+    const res = await fetch('/portal/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(projectData)
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || '创建项目失败');
+    }
+    return await res.json();
+  },
+
+  // Update existing project
+  async updateProject(projectData) {
+    const res = await fetch('/portal/projects', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(projectData)
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || '更新项目失败');
+    }
+    return await res.json();
+  },
+
+  // Delete project
+  async deleteProject(projectId) {
+    const res = await fetch(`/portal/projects?id=${encodeURIComponent(projectId)}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || '删除项目失败');
+    }
+    return await res.json();
+  },
+
+  // Trigger project build
+  async triggerProjectBuild(projectId) {
+    const res = await fetch('/portal/projects/build', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId })
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || '触发项目构建失败');
     }
     return await res.json();
   },
@@ -147,5 +210,282 @@ window.API = {
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/\n/g, '<br>');
+  },
+
+  // Batch Import Repos
+  async batchImportRepos(data) {
+    const res = await fetch('/portal/repos/batch-import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || '批量导入失败');
+    }
+    return await res.json();
+  },
+
+  // Update Dynamic Concurrency
+  async updateBatchConcurrency(batchId, concurrency) {
+    const res = await fetch('/portal/batch/concurrency', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batch_id: batchId, concurrency: Number(concurrency) })
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || '调整并发失败');
+    }
+    return await res.json();
+  },
+
+  // Get Detailed Batch Status & ETA
+  async getBatchStatus(batchId) {
+    const url = batchId ? `/portal/batch/status?batch_id=${encodeURIComponent(batchId)}` : '/portal/batch/status';
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('无法获取批跑进度 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // Batch Control (start / pause / resume / cancel / disable-night-mode / retry-failed)
+  async controlBatch(batchId, action, payload = null) {
+    const opts = { method: 'POST' };
+    if (payload) {
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = JSON.stringify(payload);
+    }
+    const res = await fetch(`/portal/batch/${action}?batch_id=${encodeURIComponent(batchId)}`, opts);
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || `操作 ${action} 失败 (${res.status})`);
+    }
+    return await res.json();
+  },
+
+  // Fetch Daily Token Stats
+  async getDailyTokens(limit = 14) {
+    const res = await fetch(`/portal/telemetry/tokens/daily?limit=${limit}`);
+    if (!res.ok) throw new Error('无法获取Token消耗统计 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // Export Daily Tokens TSV (for Feishu)
+  async getTokensExportTSV() {
+    const res = await fetch('/portal/telemetry/tokens/export?format=tsv');
+    if (!res.ok) throw new Error('获取飞书导出数据失败 (' + res.status + ')');
+    return await res.text();
+  },
+
+  // Project Symlinks Health & Repair (Task 16)
+  async getProjectLinksHealth(projectId) {
+    const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/links/health`);
+    if (!res.ok) throw new Error('获取跨盘软链状态失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async repairProjectLinks(projectId) {
+    const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/links/repair`, {
+      method: 'POST'
+    });
+    if (!res.ok) throw new Error('修复跨盘软链失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // LLM Quota Settings (Task 17)
+  async getLLMQuota() {
+    const res = await fetch('/api/settings/llm-quota');
+    if (!res.ok) throw new Error('获取LLM配额设置失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async updateLLMQuota(quotaData) {
+    const res = await fetch('/api/settings/llm-quota', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(quotaData)
+    });
+    if (!res.ok) throw new Error('更新LLM配额失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async getGitCredentials() {
+    const res = await fetch('/api/settings/git-credentials');
+    if (!res.ok) {
+      let msg = '获取 Git 认证配置失败 (' + res.status + ')';
+      try {
+        const body = await res.json();
+        if (body && body.error) msg = body.error;
+      } catch (_) {}
+      throw new Error(msg);
+    }
+    return await res.json();
+  },
+
+  async updateGitCredentials(payload) {
+    const res = await fetch('/api/settings/git-credentials', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(body.error || '保存 Git 认证配置失败 (' + res.status + ')');
+    }
+    return body;
+  },
+
+  async testGitCredentials(payload) {
+    const res = await fetch('/api/settings/git-credentials/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(body.error || 'Git 认证测试失败 (' + res.status + ')');
+    }
+    return body;
+  },
+
+  // Storage Pool & Volumes (Task 17)
+  async getStorageVolumes() {
+    const res = await fetch('/api/storage/volumes');
+    if (!res.ok) throw new Error('获取存储卷列表失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async registerStorageVolume(data) {
+    const res = await fetch('/api/storage/volumes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err || '注册存储卷失败 (' + res.status + ')');
+    }
+    return await res.json();
+  },
+
+  async deleteStorageVolume(id) {
+    const res = await fetch(`/api/storage/volumes?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err || '删除存储卷失败 (' + res.status + ')');
+    }
+    return await res.json();
+  },
+
+  async getRebalancePlan() {
+    const res = await fetch('/api/storage/rebalance/plan');
+    if (!res.ok) throw new Error('生成均衡计划失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async executeMigration(migrationData) {
+    const res = await fetch('/api/storage/migrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(migrationData)
+    });
+    if (!res.ok) throw new Error('发起存储迁移失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // User RBAC & Business Domains (Task 17)
+  async getUsers() {
+    const res = await fetch('/portal/users');
+    if (!res.ok) throw new Error('获取用户列表失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async setUserRole(userId, role) {
+    const res = await fetch('/portal/users/role', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, role })
+    });
+    if (!res.ok) throw new Error('更新用户角色失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async grantDomain(userId, domain) {
+    const res = await fetch('/portal/users/grant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, business_domain: domain })
+    });
+    if (!res.ok) throw new Error('授权业务域失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async revokeDomain(userId, domain) {
+    const res = await fetch('/portal/users/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, business_domain: domain })
+    });
+    if (!res.ok) throw new Error('收回业务域失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // Business Domain Dictionary (configurable domain list)
+  async getDomains() {
+    const res = await fetch('/portal/domains');
+    if (!res.ok) throw new Error('获取业务域列表失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async createDomain(data) {
+    const res = await fetch('/portal/domains', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.error || ('创建业务域失败 (' + res.status + ')'));
+    }
+    return await res.json();
+  },
+
+  async updateDomain(data) {
+    const res = await fetch('/portal/domains', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) throw new Error('更新业务域失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async deleteDomain(id) {
+    const res = await fetch(`/portal/domains?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('删除业务域失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async getAuditLogs(limit = 50) {
+    const res = await fetch(`/portal/audit?limit=${limit}`);
+    if (!res.ok) throw new Error('获取审计日志失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  // Dedicated Log Disk Management (Task 17)
+  async getLogStats() {
+    const res = await fetch('/api/logs/stats');
+    if (!res.ok) throw new Error('获取日志盘状态失败 (' + res.status + ')');
+    return await res.json();
+  },
+
+  async cleanupLogs(cleanupData) {
+    const res = await fetch('/api/logs/cleanup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cleanupData)
+    });
+    if (!res.ok) throw new Error('清理日志失败 (' + res.status + ')');
+    return await res.json();
   }
 };

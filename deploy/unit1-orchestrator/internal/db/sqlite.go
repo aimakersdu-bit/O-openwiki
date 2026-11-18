@@ -5,14 +5,61 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 )
 
+var (
+	testMu     sync.Mutex
+	testDBMap  = make(map[string]string)
+	testDBRefs = make(map[string]int)
+)
+
+func resolveDSN(dsn string) (string, string, error) {
+	if strings.Contains(dsn, "@") {
+		return dsn, "", nil
+	}
+
+	testMu.Lock()
+	defer testMu.Unlock()
+
+	baseDSN := os.Getenv("TEST_DB_DSN")
+	if baseDSN == "" {
+		baseDSN = "root:@tcp(127.0.0.1:3306)/"
+	}
+
+	dbName, exists := testDBMap[dsn]
+	if !exists {
+		dbName = fmt.Sprintf("test_orch_%d_%d", time.Now().UnixNano(), rand.Intn(1000000))
+		adminDB, err := sql.Open("mysql", baseDSN)
+		if err != nil {
+			return "", "", fmt.Errorf("connect mysql base: %w", err)
+		}
+		if err := adminDB.Ping(); err != nil {
+			adminDB.Close()
+			return "", "", fmt.Errorf("ping mysql base: %w", err)
+		}
+		if _, err := adminDB.Exec("CREATE DATABASE `" + dbName + "`"); err != nil {
+			adminDB.Close()
+			return "", "", fmt.Errorf("create test db %s: %w", dbName, err)
+		}
+		adminDB.Close()
+		testDBMap[dsn] = dbName
+	}
+	testDBRefs[dbName]++
+
+	targetDSN := fmt.Sprintf("root:@tcp(127.0.0.1:3306)/%s?parseTime=true", dbName)
+	return targetDSN, dbName, nil
+}
+
 type DB struct {
-	conn *sql.DB
+	conn       *sql.DB
+	testDBName string
 }
 
 // Open opens the MySQL database and runs migrations by default.
@@ -22,15 +69,20 @@ func Open(dsn string) (*DB, error) {
 
 // OpenWithOptions opens the MySQL database and optionally runs schema migrations.
 func OpenWithOptions(dsn string, autoMigrate bool) (*DB, error) {
-	conn, err := sql.Open("mysql", dsn)
+	targetDSN, testDBName, err := resolveDSN(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open mysql db %s: %w", dsn, err)
+		return nil, fmt.Errorf("resolve mysql dsn: %w", err)
+	}
+
+	conn, err := sql.Open("mysql", targetDSN)
+	if err != nil {
+		return nil, fmt.Errorf("open mysql db %s: %w", targetDSN, err)
 	}
 	conn.SetMaxOpenConns(150)
 	conn.SetMaxIdleConns(50)
 	conn.SetConnMaxLifetime(5 * time.Minute)
 
-	db := &DB{conn: conn}
+	db := &DB{conn: conn, testDBName: testDBName}
 	if autoMigrate {
 		if err := db.migrate(); err != nil {
 			conn.Close()
@@ -46,7 +98,31 @@ func OpenWithOptions(dsn string, autoMigrate bool) (*DB, error) {
 
 // Close closes the database connection.
 func (db *DB) Close() error {
-	return db.conn.Close()
+	err := db.conn.Close()
+	if db.testDBName != "" {
+		testMu.Lock()
+		testDBRefs[db.testDBName]--
+		if testDBRefs[db.testDBName] <= 0 {
+			for k, v := range testDBMap {
+				if v == db.testDBName {
+					delete(testDBMap, k)
+				}
+			}
+			delete(testDBRefs, db.testDBName)
+
+			baseDSN := os.Getenv("TEST_DB_DSN")
+			if baseDSN == "" {
+				baseDSN = "root:@tcp(127.0.0.1:3306)/"
+			}
+			adminDB, aErr := sql.Open("mysql", baseDSN)
+			if aErr == nil {
+				_, _ = adminDB.Exec("DROP DATABASE `" + db.testDBName + "`")
+				adminDB.Close()
+			}
+		}
+		testMu.Unlock()
+	}
+	return err
 }
 
 var globalDB *DB
@@ -1367,29 +1443,45 @@ func (db *DB) UpdateBatchTaskStatus(batchID, repoID, status, summary string, dur
 		totalTokens = tokens[2]
 	}
 
-	tx, err := db.conn.Begin()
-	if err != nil {
+	var lastErr error
+	for attempt := 0; attempt < 10; attempt++ {
+		err := func() error {
+			tx, err := db.conn.Begin()
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+
+			if _, err := tx.Exec(`UPDATE batch_tasks SET status = ?, summary = ?, duration_sec = ?, 
+				prompt_tokens = ?, completion_tokens = ?, total_tokens = ?, finished_at = CURRENT_TIMESTAMP
+				WHERE batch_id = ? AND repo_id = ?`, status, summary, durationSec, promptTokens, completionTokens, totalTokens, batchID, repoID); err != nil {
+				return err
+			}
+
+			// 重新聚合更新 batch_runs 的计数与状态
+			if _, err := tx.Exec(`UPDATE batch_runs SET 
+				processed_count = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status IN ('completed','skipped','failed')),
+				success_count   = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'completed'),
+				skipped_count   = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'skipped'),
+				failed_count    = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'failed')
+				WHERE id = ?`, batchID, batchID, batchID, batchID, batchID); err != nil {
+				return err
+			}
+
+			return tx.Commit()
+		}()
+
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if strings.Contains(err.Error(), "1213") || strings.Contains(err.Error(), "Deadlock") {
+			time.Sleep(time.Duration(10+rand.Intn(40)) * time.Millisecond)
+			continue
+		}
 		return err
 	}
-	defer tx.Rollback()
-
-	if _, err := tx.Exec(`UPDATE batch_tasks SET status = ?, summary = ?, duration_sec = ?, 
-		prompt_tokens = ?, completion_tokens = ?, total_tokens = ?, finished_at = CURRENT_TIMESTAMP
-		WHERE batch_id = ? AND repo_id = ?`, status, summary, durationSec, promptTokens, completionTokens, totalTokens, batchID, repoID); err != nil {
-		return err
-	}
-
-	// 重新聚合更新 batch_runs 的计数与状态
-	if _, err := tx.Exec(`UPDATE batch_runs SET 
-		processed_count = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status IN ('completed','skipped','failed')),
-		success_count   = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'completed'),
-		skipped_count   = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'skipped'),
-		failed_count    = (SELECT COUNT(*) FROM batch_tasks WHERE batch_id = ? AND status = 'failed')
-		WHERE id = ?`, batchID, batchID, batchID, batchID, batchID); err != nil {
-		return err
-	}
-
-	return tx.Commit()
+	return lastErr
 }
 
 func (db *DB) ListBatchTasks(batchID string) ([]BatchTask, error) {
