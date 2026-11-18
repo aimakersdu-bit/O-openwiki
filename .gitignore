@@ -33,3 +33,7 @@ portal.db
 portal.db-*
 orchestrator.db
 orchestrator.db-*
+deploy/bin_*
+deploy/openwiki-deploy-package.tar.gz
+deploy/deploy/
+
