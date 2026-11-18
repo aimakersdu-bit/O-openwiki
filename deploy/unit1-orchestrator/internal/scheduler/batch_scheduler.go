@@ -47,13 +47,14 @@ type BatchScheduler struct {
 	cancelFunc       context.CancelFunc
 	pauseCond        *sync.Cond
 	isPaused         bool
-	windowStartHour  int
-	windowEndHour    int
-	throttleCap      int
-	throttleUntil    time.Time
-	throttleCooldown time.Duration
-	nowFunc          func() time.Time
-	onBatchCompleted func(batchID string, tasks []db.BatchTask)
+	windowStartHour     int
+	windowEndHour       int
+	throttleCap         int
+	throttleUntil       time.Time
+	throttleCooldown    time.Duration
+	autoThrottleEnabled bool
+	nowFunc             func() time.Time
+	onBatchCompleted    func(batchID string, tasks []db.BatchTask)
 }
 
 // SetOnBatchCompleted registers a callback invoked once all tasks in a batch finish.
@@ -66,14 +67,15 @@ func (bs *BatchScheduler) SetOnBatchCompleted(fn func(batchID string, tasks []db
 // NewBatchScheduler constructs a new BatchScheduler.
 func NewBatchScheduler(database *db.DB, pipeline *BuildPipeline, limiter *DynamicRateLimiter) *BatchScheduler {
 	bs := &BatchScheduler{
-		db:               database,
-		pipeline:         pipeline,
-		limiter:          limiter,
-		activeSlots:      make(map[int]*WorkerSlotInfo),
-		windowStartHour:  22,
-		windowEndHour:    7,
-		throttleCooldown: 10 * time.Minute,
-		nowFunc:          time.Now,
+		db:                  database,
+		pipeline:            pipeline,
+		limiter:             limiter,
+		activeSlots:         make(map[int]*WorkerSlotInfo),
+		windowStartHour:     22,
+		windowEndHour:       7,
+		throttleCooldown:    10 * time.Minute,
+		autoThrottleEnabled: true,
+		nowFunc:             time.Now,
 	}
 	bs.pauseCond = sync.NewCond(&bs.mu)
 	_, _ = bs.RecoverInterruptedTasks()
@@ -112,11 +114,35 @@ func (bs *BatchScheduler) ClearAutoThrottle() {
 	bs.throttleUntil = time.Time{}
 }
 
+// SetAutoThrottleEnabled enables or disables automatic concurrency downgrade upon 429 errors.
+func (bs *BatchScheduler) SetAutoThrottleEnabled(enabled bool) {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	bs.autoThrottleEnabled = enabled
+	if !enabled {
+		bs.throttleCap = 0
+		bs.throttleUntil = time.Time{}
+	}
+}
+
+// IsAutoThrottleEnabled returns whether automatic 429 concurrency throttling is enabled.
+func (bs *BatchScheduler) IsAutoThrottleEnabled() bool {
+	bs.mu.RLock()
+	defer bs.mu.RUnlock()
+	return bs.autoThrottleEnabled
+}
+
 // RecordAutoThrottle steps down concurrency by 1 (minimum 1) and locks a recovery cooldown
 // so ApplyDayNightConcurrency will not immediately reset it back to the configured ceiling.
+// If auto-throttle is disabled (e.g. user chose slot-only limit), concurrency is held unchanged.
 func (bs *BatchScheduler) RecordAutoThrottle() int {
 	bs.mu.Lock()
 	cur := bs.limiter.GetConcurrency()
+	if !bs.autoThrottleEnabled {
+		bs.mu.Unlock()
+		log.Printf("[batch_scheduler] Upstream 429 received, but auto-throttle is disabled. Concurrency held at %d.", cur)
+		return cur
+	}
 	nextConc := cur - 1
 	if nextConc < 1 {
 		nextConc = 1
@@ -434,6 +460,51 @@ func (bs *BatchScheduler) runBatchLoop(ctx context.Context, batchID string) {
 	}()
 
 	log.Printf("[batch_scheduler][%s] Loop started", batchID)
+
+	stopHeartbeat := make(chan struct{})
+	defer close(stopHeartbeat)
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				bs.mu.RLock()
+				runningBatch := bs.runningBatchID
+				paused := bs.isPaused
+				activeSlotsCopy := make([]WorkerSlotInfo, 0, len(bs.activeSlots))
+				for _, info := range bs.activeSlots {
+					activeSlotsCopy = append(activeSlotsCopy, *info)
+				}
+				bs.mu.RUnlock()
+
+				totalSlots, busySlots, idleSlots := bs.limiter.GetSlotStats()
+				pendingCount := 0
+				if bs.db != nil && runningBatch != "" {
+					if ts, err := bs.db.ListBatchTasks(runningBatch); err == nil {
+						for _, t := range ts {
+							if t.Status == "pending" {
+								pendingCount++
+							}
+						}
+					}
+				}
+
+				log.Printf("[batch_scheduler][%s] Heartbeat: slots total=%d busy=%d idle=%d | active_workers=%d pending_tasks=%d paused=%v",
+					batchID, totalSlots, busySlots, idleSlots, len(activeSlotsCopy), pendingCount, paused)
+
+				for _, info := range activeSlotsCopy {
+					elapsed := time.Since(info.StartedAt).Round(time.Second)
+					log.Printf("[batch_scheduler][%s] Slot %d is running repo %s (branch: %s, stage: %s, elapsed: %v)",
+						batchID, info.SlotID, info.RepoID, info.Branch, info.Stage, elapsed)
+				}
+			case <-stopHeartbeat:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	for {
 		select {

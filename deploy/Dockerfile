@@ -22,9 +22,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 全局安装 openwiki CLI 并建立软链接
+# 2. 复制本地打包的最新 openwiki CLI (v0.5.4) 并全局安装
+COPY openwiki-0.5.4.tgz /tmp/openwiki.tgz
 RUN npm config set registry https://registry.npmmirror.com && \
-    npm install -g openwiki@0.5.1 && \
+    npm install -g /tmp/openwiki.tgz && \
+    rm -f /tmp/openwiki.tgz && \
     ln -sfn $(npm root -g)/openwiki/dist /app/dist
 
 # 3. 创建持久化数据目录与应用目录结构

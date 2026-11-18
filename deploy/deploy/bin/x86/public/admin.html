@@ -87,11 +87,12 @@
 
         <!-- Dynamic Concurrency Heat Adjustment Slider -->
         <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; border-top: 1px solid var(--border-color, #334155); padding-top: 1rem;">
-          <div style="display: flex; align-items: center; gap: 1rem; flex: 1; min-width: 280px;">
+          <div style="display: flex; align-items: center; gap: 0.75rem; flex: 1; min-width: 300px;">
             <label for="concurrencySlider" style="font-weight: 500; font-size: 0.9rem; color: var(--text-primary, #f8fafc); white-space: nowrap;">
-              ⚡ 动态并发限流控制: <span id="concurrencyVal" style="color: #3b82f6; font-size: 1.1rem; font-weight: bold;">2</span>
+              ⚡ 动态并发限流 (Slot 1~100): <span id="concurrencyVal" style="color: #3b82f6; font-size: 1.1rem; font-weight: bold;">2</span>
             </label>
-            <input type="range" id="concurrencySlider" min="1" max="8" value="2" style="flex: 1; cursor: pointer;" />
+            <input type="range" id="concurrencySlider" min="1" max="100" value="2" style="flex: 1; cursor: pointer;" />
+            <input type="number" id="concurrencyInput" min="1" max="100" value="2" style="width: 65px; padding: 0.25rem 0.4rem; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); text-align: center; font-size: 0.9rem;" title="直接输入并发 Slot 数 (1-100)" />
             <button id="applyConcurrencyBtn" class="btn btn-primary btn-sm">实时应用</button>
           </div>
           <div id="slotIndicators" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
@@ -363,12 +364,12 @@
             <input type="number" id="quotaMaxRPM" min="0" step="10" placeholder="例如 120">
           </div>
           <div class="form-group">
-            <label for="quotaDayConcurrency">白天并发构建数 (07:00 ~ 22:00)</label>
-            <input type="number" id="quotaDayConcurrency" min="1" max="16" placeholder="例如 2">
+            <label for="quotaDayConcurrency">白天并发构建数 (07:00 ~ 22:00, 最大100)</label>
+            <input type="number" id="quotaDayConcurrency" min="1" max="100" placeholder="例如 2">
           </div>
           <div class="form-group">
-            <label for="quotaNightConcurrency">夜间并发构建数 (22:00 ~ 07:00)</label>
-            <input type="number" id="quotaNightConcurrency" min="1" max="16" placeholder="例如 4">
+            <label for="quotaNightConcurrency">夜间并发构建数 (22:00 ~ 07:00, 最大100)</label>
+            <input type="number" id="quotaNightConcurrency" min="1" max="100" placeholder="例如 4">
           </div>
           <div class="form-group">
             <label for="quotaLLMTimeoutSec">单次 LLM 请求超时 (秒，默认 600s=10分钟)</label>
@@ -378,13 +379,32 @@
             <label for="quotaLLMMaxRetries">网关 429/502 最大重试次数</label>
             <input type="number" id="quotaLLMMaxRetries" min="0" max="20" step="1" placeholder="例如 6">
           </div>
+          <div class="form-group">
+            <label for="quotaBuildTimeoutSec">单仓构建硬超时 (秒，默认 10800s=3小时，0=不限)</label>
+            <input type="number" id="quotaBuildTimeoutSec" min="0" step="60" placeholder="例如 10800">
+          </div>
+          <div class="form-group">
+            <label for="quotaStreamIdleTimeoutSec">流式读取空闲超时 (秒，默认 300s=5分钟)</label>
+            <input type="number" id="quotaStreamIdleTimeoutSec" min="10" max="3600" step="10" placeholder="例如 300">
+          </div>
+          <div class="form-group" style="display:flex; flex-direction:column; justify-content:center;">
+            <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin-top:0.5rem; font-weight:500;">
+              <input type="checkbox" id="quotaAutoThrottleEnabled" checked style="width:16px; height:16px;">
+              遇到 429 自动降并发 (解除限制时推荐关闭)
+            </label>
+          </div>
         </div>
 
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border-color, #334155);">
           <div style="font-size: 0.85rem; color: var(--text-secondary, #94a3b8);" id="quotaStatusText">
             近 60 分钟拦截与自适应降级次数: <span id="quotaThrottledCount" style="color: #f59e0b; font-weight: bold;">0</span> 次
           </div>
-          <button type="submit" class="btn btn-primary">💾 保存并实时下发配额</button>
+          <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+            <button type="button" id="unlimitQuotaBtn" class="btn btn-warning" style="background: #f59e0b; color: #0f172a; font-weight: 700; border: none; padding: 0.55rem 1.1rem; border-radius: 6px; cursor: pointer;">
+              🚀 一键解除所有 LLM 配额限制 (不限 TPM/RPM)
+            </button>
+            <button type="submit" class="btn btn-primary">💾 保存并实时下发配额</button>
+          </div>
         </div>
       </form>
     </section>

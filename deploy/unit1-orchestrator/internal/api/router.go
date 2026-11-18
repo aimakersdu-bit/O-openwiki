@@ -112,14 +112,27 @@ func NewServer(cfg *config.Config, sched *scheduler.Scheduler, pool *qa.Pool, ma
 					s.llmProxy.SetMaxRetries(retries)
 				}
 			}
+
+			idleTimeoutStr, _ := database.GetSetting("stream_idle_timeout_sec", "300")
+			if sec, err := strconv.Atoi(idleTimeoutStr); err == nil && sec > 0 {
+				s.llmProxy.SetStreamIdleTimeout(time.Duration(sec) * time.Second)
+			}
 		}
 		if sched != nil && sched.GetBatchScheduler() != nil {
+			autoThrottleStr, _ := database.GetSetting("auto_throttle_enabled", "true")
+			sched.GetBatchScheduler().SetAutoThrottleEnabled(autoThrottleStr != "false" && autoThrottleStr != "0")
 			sched.GetBatchScheduler().ApplyDayNightConcurrency(time.Now())
 		}
 	}
 
 	if sched != nil && sched.GetBuilder() != nil {
 		sched.GetBuilder().SetLLMTimeoutSec(effectiveTimeoutSec)
+		if database := s.getDB(); database != nil {
+			buildTimeoutStr, _ := database.GetSetting("build_timeout_sec", "10800")
+			if sec, err := strconv.Atoi(buildTimeoutStr); err == nil && sec >= 0 {
+				sched.GetBuilder().SetBuildTimeoutSec(sec)
+			}
+		}
 	}
 
 	if sched != nil && sched.GetBatchScheduler() != nil {
@@ -348,6 +361,22 @@ func (s *Server) handleLLMQuota(w http.ResponseWriter, r *http.Request) {
 			llmProxyMaxRetries = 6
 		}
 
+		streamIdleTimeoutSec := 300
+		idleTimeoutStr, _ := database.GetSetting("stream_idle_timeout_sec", "300")
+		if sec, err := strconv.Atoi(idleTimeoutStr); err == nil && sec > 0 {
+			streamIdleTimeoutSec = sec
+		}
+		buildTimeoutSec := 10800
+		buildTimeoutStr, _ := database.GetSetting("build_timeout_sec", "10800")
+		if sec, err := strconv.Atoi(buildTimeoutStr); err == nil && sec >= 0 {
+			buildTimeoutSec = sec
+		}
+		autoThrottleEnabled := true
+		autoThrottleStr, _ := database.GetSetting("auto_throttle_enabled", "true")
+		if autoThrottleStr == "false" || autoThrottleStr == "0" {
+			autoThrottleEnabled = false
+		}
+
 		var curTPM, curRPM, peakTPM, peakRPM, count429, count502 int
 		if s.llmProxy != nil {
 			curTPM, curRPM, peakTPM, peakRPM = s.llmProxy.GetLimiter().GetStats()
@@ -356,38 +385,55 @@ func (s *Server) handleLLMQuota(w http.ResponseWriter, r *http.Request) {
 			if s.llmProxy.GetTimeout() > 0 {
 				llmTimeoutSec = int(s.llmProxy.GetTimeout().Seconds())
 			}
+			if s.llmProxy.GetStreamIdleTimeout() > 0 {
+				streamIdleTimeoutSec = int(s.llmProxy.GetStreamIdleTimeout().Seconds())
+			}
 			llmProxyMaxRetries = s.llmProxy.GetMaxRetries()
+		}
+		if s.scheduler != nil {
+			if b := s.scheduler.GetBuilder(); b != nil {
+				buildTimeoutSec = b.GetBuildTimeoutSec()
+			}
+			if bs := s.scheduler.GetBatchScheduler(); bs != nil {
+				autoThrottleEnabled = bs.IsAutoThrottleEnabled()
+			}
 		}
 
 		resp := map[string]interface{}{
-			"max_tpm":               maxTPM,
-			"max_rpm":               maxRPM,
-			"current_tpm":           curTPM,
-			"current_rpm":           curRPM,
-			"peak_tpm":              peakTPM,
-			"peak_rpm":              peakRPM,
-			"rate_limit_429_count":  count429,
-			"throttled_retries":     count429,
-			"upstream_502_count":    count502,
-			"day_max_concurrency":   dayConc,
-			"day_concurrency":       dayConc,
-			"night_max_concurrency": nightConc,
-			"night_concurrency":     nightConc,
-			"llm_timeout_sec":       llmTimeoutSec,
-			"llm_proxy_max_retries": llmProxyMaxRetries,
+			"max_tpm":                 maxTPM,
+			"max_rpm":                 maxRPM,
+			"current_tpm":             curTPM,
+			"current_rpm":             curRPM,
+			"peak_tpm":                peakTPM,
+			"peak_rpm":                peakRPM,
+			"rate_limit_429_count":    count429,
+			"throttled_retries":       count429,
+			"upstream_502_count":      count502,
+			"day_max_concurrency":     dayConc,
+			"day_concurrency":         dayConc,
+			"night_max_concurrency":   nightConc,
+			"night_concurrency":       nightConc,
+			"llm_timeout_sec":         llmTimeoutSec,
+			"llm_proxy_max_retries":   llmProxyMaxRetries,
+			"stream_idle_timeout_sec": streamIdleTimeoutSec,
+			"build_timeout_sec":       buildTimeoutSec,
+			"auto_throttle_enabled":   autoThrottleEnabled,
 		}
 		json.NewEncoder(w).Encode(resp)
 
 	case http.MethodPut, http.MethodPost:
 		var req struct {
-			MaxTPM              *int `json:"max_tpm"`
-			MaxRPM              *int `json:"max_rpm"`
-			DayMaxConcurrency   *int `json:"day_max_concurrency"`
-			NightMaxConcurrency *int `json:"night_max_concurrency"`
-			DayConcurrency      *int `json:"day_concurrency"`
-			NightConcurrency    *int `json:"night_concurrency"`
-			LLMTimeoutSec       *int `json:"llm_timeout_sec"`
-			LLMProxyMaxRetries  *int `json:"llm_proxy_max_retries"`
+			MaxTPM                *int  `json:"max_tpm"`
+			MaxRPM                *int  `json:"max_rpm"`
+			DayMaxConcurrency     *int  `json:"day_max_concurrency"`
+			NightMaxConcurrency   *int  `json:"night_max_concurrency"`
+			DayConcurrency        *int  `json:"day_concurrency"`
+			NightConcurrency      *int  `json:"night_concurrency"`
+			LLMTimeoutSec         *int  `json:"llm_timeout_sec"`
+			LLMProxyMaxRetries    *int  `json:"llm_proxy_max_retries"`
+			StreamIdleTimeoutSec  *int  `json:"stream_idle_timeout_sec"`
+			BuildTimeoutSec       *int  `json:"build_timeout_sec"`
+			AutoThrottleEnabled   *bool `json:"auto_throttle_enabled"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
@@ -396,6 +442,14 @@ func (s *Server) handleLLMQuota(w http.ResponseWriter, r *http.Request) {
 
 		if req.LLMTimeoutSec != nil && (*req.LLMTimeoutSec < 10 || *req.LLMTimeoutSec > 3600) {
 			http.Error(w, `{"error":"llm_timeout_sec must be between 10 and 3600 seconds"}`, http.StatusBadRequest)
+			return
+		}
+		if req.StreamIdleTimeoutSec != nil && (*req.StreamIdleTimeoutSec < 10 || *req.StreamIdleTimeoutSec > 3600) {
+			http.Error(w, `{"error":"stream_idle_timeout_sec must be between 10 and 3600 seconds"}`, http.StatusBadRequest)
+			return
+		}
+		if req.BuildTimeoutSec != nil && *req.BuildTimeoutSec < 0 {
+			http.Error(w, `{"error":"build_timeout_sec cannot be negative"}`, http.StatusBadRequest)
 			return
 		}
 		if req.LLMProxyMaxRetries != nil && (*req.LLMProxyMaxRetries < 0 || *req.LLMProxyMaxRetries > 20) {
@@ -414,17 +468,44 @@ func (s *Server) handleLLMQuota(w http.ResponseWriter, r *http.Request) {
 			dayConc = req.DayConcurrency
 		}
 		if dayConc != nil {
-			_ = database.SetSetting("day_max_concurrency", strconv.Itoa(*dayConc))
+			val := *dayConc
+			if val < 1 {
+				val = 1
+			}
+			if val > 100 {
+				val = 100
+			}
+			_ = database.SetSetting("day_max_concurrency", strconv.Itoa(val))
 		}
 		nightConc := req.NightMaxConcurrency
 		if nightConc == nil {
 			nightConc = req.NightConcurrency
 		}
 		if nightConc != nil {
-			_ = database.SetSetting("night_max_concurrency", strconv.Itoa(*nightConc))
+			val := *nightConc
+			if val < 1 {
+				val = 1
+			}
+			if val > 100 {
+				val = 100
+			}
+			_ = database.SetSetting("night_max_concurrency", strconv.Itoa(val))
 		}
 		if req.LLMTimeoutSec != nil {
 			_ = database.SetSetting("llm_timeout_sec", strconv.Itoa(*req.LLMTimeoutSec))
+		}
+		if req.StreamIdleTimeoutSec != nil {
+			_ = database.SetSetting("stream_idle_timeout_sec", strconv.Itoa(*req.StreamIdleTimeoutSec))
+		}
+		if req.BuildTimeoutSec != nil {
+			_ = database.SetSetting("build_timeout_sec", strconv.Itoa(*req.BuildTimeoutSec))
+		}
+		if req.AutoThrottleEnabled != nil {
+			valStr := "true"
+			if !*req.AutoThrottleEnabled {
+				valStr = "false"
+			}
+			_ = database.SetSetting("auto_throttle_enabled", valStr)
 		}
 		if req.LLMProxyMaxRetries != nil {
 			_ = database.SetSetting("llm_proxy_max_retries", strconv.Itoa(*req.LLMProxyMaxRetries))
@@ -440,14 +521,25 @@ func (s *Server) handleLLMQuota(w http.ResponseWriter, r *http.Request) {
 			if req.LLMTimeoutSec != nil {
 				s.llmProxy.SetTimeout(time.Duration(*req.LLMTimeoutSec) * time.Second)
 			}
+			if req.StreamIdleTimeoutSec != nil {
+				s.llmProxy.SetStreamIdleTimeout(time.Duration(*req.StreamIdleTimeoutSec) * time.Second)
+			}
 			if req.LLMProxyMaxRetries != nil {
 				s.llmProxy.SetMaxRetries(*req.LLMProxyMaxRetries)
 			}
 		}
-		if req.LLMTimeoutSec != nil && s.scheduler != nil && s.scheduler.GetBuilder() != nil {
-			s.scheduler.GetBuilder().SetLLMTimeoutSec(*req.LLMTimeoutSec)
+		if s.scheduler != nil && s.scheduler.GetBuilder() != nil {
+			if req.LLMTimeoutSec != nil {
+				s.scheduler.GetBuilder().SetLLMTimeoutSec(*req.LLMTimeoutSec)
+			}
+			if req.BuildTimeoutSec != nil {
+				s.scheduler.GetBuilder().SetBuildTimeoutSec(*req.BuildTimeoutSec)
+			}
 		}
 		if s.scheduler != nil && s.scheduler.GetBatchScheduler() != nil {
+			if req.AutoThrottleEnabled != nil {
+				s.scheduler.GetBatchScheduler().SetAutoThrottleEnabled(*req.AutoThrottleEnabled)
+			}
 			if dayConc != nil || nightConc != nil {
 				s.scheduler.GetBatchScheduler().ClearAutoThrottle()
 			}

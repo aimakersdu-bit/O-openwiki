@@ -73,6 +73,9 @@ func (s *Server) handleBatchImport(w http.ResponseWriter, r *http.Request) {
 	if req.Concurrency <= 0 {
 		req.Concurrency = 2
 	}
+	if req.Concurrency > 100 {
+		req.Concurrency = 100
+	}
 
 	batchID := fmt.Sprintf("batch_%d", time.Now().UnixNano())
 	database := s.getDB()
@@ -458,6 +461,9 @@ func (s *Server) handleBatchConcurrency(w http.ResponseWriter, r *http.Request) 
 
 	if req.Concurrency < 1 {
 		req.Concurrency = 1
+	}
+	if req.Concurrency > 100 {
+		req.Concurrency = 100
 	}
 
 	if s.scheduler != nil && s.scheduler.GetBatchScheduler() != nil {

@@ -364,6 +364,7 @@ function renderReader(id) {
             `<div class="md">${html}</div>` +
             back;
     rewriteLinks(n);
+    rewriteImages(n);
     renderMermaid();
     $("#detail").scrollTop = 0;
     $("#detail")
@@ -398,6 +399,29 @@ function rewriteLinks(node) {
             });
         }
     });
+}
+/**
+ * Ensure relative image paths in markdown render correctly regardless of whether
+ * they are relative to the doc's directory (e.g. knowledge/_assets/) or the wiki root.
+ */
+function rewriteImages(node) {
+    const dir = node.id.includes("/")
+        ? node.id.slice(0, node.id.lastIndexOf("/"))
+        : "";
+    $("#detail")
+        .querySelectorAll(".md img")
+        .forEach((img) => {
+            const rawSrc = img.getAttribute("src") ?? "";
+            if (!rawSrc || rawSrc.startsWith("http://") || rawSrc.startsWith("https://") || rawSrc.startsWith("/") || rawSrc.startsWith("data:")) {
+                return;
+            }
+            img.onerror = () => {
+                if (dir && !rawSrc.startsWith(dir + "/")) {
+                    img.onerror = null;
+                    img.src = dir + "/" + rawSrc;
+                }
+            };
+        });
 }
 /**
  * Upgrade fenced mermaid code blocks in the reader into rendered diagrams.

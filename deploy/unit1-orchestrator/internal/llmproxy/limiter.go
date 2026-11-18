@@ -2,6 +2,7 @@ package llmproxy
 
 import (
 	"context"
+	"log"
 	"sync"
 	"time"
 )
@@ -58,6 +59,11 @@ func (l *TPMRateLimiter) SetQuota(maxTPM, maxRPM int) {
 	defer l.mu.Unlock()
 	l.maxTPM = maxTPM
 	l.maxRPM = maxRPM
+	if maxTPM <= 0 && maxRPM <= 0 {
+		log.Printf("[LLMProxy][Limiter] Quota limits disabled (maxTPM=0, maxRPM=0). Requests bypass rate limiting directly.")
+	} else {
+		log.Printf("[LLMProxy][Limiter] Quota updated: maxTPM=%d, maxRPM=%d", maxTPM, maxRPM)
+	}
 }
 
 // GetQuota returns the currently configured TPM and RPM quotas.
@@ -100,6 +106,9 @@ func (l *TPMRateLimiter) currentTokens() int {
 	for _, r := range l.records {
 		sum += r.Tokens
 	}
+	if sum < 0 {
+		sum = 0
+	}
 	return sum
 }
 
@@ -133,7 +142,10 @@ func (l *TPMRateLimiter) Acquire(ctx context.Context, estimatedTokens int) error
 		curTPM := l.currentTokens()
 
 		rpmBlocked := l.maxRPM > 0 && curRPM >= l.maxRPM
-		tpmBlocked := l.maxTPM > 0 && (curTPM+estimatedTokens) > l.maxTPM
+		// When curTPM <= 0 (window empty), even if estimatedTokens > maxTPM,
+		// we MUST admit the request to prevent permanent deadlock on prompts larger than maxTPM.
+		// Future requests will then wait until the window clears.
+		tpmBlocked := l.maxTPM > 0 && (curTPM+estimatedTokens) > l.maxTPM && curTPM > 0
 
 		if !rpmBlocked && !tpmBlocked {
 			// Acquired
@@ -147,7 +159,7 @@ func (l *TPMRateLimiter) Acquire(ctx context.Context, estimatedTokens int) error
 		}
 
 		// Calculate wait time
-		var waitTime time.Duration = 10 * time.Millisecond
+		var waitTime time.Duration = 100 * time.Millisecond
 		if len(l.records) > 0 {
 			if rpmBlocked {
 				// Wait for the oldest record to expire
@@ -156,21 +168,31 @@ func (l *TPMRateLimiter) Acquire(ctx context.Context, estimatedTokens int) error
 					waitTime = diff
 				}
 			} else if tpmBlocked {
-				// Find how many records must expire to accommodate estimatedTokens
-				freed := 0
 				targetFreed := (curTPM + estimatedTokens) - l.maxTPM
-				for _, r := range l.records {
-					freed += r.Tokens
-					expireAt := r.Timestamp.Add(60 * time.Second)
+				if targetFreed >= curTPM {
+					// Wait for the latest record in the window to expire
+					expireAt := l.records[len(l.records)-1].Timestamp.Add(60 * time.Second)
 					if diff := expireAt.Sub(now); diff > waitTime {
 						waitTime = diff
 					}
-					if freed >= targetFreed {
-						break
+				} else {
+					freed := 0
+					for _, r := range l.records {
+						freed += r.Tokens
+						expireAt := r.Timestamp.Add(60 * time.Second)
+						if diff := expireAt.Sub(now); diff > waitTime {
+							waitTime = diff
+						}
+						if freed >= targetFreed {
+							break
+						}
 					}
 				}
 			}
 		}
+
+		log.Printf("[LLMProxy][Limiter] Rate limited: curTPM=%d/%d, curRPM=%d/%d, reqTokens=%d (rpmBlocked=%v, tpmBlocked=%v); waiting %v",
+			curTPM, l.maxTPM, curRPM, l.maxRPM, estimatedTokens, rpmBlocked, tpmBlocked, waitTime)
 
 		l.mu.Unlock()
 

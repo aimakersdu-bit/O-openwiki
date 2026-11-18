@@ -1337,6 +1337,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const batchFailedList = document.getElementById('batchFailedList');
   const retryAllFailedPanelBtn = document.getElementById('retryAllFailedPanelBtn');
   const concurrencySlider = document.getElementById('concurrencySlider');
+  const concurrencyInput = document.getElementById('concurrencyInput');
   const concurrencyVal = document.getElementById('concurrencyVal');
   const applyConcurrencyBtn = document.getElementById('applyConcurrencyBtn');
   const slotIndicators = document.getElementById('slotIndicators');
@@ -1367,20 +1368,32 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Concurrency slider sync
+  // Concurrency slider & direct input sync
   if (concurrencySlider) {
     concurrencySlider.addEventListener('input', () => {
       concurrencyVal.textContent = concurrencySlider.value;
+      if (concurrencyInput) concurrencyInput.value = concurrencySlider.value;
+    });
+  }
+  if (concurrencyInput) {
+    concurrencyInput.addEventListener('input', () => {
+      let val = Number(concurrencyInput.value);
+      if (val < 1) val = 1;
+      if (val > 100) val = 100;
+      concurrencyVal.textContent = val;
+      if (concurrencySlider) concurrencySlider.value = val;
     });
   }
 
   // Apply Concurrency Button
   if (applyConcurrencyBtn) {
     applyConcurrencyBtn.addEventListener('click', async () => {
-      const c = Number(concurrencySlider.value);
+      let c = Number(concurrencyInput ? concurrencyInput.value : concurrencySlider.value);
+      if (isNaN(c) || c < 1) c = 1;
+      if (c > 100) c = 100;
       try {
         await API.updateBatchConcurrency(activeBatchId, c);
-        showAlert(`并发已动态调整为 ${c} 并实时生效！`, 'success');
+        showAlert(`并发已动态调整为 ${c} (最大100) 并实时生效！`, 'success');
         refreshBatchStatus();
       } catch (err) {
         showAlert(`调整并发失败: ${err.message}`, 'error');
@@ -1655,6 +1668,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Concurrency Slider Sync
       if (run.max_concurrency) {
         concurrencySlider.value = run.max_concurrency;
+        if (concurrencyInput) concurrencyInput.value = run.max_concurrency;
         concurrencyVal.textContent = run.max_concurrency;
       }
 
@@ -1726,7 +1740,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         activeMap[s.slot_id] = s;
       });
 
-      const totalSlots = Number(concurrencySlider.value) || 2;
+      const totalSlots = Number(concurrencyInput ? concurrencyInput.value : concurrencySlider.value) || 2;
+      let idleCount = 0;
       for (let i = 0; i < totalSlots; i++) {
         const slot = activeMap[i];
         if (slot) {
@@ -1736,11 +1751,20 @@ document.addEventListener('DOMContentLoaded', async () => {
               <strong>[Slot ${i}]</strong> ${API.escapeHTML(slot.repo_id)} (${slot.stage} ${slot.elapsed_sec}s)
             </div>`;
         } else {
-          slotHTML += `
-            <div style="background: rgba(148, 163, 184, 0.1); border: 1px solid #475569; color: #94a3b8; padding: 0.35rem 0.65rem; border-radius: 4px; font-size: 0.8rem;">
-              <strong>[Slot ${i}]</strong> 空闲
-            </div>`;
+          idleCount++;
+          if (totalSlots <= 16) {
+            slotHTML += `
+              <div style="background: rgba(148, 163, 184, 0.1); border: 1px solid #475569; color: #94a3b8; padding: 0.35rem 0.65rem; border-radius: 4px; font-size: 0.8rem;">
+                <strong>[Slot ${i}]</strong> 空闲
+              </div>`;
+          }
         }
+      }
+      if (totalSlots > 16 && idleCount > 0) {
+        slotHTML += `
+          <div style="background: rgba(148, 163, 184, 0.1); border: 1px solid #475569; color: #94a3b8; padding: 0.35rem 0.65rem; border-radius: 4px; font-size: 0.8rem;">
+            <strong>[空闲槽位]</strong> 剩余 ${idleCount} / ${totalSlots} 个空闲可用
+          </div>`;
       }
       slotIndicators.innerHTML = slotHTML;
 
@@ -1843,6 +1867,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (timeoutEl) timeoutEl.value = q.llm_timeout_sec ?? 600;
       const retriesEl = document.getElementById('quotaLLMMaxRetries');
       if (retriesEl) retriesEl.value = q.llm_proxy_max_retries ?? 6;
+      const buildTimeoutEl = document.getElementById('quotaBuildTimeoutSec');
+      if (buildTimeoutEl) buildTimeoutEl.value = q.build_timeout_sec ?? 10800;
+      const idleTimeoutEl = document.getElementById('quotaStreamIdleTimeoutSec');
+      if (idleTimeoutEl) idleTimeoutEl.value = q.stream_idle_timeout_sec ?? 300;
+      const autoThrottleEl = document.getElementById('quotaAutoThrottleEnabled');
+      if (autoThrottleEl) autoThrottleEl.checked = (q.auto_throttle_enabled !== false);
       const count429 = q.rate_limit_429_count ?? q.throttled_retries ?? 0;
       const count502 = q.upstream_502_count ?? 0;
       const statusEl = document.getElementById('quotaStatusText');
@@ -1863,6 +1893,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const nightConc = Number(document.getElementById('quotaNightConcurrency').value);
         const timeoutEl = document.getElementById('quotaLLMTimeoutSec');
         const retriesEl = document.getElementById('quotaLLMMaxRetries');
+        const buildTimeoutEl = document.getElementById('quotaBuildTimeoutSec');
+        const idleTimeoutEl = document.getElementById('quotaStreamIdleTimeoutSec');
+        const autoThrottleEl = document.getElementById('quotaAutoThrottleEnabled');
         const payload = {
           max_tpm: Number(document.getElementById('quotaMaxTPM').value),
           max_rpm: Number(document.getElementById('quotaMaxRPM').value),
@@ -1877,11 +1910,76 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (retriesEl && retriesEl.value !== '') {
           payload.llm_proxy_max_retries = Number(retriesEl.value);
         }
+        if (buildTimeoutEl && buildTimeoutEl.value !== '') {
+          payload.build_timeout_sec = Number(buildTimeoutEl.value);
+        }
+        if (idleTimeoutEl && idleTimeoutEl.value !== '') {
+          payload.stream_idle_timeout_sec = Number(idleTimeoutEl.value);
+        }
+        if (autoThrottleEl) {
+          payload.auto_throttle_enabled = autoThrottleEl.checked;
+        }
         await API.updateLLMQuota(payload);
         showAlert('LLM 算力配额、超时与日夜并发已成功实时生效！', 'success');
         loadLLMQuota();
       } catch (err) {
         alert('更新配额失败: ' + err.message);
+      }
+    });
+  }
+
+  // One-click unlimit all LLM quotas (TPM=0, RPM=0, auto_throttle=false)
+  const unlimitQuotaBtn = document.getElementById('unlimitQuotaBtn');
+  if (unlimitQuotaBtn) {
+    unlimitQuotaBtn.addEventListener('click', async () => {
+      const confirmMsg = '确定一键解除所有 LLM 配额限制吗？\n\n生效后：\n1. 每分钟 Token 数 (TPM) 设为 0 (不限)\n2. 每分钟请求数 (RPM) 设为 0 (不限)\n3. 限流排队将被彻底放开，仅受 Slot 槽位数并发限制\n4. 自动关闭 429 降并发保护，防止槽位被偷偷降到 1。';
+      if (!confirm(confirmMsg)) return;
+
+      try {
+        let dayConc = Number(document.getElementById('quotaDayConcurrency').value);
+        let nightConc = Number(document.getElementById('quotaNightConcurrency').value);
+        if (isNaN(dayConc) || dayConc < 1) {
+          dayConc = Number(concurrencyInput ? concurrencyInput.value : concurrencySlider.value) || 2;
+        }
+        if (isNaN(nightConc) || nightConc < 1) {
+          nightConc = dayConc;
+        }
+        const timeoutEl = document.getElementById('quotaLLMTimeoutSec');
+        const retriesEl = document.getElementById('quotaLLMMaxRetries');
+        const buildTimeoutEl = document.getElementById('quotaBuildTimeoutSec');
+        const idleTimeoutEl = document.getElementById('quotaStreamIdleTimeoutSec');
+        const autoThrottleEl = document.getElementById('quotaAutoThrottleEnabled');
+
+        document.getElementById('quotaMaxTPM').value = 0;
+        document.getElementById('quotaMaxRPM').value = 0;
+        if (autoThrottleEl) autoThrottleEl.checked = false;
+
+        const payload = {
+          max_tpm: 0,
+          max_rpm: 0,
+          day_max_concurrency: dayConc,
+          night_max_concurrency: nightConc,
+          day_concurrency: dayConc,
+          night_concurrency: nightConc,
+          auto_throttle_enabled: false
+        };
+        if (timeoutEl && timeoutEl.value !== '') {
+          payload.llm_timeout_sec = Number(timeoutEl.value);
+        }
+        if (retriesEl && retriesEl.value !== '') {
+          payload.llm_proxy_max_retries = Number(retriesEl.value);
+        }
+        if (buildTimeoutEl && buildTimeoutEl.value !== '') {
+          payload.build_timeout_sec = Number(buildTimeoutEl.value);
+        }
+        if (idleTimeoutEl && idleTimeoutEl.value !== '') {
+          payload.stream_idle_timeout_sec = Number(idleTimeoutEl.value);
+        }
+        await API.updateLLMQuota(payload);
+        showAlert('🚀 已成功解除所有 LLM 配额限制！TPM/RPM 已彻底放开 (0=不限)，429 降并发已关闭，全力按 Slot 并发跑批！', 'success');
+        loadLLMQuota();
+      } catch (err) {
+        alert('解除限制失败: ' + err.message);
       }
     });
   }

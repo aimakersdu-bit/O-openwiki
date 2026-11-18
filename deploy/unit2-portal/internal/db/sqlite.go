@@ -32,8 +32,8 @@ func InitDBWithOptions(dsn string, autoMigrate bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
-	DB.SetMaxOpenConns(25)
-	DB.SetMaxIdleConns(10)
+	DB.SetMaxOpenConns(150)
+	DB.SetMaxIdleConns(50)
 	DB.SetConnMaxLifetime(5 * time.Minute)
 
 	if !autoMigrate {

@@ -1,7 +1,7 @@
 package scheduler
 
 import (
-	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -34,6 +34,9 @@ type Builder struct {
 	LLMBaseURL      string // optional base URL for internal LLM proxy
 	LLMTimeoutSec   int    // configured per-request LLM timeout in seconds (default 600)
 	OpenwikiModel   string // configured default model id (e.g. "glm-5.2")
+
+	buildTimeoutSec int  // hard cap per openwiki CLI invocation (0 = unlimited)
+	buildTimeoutSet bool // whether buildTimeoutSec was explicitly configured
 }
 
 // NewBuilder creates a new Builder instance.
@@ -274,6 +277,8 @@ func (b *Builder) createOpenWikiCmdWithHome(buildID int64, taskHomeDir, repoPath
 	}
 	// Avoid 30s PostHog shutdown timeout hangs in private / air-gapped environments unless explicitly configured.
 	env = setEnvIfUnset(env, "OPENWIKI_TELEMETRY_DISABLED", "1")
+	// Enable verbose CLI diagnostic logs for evidence in private / air-gapped environments
+	env = setEnvIfUnset(env, "OPENWIKI_DEBUG", "1")
 
 	cmd.Env = env
 
@@ -340,6 +345,12 @@ func (b *Builder) BuildRepoWithBuildID(buildID int64, repoID, repoPath, wikiDir 
 
 // BuildRepoWithMode runs the build pipeline for a repository according to the specified BuildMode.
 func (b *Builder) BuildRepoWithMode(buildID int64, repoID, repoPath, wikiDir string, mode BuildMode, onProgress ...func(string)) *BuildResult {
+	return b.BuildRepoWithModeCtx(context.Background(), buildID, repoID, repoPath, wikiDir, mode, onProgress...)
+}
+
+// BuildRepoWithModeCtx is BuildRepoWithMode with cancellation: cancelling ctx (e.g. CancelBatch)
+// kills the running openwiki CLI process group.
+func (b *Builder) BuildRepoWithModeCtx(ctx context.Context, buildID int64, repoID, repoPath, wikiDir string, mode BuildMode, onProgress ...func(string)) *BuildResult {
 	var logBuf strings.Builder
 	result := &BuildResult{}
 
@@ -404,12 +415,7 @@ func (b *Builder) BuildRepoWithMode(buildID int64, repoID, repoPath, wikiDir str
 		if _, err := os.Stat(wikiDir); os.IsNotExist(err) {
 			b.logStep(repoID, fmt.Sprintf("=== Step 0: openwiki code --init --print --language %s ===", lang), &logBuf, onProgress...)
 			cmdInit := b.createOpenWikiCmdWithHome(buildID, taskHomeDir, repoPath, "code", "--init", "--print", "--language", lang)
-			var stdoutInit, stderrInit bytes.Buffer
-			cmdInit.Stdout = &stdoutInit
-			cmdInit.Stderr = &stderrInit
-			if err := cmdInit.Run(); err != nil {
-				msg := fmt.Sprintf("init stdout: %s\ninit stderr: %s\nopenwiki init failed: %v", stdoutInit.String(), stderrInit.String(), err)
-				b.logStep(repoID, msg, &logBuf, onProgress...)
+			if err := b.runCommandWithStreaming(ctx, cmdInit, repoID, &logBuf, onProgress...); err != nil {
 				result.Log = logBuf.String()
 				result.Error = fmt.Sprintf("openwiki init failed: %v", err)
 				b.logStep(repoID, "ERROR: "+result.Error, &logBuf, onProgress...)
@@ -439,16 +445,11 @@ func (b *Builder) BuildRepoWithMode(buildID int64, repoID, repoPath, wikiDir str
 	} else {
 		b.logStep(repoID, fmt.Sprintf("=== Step 1: openwiki code --update --print --language %s ===", lang), &logBuf, onProgress...)
 		cmd := b.createOpenWikiCmdWithHome(buildID, taskHomeDir, repoPath, "code", "--update", "--print", "--language", lang)
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			msg := fmt.Sprintf("stdout: %s\nstderr: %s", stdout.String(), stderr.String())
-			b.logStep(repoID, msg, &logBuf, onProgress...)
+		if err := b.runCommandWithStreaming(ctx, cmd, repoID, &logBuf, onProgress...); err != nil {
 			result.Error = fmt.Sprintf("openwiki update failed: %v", err)
 			b.logStep(repoID, "WARNING: "+result.Error+" (continuing with offline graph export & static site release to ensure custom knowledge docs are published)", &logBuf, onProgress...)
 		} else {
-			b.logStep(repoID, fmt.Sprintf("stdout: %s\nopenwiki update completed successfully", stdout.String()), &logBuf, onProgress...)
+			b.logStep(repoID, "openwiki update completed successfully", &logBuf, onProgress...)
 		}
 	}
 
@@ -594,7 +595,6 @@ func (b *Builder) exportGraph(wikiDir, staticDir string, log *strings.Builder) e
 	_ = os.Chmod(graphFile, 0644)
 	return nil
 }
-
 
 // patchClientJS post-processes the visualizer client.js for static SPA export:
 //  1. Rewrites fetch("/api/graph") and EventSource("/events") to relative URLs
@@ -851,9 +851,86 @@ func (b *Builder) copyKnowledgeAssets(wikiDir, staticDir string, log *strings.Bu
 			if err := copyFile(path, dst); err == nil {
 				log.WriteString(fmt.Sprintf("  copied knowledge asset %s\n", rel))
 			}
+			// If asset is inside knowledge/ subdirectory, also copy to staticDir root
+			// so relative Markdown links like `_assets/foo.png` in docs resolve cleanly.
+			relWithoutKnowledge := strings.TrimPrefix(rel, "knowledge"+string(filepath.Separator))
+			if relWithoutKnowledge != rel {
+				dstRoot := filepath.Join(staticDir, relWithoutKnowledge)
+				_ = os.MkdirAll(filepath.Dir(dstRoot), 0755)
+				_ = copyFile(path, dstRoot)
+			}
 		}
 		return nil
 	})
+}
+
+// requiredStaticFiles lists the static-site assets that must exist for a repo's
+// visualizer page to render. Missing any one means the previous build never
+// completed its static-export phase.
+var requiredStaticFiles = []string{
+	"index.html",
+	"client.js",
+	"client-lib.js",
+	"api/graph",
+	"vendor/force-graph.min.js",
+	"vendor/marked.min.js",
+	"vendor/dompurify.min.js",
+	"vendor/mermaid.min.js",
+}
+
+// IsStaticOutputComplete reports whether the deployed static site for repoID has
+// all required assets. It is used by the pipeline to decide whether a "no git
+// updates" run may safely skip rebuilding, or whether a prior build left the
+// static output missing/incomplete and must be regenerated.
+func (b *Builder) IsStaticOutputComplete(repoID string) bool {
+	staticDir := filepath.Join(b.StaticOutputDir, repoID)
+	return isStaticDirComplete(staticDir)
+}
+
+// isStaticDirComplete checks that staticDir exists and contains every required
+// asset file. It is separated from IsStaticOutputComplete so it can be unit
+// tested without constructing a full Builder.
+func isStaticDirComplete(staticDir string) bool {
+	if info, err := os.Stat(staticDir); err != nil || !info.IsDir() {
+		return false
+	}
+	for _, rel := range requiredStaticFiles {
+		if _, err := os.Stat(filepath.Join(staticDir, rel)); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// IsWikiComplete reports whether the wiki directory for a repo contains at least
+// one Markdown document, indicating that a prior openwiki init/update produced
+// real wiki content rather than leaving the directory empty/absent.
+func (b *Builder) IsWikiComplete(wikiDir string) bool {
+	return isWikiDirComplete(wikiDir)
+}
+
+// isWikiDirComplete returns true when wikiDir exists and contains at least one
+// .md file (recursively). Separated for unit testing.
+func isWikiDirComplete(wikiDir string) bool {
+	if wikiDir == "" {
+		return false
+	}
+	info, err := os.Stat(wikiDir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	found := false
+	_ = filepath.Walk(wikiDir, func(path string, fi os.FileInfo, err error) error {
+		if err != nil || fi == nil || fi.IsDir() {
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(path), ".md") {
+			found = true
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return found
 }
 
 // ExportActiveGraph re-exports api/graph for the currently active deployed version of a repo (used after QA creates/updates wiki docs).

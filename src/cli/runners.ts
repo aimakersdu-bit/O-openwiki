@@ -258,6 +258,15 @@ export async function runPrintCommand(
     const handlePrintEvent = (event: OpenWikiRunEvent): void => {
       if (event.type === "text" && event.source !== "subgraph") {
         output.push(event.text);
+      } else if (event.type === "tool_start") {
+        const timeStr = new Date().toISOString().substring(11, 19);
+        const callPreview = event.call && event.call.length > 200 ? event.call.slice(0, 200) + "...(truncated)" : event.call;
+        process.stderr.write(`[openwiki-tool][${timeStr}] Start: ${event.name} (call: ${callPreview})\n`);
+      } else if (event.type === "tool_end") {
+        const timeStr = new Date().toISOString().substring(11, 19);
+        process.stderr.write(`[openwiki-tool][${timeStr}] End: ${event.name} status=${event.status}\n`);
+      } else if (event.type === "debug") {
+        process.stderr.write(`[openwiki-debug] ${event.message}\n`);
       }
     };
 

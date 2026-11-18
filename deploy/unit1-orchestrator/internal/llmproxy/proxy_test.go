@@ -499,4 +499,71 @@ func TestErrorResponsePreservesJSONContentType(t *testing.T) {
 	}
 }
 
+func TestLimiterAdmitLargeRequestWhenWindowEmpty(t *testing.T) {
+	limiter := NewTPMRateLimiter(1000, 0)
+
+	// A request with 5000 tokens (larger than maxTPM 1000) MUST succeed when window is empty
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := limiter.Acquire(ctx, 5000)
+	if err != nil {
+		t.Fatalf("expected acquire for large prompt (5000 > 1000) to succeed when window empty, got: %v", err)
+	}
+
+	curTPM, _, _, _ := limiter.GetStats()
+	if curTPM != 5000 {
+		t.Fatalf("expected curTPM=5000, got %d", curTPM)
+	}
+
+	// Subsequent acquire must block until window clears
+	blockedCtx, blockedCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer blockedCancel()
+
+	err = limiter.Acquire(blockedCtx, 100)
+	if err == nil {
+		t.Fatal("expected subsequent acquire to block while window has 5000 tokens")
+	}
+}
+
+func TestStreamIdleTimeoutAbortsHungStream(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	mockRT := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		h := make(http.Header)
+		h.Set("Content-Type", "text/event-stream")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     h,
+			Body:       pr,
+		}, nil
+	})
+
+	proxy := NewLLMProxy("http://mock-upstream/v1", "key", nil, nil)
+	proxy.SetTransport(mockRT)
+	proxy.SetStreamIdleTimeout(50 * time.Millisecond)
+
+	// Write 1 chunk, then hang forever (simulate upstream silent stall)
+	go func() {
+		_, _ = pw.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"))
+		// Intentionally do not close or write anything further
+	}()
+
+	req := httptest.NewRequest("POST", "/internal/llm/v1/chat/completions", strings.NewReader(`{"stream":true}`))
+	w := httptest.NewRecorder()
+
+	start := time.Now()
+	proxy.ServeHTTP(w, req)
+	elapsed := time.Since(start)
+
+	// Must finish around 50ms, definitely not 2 hours!
+	if elapsed > 1*time.Second {
+		t.Fatalf("expected stream to abort within idle timeout (~50ms), took %v", elapsed)
+	}
+	if !strings.Contains(w.Body.String(), "first") {
+		t.Fatalf("expected first chunk forwarded, got %q", w.Body.String())
+	}
+}
+
 

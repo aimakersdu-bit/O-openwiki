@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -52,6 +53,7 @@ type LLMProxy struct {
 
 	client                *http.Client
 	responseHeaderTimeout time.Duration
+	streamIdleTimeout     time.Duration
 	baseBackoff           time.Duration
 	maxRetries            int
 	maxTransportRetries   int
@@ -84,6 +86,7 @@ func NewLLMProxy(upstreamURL, realAPIKey string, limiter *TPMRateLimiter, thrott
 		throttleCallback:      throttleCallback,
 		client:                &http.Client{Timeout: 0},
 		responseHeaderTimeout: DefaultLLMTimeout,
+		streamIdleTimeout:     180 * time.Second,
 		baseBackoff:           5 * time.Second,
 		maxRetries:            DefaultMaxRetries,
 		maxTransportRetries:   DefaultMaxTransportRetries,
@@ -114,6 +117,26 @@ func (p *LLMProxy) GetTimeout() time.Duration {
 		return DefaultLLMTimeout
 	}
 	return p.responseHeaderTimeout
+}
+
+// SetStreamIdleTimeout sets the idle timeout for streaming/reading upstream response bodies.
+func (p *LLMProxy) SetStreamIdleTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.streamIdleTimeout = d
+}
+
+// GetStreamIdleTimeout returns the configured idle timeout for response body reads (default 180s).
+func (p *LLMProxy) GetStreamIdleTimeout() time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.streamIdleTimeout <= 0 {
+		return 180 * time.Second
+	}
+	return p.streamIdleTimeout
 }
 
 // SetBaseBackoff sets the base backoff duration for retries (useful for tests).
@@ -312,26 +335,91 @@ func (p *LLMProxy) computeBackoff(attempt int, header http.Header) time.Duration
 	base := p.baseBackoff
 	p.mu.Unlock()
 
+	var backoff time.Duration
+
 	// Check Retry-After header
 	if header != nil {
 		if h := header.Get("Retry-After"); h != "" {
 			if sec, err := strconv.Atoi(strings.TrimSpace(h)); err == nil && sec >= 0 {
-				return time.Duration(sec) * time.Second
+				backoff = time.Duration(sec) * time.Second
 			}
 		}
-		if h := header.Get("x-ratelimit-reset-requests"); h != "" {
-			if d, err := time.ParseDuration(strings.TrimSpace(h)); err == nil && d > 0 {
-				return d
+		if backoff == 0 {
+			if h := header.Get("x-ratelimit-reset-requests"); h != "" {
+				if d, err := time.ParseDuration(strings.TrimSpace(h)); err == nil && d > 0 {
+					backoff = d
+				}
 			}
 		}
 	}
 
-	backoff := base * (1 << attempt)
-	if backoff > 60*time.Second {
-		backoff = 60 * time.Second
+	if backoff == 0 {
+		backoff = base * (1 << attempt)
+	}
+
+	// Always cap backoff to prevent proxy requests from stalling for hours on huge Retry-After
+	const maxBackoff = 60 * time.Second
+	if backoff > maxBackoff {
+		backoff = maxBackoff
 	}
 	jitter := time.Duration(rand.Intn(50)) * time.Millisecond
 	return backoff + jitter
+}
+
+// idleTimeoutReader wraps an io.ReadCloser and triggers a timeout if no bytes are read
+// within idleTimeout duration, aborting hung connections rather than waiting for OS TCP keepalive.
+type idleTimeoutReader struct {
+	r           io.ReadCloser
+	idleTimeout time.Duration
+	timer       *time.Timer
+	onTimeout   func()
+	closed      atomic.Bool
+	timedOut    atomic.Bool
+}
+
+func newIdleTimeoutReader(r io.ReadCloser, timeout time.Duration, onTimeout func()) *idleTimeoutReader {
+	tr := &idleTimeoutReader{
+		r:           r,
+		idleTimeout: timeout,
+		onTimeout:   onTimeout,
+	}
+	if timeout > 0 {
+		tr.timer = time.AfterFunc(timeout, func() {
+			tr.timedOut.Store(true)
+			if tr.onTimeout != nil {
+				tr.onTimeout()
+			}
+			_ = tr.r.Close()
+		})
+	}
+	return tr
+}
+
+func (tr *idleTimeoutReader) Read(p []byte) (n int, err error) {
+	n, err = tr.r.Read(p)
+	if tr.timer != nil && !tr.closed.Load() {
+		if !tr.timer.Stop() {
+			select {
+			case <-tr.timer.C:
+			default:
+			}
+		}
+		if err == nil {
+			tr.timer.Reset(tr.idleTimeout)
+		}
+	}
+	if tr.timedOut.Load() && (err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed)) {
+		return n, fmt.Errorf("idle timeout exceeded (%v elapsed without data from upstream)", tr.idleTimeout)
+	}
+	return n, err
+}
+
+func (tr *idleTimeoutReader) Close() error {
+	tr.closed.Store(true)
+	if tr.timer != nil {
+		tr.timer.Stop()
+	}
+	return tr.r.Close()
 }
 
 func (p *LLMProxy) doAttemptWithHeaderTimeout(parent context.Context, req *http.Request, headerTimeout time.Duration) (*http.Response, context.CancelFunc, bool, error) {
@@ -389,6 +477,8 @@ func ensureStreamUsageOption(body []byte) []byte {
 
 // ServeHTTP handles incoming OpenAI-compatible proxy requests.
 func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	reqID := fmt.Sprintf("%06d", rand.Intn(1000000))
+
 	// Parse BuildID from Authorization: Bearer ow-build-<buildID>
 	authHeader := r.Header.Get("Authorization")
 	var buildID string
@@ -405,6 +495,7 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var err error
 		bodyBytes, err = io.ReadAll(r.Body)
 		if err != nil {
+			log.Printf("[LLMProxy][%s][build %s] Error reading client request body: %v", reqID, buildID, err)
 			http.Error(w, fmt.Sprintf("read request body: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -416,12 +507,6 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	estTokens := len(bodyBytes) / 4
 	if len(bodyBytes) > 0 && estTokens == 0 {
 		estTokens = 1
-	}
-
-	// Rate limiter acquire
-	if err := p.limiter.Acquire(r.Context(), estTokens); err != nil {
-		http.Error(w, fmt.Sprintf("rate limit acquire error: %v", err), http.StatusTooManyRequests)
-		return
 	}
 
 	// Build target URL (and extract optional /build/<buildID>/ prefix from path)
@@ -446,6 +531,22 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetURL += "?" + r.URL.RawQuery
 	}
 
+	log.Printf("[LLMProxy][%s][build %s] --> %s %s (body=%d bytes, est_tokens=%d, stream=%v)",
+		reqID, buildID, r.Method, subPath, len(bodyBytes), estTokens, isStream)
+
+	// Rate limiter acquire
+	acqStart := time.Now()
+	if err := p.limiter.Acquire(r.Context(), estTokens); err != nil {
+		log.Printf("[LLMProxy][%s][build %s] Rate limit acquire rejected after %v: %v",
+			reqID, buildID, time.Since(acqStart), err)
+		http.Error(w, fmt.Sprintf("rate limit acquire error: %v", err), http.StatusTooManyRequests)
+		return
+	}
+	if time.Since(acqStart) > 50*time.Millisecond {
+		log.Printf("[LLMProxy][%s][build %s] Rate limit acquired after waiting %v",
+			reqID, buildID, time.Since(acqStart))
+	}
+
 	p.mu.Lock()
 	maxRetries := p.maxRetries
 	maxTransportRetries := p.maxTransportRetries
@@ -460,8 +561,10 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	transportRetries := 0
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		attemptStart := time.Now()
 		req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bytes.NewReader(bodyBytes))
 		if err != nil {
+			log.Printf("[LLMProxy][%s][build %s] Failed to create upstream request for %s: %v", reqID, buildID, targetURL, err)
 			http.Error(w, fmt.Sprintf("create upstream request: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -486,10 +589,16 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			req.Header.Del("Authorization")
 		}
 
+		log.Printf("[LLMProxy][%s][build %s] Upstream attempt %d/%d --> %s (stream=%v, header_timeout=%v)",
+			reqID, buildID, attempt+1, maxRetries+1, targetURL, isStream, headerTimeout)
+
 		resp, cancelAttempt, timedOut, err := p.doAttemptWithHeaderTimeout(r.Context(), req, headerTimeout)
 		if err != nil {
 			cancelAttempt()
+			ttfb := time.Since(attemptStart)
 			if r.Context().Err() != nil {
+				log.Printf("[LLMProxy][%s][build %s] Client context cancelled after %v on attempt %d/%d: %v",
+					reqID, buildID, ttfb, attempt+1, maxRetries+1, r.Context().Err())
 				return
 			}
 			p.record502()
@@ -501,7 +610,8 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if backoff > 5*time.Second {
 					backoff = 5 * time.Second
 				}
-				log.Printf("[LLMProxy] Upstream error on attempt %d/%d (timedOut=%v): %v; retrying in %v", attempt+1, maxRetries+1, timedOut, err, backoff)
+				log.Printf("[LLMProxy][%s][build %s] Upstream transport error on attempt %d/%d after %v (timedOut=%v): %v; retrying in %v",
+					reqID, buildID, attempt+1, maxRetries+1, ttfb, timedOut, err, backoff)
 				select {
 				case <-r.Context().Done():
 					return
@@ -509,17 +619,28 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
+			log.Printf("[LLMProxy][%s][build %s] Upstream transport failed permanently on attempt %d/%d after %v (timedOut=%v): %v",
+				reqID, buildID, attempt+1, maxRetries+1, ttfb, timedOut, err)
 			break
 		}
+
+		ttfb := time.Since(attemptStart)
+		contentType := resp.Header.Get("Content-Type")
+		log.Printf("[LLMProxy][%s][build %s] <-- Upstream responded in %v: HTTP %d (contentType=%q, attempt %d/%d)",
+			reqID, buildID, ttfb, resp.StatusCode, contentType, attempt+1, maxRetries+1)
 
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
 			p.record429(buildID)
 			if attempt == maxRetries {
+				log.Printf("[LLMProxy][%s][build %s] Reached max retries (%d) on HTTP %d; forwarding error to client",
+					reqID, buildID, maxRetries, resp.StatusCode)
 				defer cancelAttempt()
-				p.forwardResponse(w, resp, buildID, estTokens)
+				p.forwardResponse(w, resp, buildID, estTokens, reqID)
 				return
 			}
 			backoff := p.computeBackoff(attempt, resp.Header)
+			log.Printf("[LLMProxy][%s][build %s] Upstream returned HTTP %d on attempt %d/%d; sleeping %v before retry (Retry-After=%q)",
+				reqID, buildID, resp.StatusCode, attempt+1, maxRetries+1, backoff, resp.Header.Get("Retry-After"))
 			resp.Body.Close()
 			cancelAttempt()
 
@@ -539,7 +660,8 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if backoff > 10*time.Second {
 					backoff = 10 * time.Second
 				}
-				log.Printf("[LLMProxy] Upstream returned HTTP %d on attempt %d/%d; retrying in %v", resp.StatusCode, attempt+1, maxRetries+1, backoff)
+				log.Printf("[LLMProxy][%s][build %s] Upstream returned HTTP %d on attempt %d/%d; retrying in %v",
+					reqID, buildID, resp.StatusCode, attempt+1, maxRetries+1, backoff)
 				resp.Body.Close()
 				cancelAttempt()
 
@@ -550,57 +672,82 @@ func (p *LLMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
+			log.Printf("[LLMProxy][%s][build %s] Reached max transport retries on HTTP %d; forwarding error to client",
+				reqID, buildID, resp.StatusCode)
 			defer cancelAttempt()
-			p.forwardResponse(w, resp, buildID, estTokens)
+			p.forwardResponse(w, resp, buildID, estTokens, reqID)
 			return
 		}
 
-		// Normal non-retryable response
+		// Normal non-retryable response (200 OK, or client/server error 400/401/403/404/500)
 		p.reset429()
 		defer cancelAttempt()
-		p.forwardResponse(w, resp, buildID, estTokens)
+		p.forwardResponse(w, resp, buildID, estTokens, reqID)
 		return
 	}
 
 	if lastTimedOut || errors.Is(lastErr, context.DeadlineExceeded) {
+		log.Printf("[LLMProxy][%s][build %s] Upstream gateway timeout after %v: %v", reqID, buildID, headerTimeout, lastErr)
 		http.Error(w, fmt.Sprintf("upstream gateway timeout after %v: %v", headerTimeout, lastErr), http.StatusGatewayTimeout)
 		return
 	}
+	log.Printf("[LLMProxy][%s][build %s] Upstream proxy error: %v", reqID, buildID, lastErr)
 	http.Error(w, fmt.Sprintf("upstream proxy error: %v", lastErr), http.StatusBadGateway)
 }
 
-func (p *LLMProxy) forwardResponse(w http.ResponseWriter, resp *http.Response, buildID string, estTokens int) {
+func (p *LLMProxy) forwardResponse(w http.ResponseWriter, resp *http.Response, buildID string, estTokens int, reqID string) {
 	defer resp.Body.Close()
 
+	start := time.Now()
 	contentType := resp.Header.Get("Content-Type")
 
 	// 1. Streaming response (SSE): 仅当 200 OK 且明确为 text/event-stream 时走流式通道
 	if resp.StatusCode == http.StatusOK && strings.Contains(strings.ToLower(contentType), "text/event-stream") {
-		p.forwardSSE(w, resp, buildID, estTokens)
+		p.forwardSSE(w, resp, buildID, estTokens, reqID)
 		return
 	}
 
 	// 2. Non-streaming JSON, error status (400/401/429/500), or other response:
-	// 读取并保真透传，保留原始 HTTP 状态码与 Content-Type，严禁篡改为 text/event-stream
-	body, err := io.ReadAll(resp.Body)
+	// 使用 idleTimeoutReader 防止私有环境网络挂起无休止等待 TCP keepalive (2小时)
+	idleTimeout := p.GetStreamIdleTimeout()
+	tr := newIdleTimeoutReader(resp.Body, idleTimeout, func() {
+		log.Printf("[LLMProxy][%s][build %s] Upstream response body read stalled for %v; aborting",
+			reqID, buildID, idleTimeout)
+	})
+	defer tr.Close()
+
+	body, err := io.ReadAll(tr)
 	if err != nil {
+		log.Printf("[LLMProxy][%s][build %s] Error reading upstream response body: %v", reqID, buildID, err)
 		http.Error(w, fmt.Sprintf("read upstream response: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	// Extract tokens if JSON and 200 OK
+	var tokenData struct {
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
 	if strings.Contains(contentType, "application/json") && resp.StatusCode == http.StatusOK {
-		var tokenData struct {
-			Usage struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-				TotalTokens      int `json:"total_tokens"`
-			} `json:"usage"`
-		}
 		if err := json.Unmarshal(body, &tokenData); err == nil && tokenData.Usage.TotalTokens > 0 {
 			p.AddTokens(buildID, tokenData.Usage.PromptTokens, tokenData.Usage.CompletionTokens, tokenData.Usage.TotalTokens)
 			p.limiter.RecordRealUsage(estTokens, tokenData.Usage.TotalTokens)
 		}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		log.Printf("[LLMProxy][%s][build %s] Non-streaming 200 OK completed in %v (body=%d bytes, tokens=%d)",
+			reqID, buildID, time.Since(start), len(body), tokenData.Usage.TotalTokens)
+	} else {
+		preview := strings.TrimSpace(string(body))
+		if len(preview) > 300 {
+			preview = preview[:300] + "...(truncated)"
+		}
+		log.Printf("[LLMProxy][%s][build %s] Upstream returned non-200 HTTP %d (%v): %s",
+			reqID, buildID, resp.StatusCode, time.Since(start), preview)
 	}
 
 	// Copy headers
@@ -616,7 +763,7 @@ func (p *LLMProxy) forwardResponse(w http.ResponseWriter, resp *http.Response, b
 	w.Write(body)
 }
 
-func (p *LLMProxy) forwardSSE(w http.ResponseWriter, resp *http.Response, buildID string, estTokens int) {
+func (p *LLMProxy) forwardSSE(w http.ResponseWriter, resp *http.Response, buildID string, estTokens int, reqID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -640,14 +787,31 @@ func (p *LLMProxy) forwardSSE(w http.ResponseWriter, resp *http.Response, buildI
 	w.WriteHeader(resp.StatusCode)
 	flusher.Flush()
 
-	scanner := bufio.NewScanner(resp.Body)
+	// 使用 idleTimeoutReader 防止私有环境网络在流式生成中途静默中断挂死 2 小时
+	idleTimeout := p.GetStreamIdleTimeout()
+	tr := newIdleTimeoutReader(resp.Body, idleTimeout, func() {
+		log.Printf("[LLMProxy][%s][build %s] Upstream SSE stream idle timeout (%v without data); aborting stream",
+			reqID, buildID, idleTimeout)
+	})
+	defer tr.Close()
+
+	scanner := bufio.NewScanner(tr)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	var streamTotalTokens int
 	var streamPromptTokens int
 	var streamCompletionTokens int
 
+	streamStart := time.Now()
+	var firstTokenAt time.Time
+	lineCount := 0
+
 	for scanner.Scan() {
 		line := scanner.Text()
+		lineCount++
+		if firstTokenAt.IsZero() && strings.TrimSpace(line) != "" {
+			firstTokenAt = time.Now()
+			log.Printf("[LLMProxy][%s][build %s] SSE first chunk received in %v (TTFT)", reqID, buildID, firstTokenAt.Sub(streamStart))
+		}
 		fmt.Fprintf(w, "%s\n", line)
 		flusher.Flush()
 
@@ -677,8 +841,13 @@ func (p *LLMProxy) forwardSSE(w http.ResponseWriter, resp *http.Response, buildI
 		}
 	}
 
+	streamDuration := time.Since(streamStart)
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
-		log.Printf("[LLMProxy] SSE scanner error for build %s: %v", buildID, err)
+		log.Printf("[LLMProxy][%s][build %s] SSE stream closed with error after %v (%d lines received): %v",
+			reqID, buildID, streamDuration, lineCount, err)
+	} else {
+		log.Printf("[LLMProxy][%s][build %s] SSE stream completed in %v (%d lines): prompt=%d, completion=%d, total=%d",
+			reqID, buildID, streamDuration, lineCount, streamPromptTokens, streamCompletionTokens, streamTotalTokens)
 	}
 
 	if streamTotalTokens > 0 {

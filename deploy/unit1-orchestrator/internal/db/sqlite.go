@@ -26,8 +26,8 @@ func OpenWithOptions(dsn string, autoMigrate bool) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open mysql db %s: %w", dsn, err)
 	}
-	conn.SetMaxOpenConns(25)
-	conn.SetMaxIdleConns(10)
+	conn.SetMaxOpenConns(150)
+	conn.SetMaxIdleConns(50)
 	conn.SetConnMaxLifetime(5 * time.Minute)
 
 	db := &DB{conn: conn}

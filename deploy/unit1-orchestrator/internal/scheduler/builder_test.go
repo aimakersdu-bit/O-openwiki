@@ -1,11 +1,14 @@
 package scheduler
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestPatchClientJS_GraphFetchRewritten(t *testing.T) {
@@ -466,5 +469,142 @@ func TestBuilderTaskHomeLifecycle_SuccessDeletes_FailurePreserves(t *testing.T) 
 	}
 }
 
+func TestRunCommandWithStreamingAndTimeout(t *testing.T) {
+	b := &Builder{}
+	var logBuf strings.Builder
 
+	// Test 1: Successful command with real-time streaming
+	cmd := exec.Command("sh", "-c", "echo 'line 1' && echo 'line 2' >&2 && echo 'line 3'")
+	var progressSnapshots []string
+	err := b.runCommandWithStreaming(context.Background(), cmd, "test-stream", &logBuf, func(s string) {
+		progressSnapshots = append(progressSnapshots, s)
+	})
+	if err != nil {
+		t.Fatalf("expected command to succeed, got %v", err)
+	}
+	out := logBuf.String()
+	if !strings.Contains(out, "line 1") || !strings.Contains(out, "line 2") || !strings.Contains(out, "line 3") {
+		t.Fatalf("expected all stdout/stderr lines in logBuf, got %q", out)
+	}
+	if len(progressSnapshots) == 0 {
+		t.Fatalf("expected onProgress callbacks during streaming")
+	}
 
+	// Test 2: Timeout kills hanging command
+	t.Setenv("OPENWIKI_BUILD_TIMEOUT_SEC", "1")
+	var timeoutLog strings.Builder
+	cmdHang := exec.Command("sh", "-c", "echo 'starting' && sleep 10 && echo 'finished'")
+	start := time.Now()
+	errHang := b.runCommandWithStreaming(context.Background(), cmdHang, "test-hang", &timeoutLog)
+	elapsed := time.Since(start)
+
+	if errHang == nil {
+		t.Fatal("expected hanging command to time out and return error")
+	}
+	if elapsed >= 5*time.Second {
+		t.Fatalf("expected timeout in ~1s, took %v", elapsed)
+	}
+	if !strings.Contains(timeoutLog.String(), "timed out after") {
+		t.Fatalf("expected timeout message in log, got %q", timeoutLog.String())
+	}
+}
+
+func TestIsStaticDirComplete(t *testing.T) {
+	tmp := t.TempDir()
+	repoStatic := filepath.Join(tmp, "static", "org/repo-x")
+
+	// Empty: not complete
+	if isStaticDirComplete(repoStatic) {
+		t.Fatal("expected incomplete when dir missing")
+	}
+
+	// Create the directory and all required files
+	requiredFiles := []string{
+		"index.html", "client.js", "client-lib.js", "api/graph",
+		"vendor/force-graph.min.js", "vendor/marked.min.js",
+		"vendor/dompurify.min.js", "vendor/mermaid.min.js",
+	}
+	for _, rel := range requiredFiles {
+		full := filepath.Join(repoStatic, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !isStaticDirComplete(repoStatic) {
+		t.Fatal("expected complete when all required files present")
+	}
+
+	// Remove one required file -> incomplete again
+	if err := os.Remove(filepath.Join(repoStatic, "api/graph")); err != nil {
+		t.Fatal(err)
+	}
+	if isStaticDirComplete(repoStatic) {
+		t.Fatal("expected incomplete after removing api/graph")
+	}
+}
+
+func TestIsWikiDirComplete(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Missing dir
+	if isWikiDirComplete(filepath.Join(tmp, "nope")) {
+		t.Fatal("expected false for missing wiki dir")
+	}
+
+	// Empty dir (no md)
+	emptyDir := filepath.Join(tmp, "empty-wiki")
+	if err := os.MkdirAll(emptyDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if isWikiDirComplete(emptyDir) {
+		t.Fatal("expected false for wiki dir with no markdown")
+	}
+
+	// Dir with a .md file
+	wikiDir := filepath.Join(tmp, "wiki")
+	nested := filepath.Join(wikiDir, "architecture")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "overview.md"), []byte("# Overview"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wikiDir, "notes.txt"), []byte("ignore"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !isWikiDirComplete(wikiDir) {
+		t.Fatal("expected true when wiki dir contains at least one .md file")
+	}
+}
+
+func TestIsStaticOutputCompleteViaBuilder(t *testing.T) {
+	tmp := t.TempDir()
+	b := NewBuilder("openwiki", "", "", tmp)
+
+	// No static dir yet
+	if b.IsStaticOutputComplete("org/repo-y") {
+		t.Fatal("expected false before any static output exists")
+	}
+
+	// Populate required files
+	repoStatic := filepath.Join(tmp, "org/repo-y")
+	for _, rel := range []string{
+		"index.html", "client.js", "client-lib.js", "api/graph",
+		"vendor/force-graph.min.js", "vendor/marked.min.js",
+		"vendor/dompurify.min.js", "vendor/mermaid.min.js",
+	} {
+		full := filepath.Join(repoStatic, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !b.IsStaticOutputComplete("org/repo-y") {
+		t.Fatal("expected true after populating all required static assets")
+	}
+}

@@ -145,6 +145,7 @@ func (p *BuildPipeline) ExecuteWithMode(ctx context.Context, repo *db.Repo, forc
 	}()
 
 	startTime := time.Now()
+	log.Printf("[pipeline][%s] Starting build %d on slot %d (branch: %s, mode: %s)", repo.ID, buildID, slot, repo.Branch, mode)
 	var logBuf strings.Builder
 	logBuf.WriteString(fmt.Sprintf("=== Step 1: Git Checkout (%s) [Slot %d] ===\n", repo.Branch, slot))
 	_ = p.db.UpdateBuildLog(buildID, logBuf.String(), "")
@@ -203,33 +204,50 @@ func (p *BuildPipeline) ExecuteWithMode(ctx context.Context, repo *db.Repo, forc
 		}
 
 		if !status.HasUpdates {
-			msg := fmt.Sprintf("No updates detected (HEAD=%s). Skipping wiki generation (0 tokens).\n", status.LocalHead)
-			logBuf.WriteString(msg)
-			log.Printf("[pipeline][%s] %s", repo.ID, strings.TrimSpace(msg))
-			p.finishBuild(buildID, "skipped", logBuf.String(), "")
+			// No upstream changes. Before skipping the entire build, verify that a
+			// prior successful run actually produced complete wiki content and static
+			// assets. If the previous build failed midway (e.g. code cloned but wiki
+			// generation or static export never finished), the output is missing or
+			// incomplete and must be regenerated. We keep the git pull skipped (the
+			// working tree is already at HEAD, so clone/pull is idempotent here) but
+			// fall through to the build steps below.
+			wikiComplete := p.builder.IsWikiComplete(repo.WikiDir)
+			staticComplete := p.builder.IsStaticOutputComplete(repo.ID)
+			if wikiComplete && staticComplete {
+				msg := fmt.Sprintf("No updates detected (HEAD=%s) and build output is complete. Skipping wiki generation (0 tokens).\n", status.LocalHead)
+				logBuf.WriteString(msg)
+				log.Printf("[pipeline][%s] %s", repo.ID, strings.TrimSpace(msg))
+				p.finishBuild(buildID, "skipped", logBuf.String(), "")
 
-			today := time.Now().Format("2006-01-02")
-			_ = p.db.RecordDailyTokenUsage(&db.DailyTokenUsage{
-				Date:         today,
-				SavedTokens:  150000,
-				SkippedCount: 1,
-			})
+				today := time.Now().Format("2006-01-02")
+				_ = p.db.RecordDailyTokenUsage(&db.DailyTokenUsage{
+					Date:         today,
+					SavedTokens:  150000,
+					SkippedCount: 1,
+				})
 
-			if onProgress != nil {
-				onProgress("skipped", 1.0, logBuf.String())
+				if onProgress != nil {
+					onProgress("skipped", 1.0, logBuf.String())
+				}
+
+				return &PipelineResult{
+					Success:     true,
+					Status:      "skipped",
+					Log:         logBuf.String(),
+					GitHead:     status.LocalHead,
+					SavedTokens: 150000,
+					DurationSec: int(time.Since(startTime).Seconds()),
+				}, nil
 			}
 
-			return &PipelineResult{
-				Success:     true,
-				Status:      "skipped",
-				Log:         logBuf.String(),
-				GitHead:     status.LocalHead,
-				SavedTokens: 150000,
-				DurationSec: int(time.Since(startTime).Seconds()),
-			}, nil
-		}
-
-		if err := GitPull(repo.LocalPath, repo.Branch); err != nil {
+			// Output is missing or incomplete: skip the redundant git pull (code is
+			// already at HEAD) but continue into the build phase to regenerate wiki
+			// and static assets.
+			regenMsg := fmt.Sprintf("No git updates (HEAD=%s) but prior build output is incomplete (wiki_complete=%v, static_complete=%v); regenerating build output without re-pulling.\n", status.LocalHead, wikiComplete, staticComplete)
+			logBuf.WriteString(regenMsg)
+			log.Printf("[pipeline][%s] %s", repo.ID, strings.TrimSpace(regenMsg))
+			_ = p.db.UpdateBuildLog(buildID, logBuf.String(), "")
+		} else if err := GitPull(repo.LocalPath, repo.Branch); err != nil {
 			errStr := fmt.Sprintf("git pull failed: %v", err)
 			logBuf.WriteString(errStr + "\n")
 			p.finishBuild(buildID, "failed", logBuf.String(), errStr)
@@ -240,9 +258,10 @@ func (p *BuildPipeline) ExecuteWithMode(ctx context.Context, repo *db.Repo, forc
 				Error:       errStr,
 				DurationSec: int(time.Since(startTime).Seconds()),
 			}, nil
+		} else {
+			logBuf.WriteString("Git pull completed successfully.\n")
+			_ = p.db.UpdateBuildLog(buildID, logBuf.String(), "")
 		}
-		logBuf.WriteString("Git pull completed successfully.\n")
-		_ = p.db.UpdateBuildLog(buildID, logBuf.String(), "")
 	} else {
 		logBuf.WriteString("Forced build triggered. Pulling latest code...\n")
 		_ = p.db.UpdateBuildLog(buildID, logBuf.String(), "")
@@ -262,10 +281,10 @@ func (p *BuildPipeline) ExecuteWithMode(ctx context.Context, repo *db.Repo, forc
 
 	var logFlushMu sync.Mutex
 	lastLogFlush := time.Now()
-	buildRes := p.builder.BuildRepoWithMode(buildID, repo.ID, repo.LocalPath, repo.WikiDir, mode, func(currentLog string) {
+	buildRes := p.builder.BuildRepoWithModeCtx(ctx, buildID, repo.ID, repo.LocalPath, repo.WikiDir, mode, func(currentLog string) {
 		fullLog := logBuf.String() + "\n" + currentLog
 		logFlushMu.Lock()
-		shouldFlush := time.Since(lastLogFlush) >= 2*time.Second
+		shouldFlush := time.Since(lastLogFlush) >= 5*time.Second
 		if shouldFlush {
 			lastLogFlush = time.Now()
 		}
@@ -327,6 +346,9 @@ func (p *BuildPipeline) ExecuteWithMode(ctx context.Context, repo *db.Repo, forc
 	if onProgress != nil {
 		onProgress(finalStatus, 1.0, fullLog)
 	}
+
+	log.Printf("[pipeline][%s] Build %d finished: status=%s, duration=%ds, prompt_tokens=%d, completion_tokens=%d, total_tokens=%d, retries=%d",
+		repo.ID, buildID, finalStatus, durationSec, promptTokens, completionTokens, totalTokens, retries)
 
 	return &PipelineResult{
 		Success:            buildRes.Success,

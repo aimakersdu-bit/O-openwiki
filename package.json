@@ -1,6 +1,6 @@
 {
   "name": "openwiki",
-  "version": "0.3.1",
+  "version": "0.5.4",
   "description": "A CLI that uses a DeepAgents documentation agent to generate and maintain an OpenWiki for a codebase.",
   "license": "MIT",
   "type": "module",
@@ -96,6 +96,7 @@
     "@changesets/changelog-github": "0.7.0",
     "@changesets/cli": "2.31.1",
     "@eslint/js": "^10.0.1",
+    "@langchain/langgraph-checkpoint": "^1.2.2",
     "@types/better-sqlite3": "^7.6.12",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^22.10.2",
@@ -109,6 +110,7 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.62.0",
+    "undici": "^7.29.0",
     "vitest": "^4.1.10"
   },
   "pnpm": {
