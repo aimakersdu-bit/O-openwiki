@@ -204,17 +204,24 @@ func (p *BuildPipeline) ExecuteWithMode(ctx context.Context, repo *db.Repo, forc
 		}
 
 		if !status.HasUpdates {
-			// No upstream changes. Before skipping the entire build, verify that a
-			// prior successful run actually produced complete wiki content and static
-			// assets. If the previous build failed midway (e.g. code cloned but wiki
-			// generation or static export never finished), the output is missing or
-			// incomplete and must be regenerated. We keep the git pull skipped (the
-			// working tree is already at HEAD, so clone/pull is idempotent here) but
-			// fall through to the build steps below.
+			// 核查该仓库在数据库中的上一次终态构建
+			var prevBuildSuccess bool
+			var latestFinishedID int64
+			var latestStatus string
+			if p.db != nil {
+				if latest, err := p.db.GetLatestFinishedBuild(repo.ID); err == nil && latest != nil {
+					latestFinishedID = latest.ID
+					latestStatus = latest.Status
+					prevBuildSuccess = (latest.Status == "completed" || latest.Status == "success" || latest.Status == "skipped")
+				}
+			}
+
 			wikiComplete := p.builder.IsWikiComplete(repo.WikiDir)
 			staticComplete := p.builder.IsStaticOutputComplete(repo.ID)
-			if wikiComplete && staticComplete {
-				msg := fmt.Sprintf("No updates detected (HEAD=%s) and build output is complete. Skipping wiki generation (0 tokens).\n", status.LocalHead)
+
+			// 只有在非强制构建、上一次构建完全成功、Wiki完整且静态资源齐全时，才安全跳过
+			if prevBuildSuccess && wikiComplete && staticComplete {
+				msg := fmt.Sprintf("No updates detected (HEAD=%s), previous build (%d) succeeded, and build output is complete. Skipping wiki generation (0 tokens).\n", status.LocalHead, latestFinishedID)
 				logBuf.WriteString(msg)
 				log.Printf("[pipeline][%s] %s", repo.ID, strings.TrimSpace(msg))
 				p.finishBuild(buildID, "skipped", logBuf.String(), "")
@@ -240,10 +247,22 @@ func (p *BuildPipeline) ExecuteWithMode(ctx context.Context, repo *db.Repo, forc
 				}, nil
 			}
 
-			// Output is missing or incomplete: skip the redundant git pull (code is
-			// already at HEAD) but continue into the build phase to regenerate wiki
-			// and static assets.
-			regenMsg := fmt.Sprintf("No git updates (HEAD=%s) but prior build output is incomplete (wiki_complete=%v, static_complete=%v); regenerating build output without re-pulling.\n", status.LocalHead, wikiComplete, staticComplete)
+			// 产物不全或上一次构建失败：跳过冗余的 git pull（代码已在 HEAD，保持拉取幂等），直接贯通进入构建流水线
+			reason := "prior build failed or missing"
+			if !prevBuildSuccess {
+				if latestFinishedID > 0 {
+					reason = fmt.Sprintf("prior build %d ended with status %q", latestFinishedID, latestStatus)
+				} else {
+					reason = "no prior finished build found"
+				}
+			} else if !wikiComplete {
+				reason = "wiki documentation is incomplete"
+			} else if !staticComplete {
+				reason = "static output assets are missing or incomplete"
+			}
+
+			regenMsg := fmt.Sprintf("No git updates (HEAD=%s), but %s (wiki_complete=%v, static_complete=%v); skipping redundant git pull (idempotent) and proceeding to build phase.\n",
+				status.LocalHead, reason, wikiComplete, staticComplete)
 			logBuf.WriteString(regenMsg)
 			log.Printf("[pipeline][%s] %s", repo.ID, strings.TrimSpace(regenMsg))
 			_ = p.db.UpdateBuildLog(buildID, logBuf.String(), "")

@@ -14,13 +14,8 @@ import (
 
 func TestBatchSchedulerLifecycleAndConcurrency(t *testing.T) {
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test_batch_sched.db")
-
-	database, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatalf("Open db failed: %v", err)
-	}
-	defer database.Close()
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
 
 	// 准备两个测试 repo
 	for i := 1; i <= 2; i++ {
@@ -98,13 +93,8 @@ func TestBatchSchedulerLifecycleAndConcurrency(t *testing.T) {
 
 func TestBatchSchedulerETAEstimation(t *testing.T) {
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test_batch_eta.db")
-
-	database, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatalf("Open db failed: %v", err)
-	}
-	defer database.Close()
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
 
 	builder := scheduler.NewBuilder("openwiki", tmpDir, tmpDir, tmpDir)
 	limiter := scheduler.NewDynamicRateLimiter(2)
@@ -159,13 +149,8 @@ func TestBatchSchedulerETAEstimation(t *testing.T) {
 
 func TestDayNightConcurrencyAutoSwitch(t *testing.T) {
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test_day_night.db")
-	_ = db.InitDB(dbPath)
-	database, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatalf("Open db failed: %v", err)
-	}
-	defer database.Close()
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
 
 	builder := scheduler.NewBuilder("openwiki", tmpDir, tmpDir, tmpDir)
 	limiter := scheduler.NewDynamicRateLimiter(1)
@@ -206,13 +191,8 @@ func TestDayNightConcurrencyAutoSwitch(t *testing.T) {
 
 func TestPipelineWithLLMProxyUsage(t *testing.T) {
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test_pipeline_proxy.db")
-	_ = db.InitDB(dbPath)
-	database, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatalf("Open db failed: %v", err)
-	}
-	defer database.Close()
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
 
 	repo := &db.Repo{
 		ID:             "test-proxy-repo",
@@ -245,12 +225,8 @@ func TestPipelineWithLLMProxyUsage(t *testing.T) {
 
 func TestBatchSchedulerRetryFailedTasks(t *testing.T) {
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test_batch_retry.db")
-	database, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatalf("Open db failed: %v", err)
-	}
-	defer database.Close()
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
 
 	builder := scheduler.NewBuilder("openwiki", tmpDir, tmpDir, tmpDir)
 	limiter := scheduler.NewDynamicRateLimiter(2)
@@ -304,13 +280,8 @@ func TestBatchSchedulerRetryFailedTasks(t *testing.T) {
 
 func TestBatchSchedulerAutoThrottleCooldownAndRecovery(t *testing.T) {
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test_throttle_cooldown.db")
-	_ = db.InitDB(dbPath)
-	database, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatalf("Open db failed: %v", err)
-	}
-	defer database.Close()
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
 
 	_ = database.SetSetting("day_max_concurrency", "4")
 	_ = database.SetSetting("night_max_concurrency", "6")
