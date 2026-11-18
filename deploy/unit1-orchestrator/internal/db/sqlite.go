@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"math/rand"
@@ -20,9 +21,35 @@ var (
 	testDBRefs = make(map[string]int)
 )
 
+func isRunningUnderGoTest() bool {
+	return flag.Lookup("test.v") != nil
+}
+
+func buildTargetTestDSN(baseDSN, dbName string) string {
+	prefix := baseDSN
+	query := ""
+	if idx := strings.Index(baseDSN, "?"); idx >= 0 {
+		prefix = baseDSN[:idx]
+		query = baseDSN[idx+1:]
+	}
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	if query == "" {
+		return prefix + dbName + "?parseTime=true"
+	}
+	if strings.Contains(query, "parseTime=") {
+		return prefix + dbName + "?" + query
+	}
+	return prefix + dbName + "?" + query + "&parseTime=true"
+}
+
 func resolveDSN(dsn string) (string, string, error) {
 	if strings.Contains(dsn, "@") {
 		return dsn, "", nil
+	}
+	if !isRunningUnderGoTest() {
+		return "", "", fmt.Errorf("invalid mysql dsn (missing '@' host specification): %q", dsn)
 	}
 
 	testMu.Lock()
@@ -53,7 +80,7 @@ func resolveDSN(dsn string) (string, string, error) {
 	}
 	testDBRefs[dbName]++
 
-	targetDSN := fmt.Sprintf("root:@tcp(127.0.0.1:3306)/%s?parseTime=true", dbName)
+	targetDSN := buildTargetTestDSN(baseDSN, dbName)
 	return targetDSN, dbName, nil
 }
 

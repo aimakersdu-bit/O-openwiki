@@ -615,3 +615,46 @@ func TestGetLatestFinishedBuild(t *testing.T) {
 		t.Fatalf("expected latest finished build to be interrupted b4 (%d), got %+v (err=%v)", b4ID, latest, err)
 	}
 }
+
+func TestBuildTargetTestDSN(t *testing.T) {
+	cases := []struct {
+		name    string
+		baseDSN string
+		dbName  string
+		want    string
+	}{
+		{
+			name:    "default root no password",
+			baseDSN: "root:@tcp(127.0.0.1:3306)/",
+			dbName:  "test_orch_1",
+			want:    "root:@tcp(127.0.0.1:3306)/test_orch_1?parseTime=true",
+		},
+		{
+			name:    "custom user password host port",
+			baseDSN: "admin:s3cr3t@tcp(10.0.0.5:3307)/",
+			dbName:  "test_orch_2",
+			want:    "admin:s3cr3t@tcp(10.0.0.5:3307)/test_orch_2?parseTime=true",
+		},
+		{
+			name:    "base DSN with existing query params",
+			baseDSN: "user:pass@tcp(db.local:3306)/?charset=utf8mb4",
+			dbName:  "test_orch_3",
+			want:    "user:pass@tcp(db.local:3306)/test_orch_3?charset=utf8mb4&parseTime=true",
+		},
+		{
+			name:    "base DSN already has parseTime",
+			baseDSN: "user:pass@tcp(db.local:3306)/?parseTime=true&loc=Local",
+			dbName:  "test_orch_4",
+			want:    "user:pass@tcp(db.local:3306)/test_orch_4?parseTime=true&loc=Local",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildTargetTestDSN(tc.baseDSN, tc.dbName)
+			if got != tc.want {
+				t.Fatalf("buildTargetTestDSN(%q, %q) = %q, want %q", tc.baseDSN, tc.dbName, got, tc.want)
+			}
+		})
+	}
+}
