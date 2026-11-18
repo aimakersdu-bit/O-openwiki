@@ -17,6 +17,7 @@ import (
 	"github.com/openwiki/orchestrator/internal/llmproxy"
 	"github.com/openwiki/orchestrator/internal/mcp"
 	"github.com/openwiki/orchestrator/internal/qa"
+	"github.com/openwiki/orchestrator/internal/version"
 	"github.com/openwiki/orchestrator/internal/scheduler"
 	"github.com/openwiki/orchestrator/internal/storage"
 )
@@ -266,6 +267,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok","service":"unit1-orchestrator"}`))
+	})
+
+	s.mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(version.Get())
 	})
 }
 

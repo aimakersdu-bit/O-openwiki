@@ -28,23 +28,30 @@ mkdir -p "$OUTPUT_DIR"
 echo ""
 echo "=== [2/3] 配置 Go 编译环境 (amd64) ==="
 export GOARCH="${GOARCH:-amd64}"
-export GOOS="${GOOS:-$(go env GOOS)}"
-export CGO_ENABLED="${CGO_ENABLED:-1}"
+export GOOS="${GOOS:-linux}"
+export CGO_ENABLED="${CGO_ENABLED:-0}"
 
 echo "构建目标架构: OS=$GOOS, ARCH=$GOARCH, CGO_ENABLED=$CGO_ENABLED"
+
+# 提取版本信息 (git describe + commit + 构建时间)
+GIT_VERSION=$(cd "$ROOT_DIR" && git describe --tags --always --long 2>/dev/null | sed 's/-[0-9]*-g/-/g' || echo "unknown")
+GIT_COMMIT=$(cd "$ROOT_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+LDFLAGS="-s -w -X github.com/openwiki/orchestrator/internal/version.Version=${GIT_VERSION} -X github.com/openwiki/orchestrator/internal/version.GitCommit=${GIT_COMMIT} -X github.com/openwiki/orchestrator/internal/version.BuildTime=${BUILD_TIME} -X github.com/openwiki/portal/internal/version.Version=${GIT_VERSION} -X github.com/openwiki/portal/internal/version.GitCommit=${GIT_COMMIT} -X github.com/openwiki/portal/internal/version.BuildTime=${BUILD_TIME}"
+echo "--> 版本: ${GIT_VERSION} (commit: ${GIT_COMMIT}, built: ${BUILD_TIME})"
 
 # 3. 编译 Go 后端二进制
 echo "--> 编译 Orchestrator ($GOOS/$GOARCH)..."
 cd "$ROOT_DIR/deploy/unit1-orchestrator"
-go build -v -ldflags="-s -w" -o "$OUTPUT_DIR/orchestrator" .
+go build -v -ldflags="${LDFLAGS}" -o "$OUTPUT_DIR/orchestrator" .
 
 echo "--> 编译 Portal ($GOOS/$GOARCH)..."
 cd "$ROOT_DIR/deploy/unit2-portal"
-go build -v -ldflags="-s -w" -o "$OUTPUT_DIR/portal" .
+go build -v -ldflags="${LDFLAGS}" -o "$OUTPUT_DIR/portal" .
 
 echo "--> 编译 openwiki-migrate CLI ($GOOS/$GOARCH)..."
 cd "$ROOT_DIR/deploy/unit1-orchestrator/cmd/openwiki-migrate"
-go build -v -ldflags="-s -w" -o "$OUTPUT_DIR/openwiki-migrate" .
+go build -v -ldflags="${LDFLAGS}" -o "$OUTPUT_DIR/openwiki-migrate" .
 
 chmod +x "$OUTPUT_DIR/orchestrator" "$OUTPUT_DIR/portal" "$OUTPUT_DIR/openwiki-migrate"
 

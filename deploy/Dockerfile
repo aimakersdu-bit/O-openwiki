@@ -4,6 +4,16 @@
 
 FROM node:22-bookworm-slim
 
+ARG APP_VERSION=unknown
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+LABEL org.openwiki.version="${APP_VERSION}" \
+      org.openwiki.git-commit="${GIT_COMMIT}" \
+      org.openwiki.build-time="${BUILD_TIME}"
+ENV OPENWIKI_VERSION=${APP_VERSION} \
+    OPENWIKI_GIT_COMMIT=${GIT_COMMIT} \
+    OPENWIKI_BUILD_TIME=${BUILD_TIME}
+
 WORKDIR /app
 
 # 1. 替换阿里云 Debian 软件源以保证国内高速稳定下载
@@ -20,6 +30,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     cron \
     ca-certificates \
+    python3 \
+    make \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. 复制本地打包的最新 openwiki CLI (v0.5.4) 并全局安装

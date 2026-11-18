@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/openwiki/portal/internal/config"
+	"github.com/openwiki/portal/internal/version"
 )
 
 type Server struct {
@@ -81,6 +83,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/portal/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok","service":"unit2-portal"}`))
+	})
+
+	s.mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(version.Get())
 	})
 
 	// Static web portal assets
