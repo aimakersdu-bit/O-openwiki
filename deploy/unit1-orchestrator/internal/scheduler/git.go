@@ -459,7 +459,11 @@ func runGitWith(ctx context.Context, dir, targetURL string, creds GitCredentials
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: %s", strings.Join(args, " "), RedactGitSecrets(stderr.String(), creds))
+		msg := strings.TrimSpace(RedactGitSecrets(stderr.String(), creds))
+		if msg == "" {
+			msg = RedactGitSecrets(err.Error(), creds)
+		}
+		return fmt.Errorf("%s: %s", strings.Join(args, " "), msg)
 	}
 	return nil
 }
@@ -473,7 +477,11 @@ func rawRunGit(ctx context.Context, dir string, args ...string) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: %s", strings.Join(args, " "), stderr.String())
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("%s: %s", strings.Join(args, " "), msg)
 	}
 	return nil
 }

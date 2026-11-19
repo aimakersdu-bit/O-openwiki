@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import {
   BaseCheckpointSaver,
   TASKS,
@@ -6,9 +7,39 @@ import {
   maxChannelVersion,
 } from "@langchain/langgraph-checkpoint";
 
-function getDatabaseClass() {
-  const { Database } = require("bun:sqlite");
-  return Database;
+function wrapNodeSqlite(rawDb: any) {
+  const norm = (args: any[]) => args.map((v) => (v === undefined ? null : v));
+  return {
+    exec: (sql: string) => rawDb.exec(sql),
+    close: () => rawDb.close(),
+    prepare(sql: string) {
+      const stmt = rawDb.prepare(sql);
+      return {
+        run: (...args: any[]) => stmt.run(...norm(args)),
+        get: (...args: any[]) => stmt.get(...norm(args)),
+        all: (...args: any[]) => stmt.all(...norm(args)),
+      };
+    },
+  };
+}
+
+function openSqliteDatabase(connStringOrLocalPath: string) {
+  const req = createRequire(import.meta.url);
+  if (typeof (globalThis as any).Bun !== "undefined") {
+    const { Database } = req("bun:sqlite");
+    return new Database(connStringOrLocalPath);
+  }
+  try {
+    const { DatabaseSync } = req("node:sqlite");
+    if (DatabaseSync) {
+      return wrapNodeSqlite(new DatabaseSync(connStringOrLocalPath));
+    }
+  } catch {
+    // Fall through to better-sqlite3 if node:sqlite is unavailable
+  }
+  const mod = req("better-sqlite3");
+  const Database = mod?.default ?? mod;
+  return new Database(connStringOrLocalPath);
 }
 
 function prepareSql(db: any, checkpointId: boolean) {
@@ -71,8 +102,7 @@ export class SqliteSaver extends BaseCheckpointSaver {
   }
 
   static fromConnString(connStringOrLocalPath: string): SqliteSaver {
-    const DatabaseClass = getDatabaseClass();
-    return new SqliteSaver(new DatabaseClass(connStringOrLocalPath));
+    return new SqliteSaver(openSqliteDatabase(connStringOrLocalPath));
   }
 
   setup(): void {

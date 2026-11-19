@@ -177,8 +177,20 @@ func (vm *VolumeManager) CreateRepoPlacement(repoID string, volumeID string) (ph
 		return "", "", fmt.Errorf("volume %s not found: %w", volumeID, err)
 	}
 
-	physicalPath = filepath.Join(v.MountPoint, "repos", repoID)
-	symlinkPath = filepath.Join(vm.linksBaseDir, repoID)
+	physicalPath = filepath.Clean(filepath.Join(v.MountPoint, "repos", repoID))
+	symlinkPath = filepath.Clean(filepath.Join(vm.linksBaseDir, repoID))
+
+	// Guard against self-referencing symlink when volume mount point coincides with linksBaseDir
+	// (e.g., mount_point=/data/openwiki and linksBaseDir=/data/openwiki/repos).
+	if physicalPath == symlinkPath {
+		if fi, lErr := os.Lstat(physicalPath); lErr == nil && fi.Mode()&os.ModeSymlink != 0 {
+			_ = os.Remove(physicalPath)
+		}
+		if err := os.MkdirAll(physicalPath, 0755); err != nil {
+			return "", "", fmt.Errorf("create physical repo dir %s: %w", physicalPath, err)
+		}
+		return physicalPath, symlinkPath, nil
+	}
 
 	if err := os.MkdirAll(physicalPath, 0755); err != nil {
 		return "", "", fmt.Errorf("create physical repo dir %s: %w", physicalPath, err)
