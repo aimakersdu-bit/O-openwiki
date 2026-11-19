@@ -684,3 +684,17 @@ func TestTruncateBuildLogForDB(t *testing.T) {
 		t.Fatalf("expected tail marker preserved")
 	}
 }
+
+func TestCleanBuildLog_StripsTiktokenSpam(t *testing.T) {
+	raw := "=== Step 1: openwiki update ===\n" +
+		"Failed to calculate number of tokens, falling back to approximate count Error: Tiktoken offline fallback (disabled remote fetch)\n" +
+		"    at getEncoding (file:///opt/openwiki/tiktoken.js:8:8)\n" +
+		"    at async Promise.all (index 6)\n" +
+		"Documenting page 6 of 6 · /openwiki/quickstart.md\n" +
+		"=== BUILD SUCCESSFUL ==="
+	got := CleanBuildLog(raw)
+	want := "=== Step 1: openwiki update ===\nDocumenting page 6 of 6 · /openwiki/quickstart.md\n=== BUILD SUCCESSFUL ==="
+	if got != want {
+		t.Fatalf("CleanBuildLog mismatch:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}

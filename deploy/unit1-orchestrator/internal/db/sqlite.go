@@ -749,8 +749,34 @@ const (
 	maxDBBuildLogTailBytes = 256 * 1024
 )
 
-// truncateBuildLogForDB keeps the head and tail of oversized build logs so the builds table stays lean.
+// CleanBuildLog removes repetitive offline tiktoken fallback stack-trace spam from build logs.
+func CleanBuildLog(s string) string {
+	if !strings.Contains(s, "Tiktoken offline fallback") {
+		return s
+	}
+	var out strings.Builder
+	out.Grow(len(s) / 4)
+	inSpam := false
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(line, "Tiktoken offline fallback") {
+			inSpam = true
+			continue
+		}
+		if inSpam {
+			if strings.HasPrefix(line, "    at ") || strings.TrimSpace(line) == "" {
+				continue
+			}
+			inSpam = false
+		}
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+	return strings.TrimRight(out.String(), "\n")
+}
+
+// truncateBuildLogForDB cleans noisy spam and keeps the head and tail of oversized build logs so the builds table stays lean.
 func truncateBuildLogForDB(s string) string {
+	s = CleanBuildLog(s)
 	if len(s) <= maxDBBuildLogBytes {
 		return s
 	}

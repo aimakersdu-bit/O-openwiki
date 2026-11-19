@@ -50,6 +50,7 @@ func (s *Server) handleBuildStatus(w http.ResponseWriter, r *http.Request) {
 	if includeLog {
 		builds, err = db.GetLatestBuilds(repoID, limit)
 		for i := range builds {
+			builds[i].Log = db.CleanBuildLog(builds[i].Log)
 			if len(builds[i].Log) > maxAPIBuildLogBytes {
 				builds[i].Log = "... [earlier log truncated for display; full log saved on disk] ...\n" +
 					builds[i].Log[len(builds[i].Log)-maxAPIBuildLogBytes:]

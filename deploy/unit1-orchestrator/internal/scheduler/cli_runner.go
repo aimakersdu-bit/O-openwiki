@@ -127,6 +127,7 @@ func (b *Builder) runCommandWithStreaming(ctx context.Context, cmd *exec.Cmd, re
 		br := bufio.NewReaderSize(r, 64*1024)
 		var cur []byte
 		dropped := 0
+		inTiktokenSpam := false
 		for {
 			chunk, isPrefix, err := br.ReadLine()
 			if len(chunk) > 0 {
@@ -150,8 +151,23 @@ func (b *Builder) runCommandWithStreaming(ctx context.Context, cmd *exec.Cmd, re
 				if dropped > 0 {
 					line += fmt.Sprintf(" ...(truncated %d bytes)", dropped)
 				}
-				appendLine(line, isStderr)
-				emitProgress(false)
+				skipLine := false
+				if isStderr {
+					if strings.Contains(line, "Tiktoken offline fallback") {
+						inTiktokenSpam = true
+						skipLine = true
+					} else if inTiktokenSpam {
+						if strings.HasPrefix(line, "    at ") || strings.TrimSpace(line) == "" {
+							skipLine = true
+						} else {
+							inTiktokenSpam = false
+						}
+					}
+				}
+				if !skipLine {
+					appendLine(line, isStderr)
+					emitProgress(false)
+				}
 			}
 			cur = cur[:0]
 			dropped = 0
