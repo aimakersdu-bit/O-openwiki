@@ -114,7 +114,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			repos = []db.RepoWithAlias{}
 		}
-		latestBuild, _ := db.GetLatestBuild(p.ID)
+		latestBuild, _ := db.GetLatestBuildSummary(p.ID)
 		var buildSummary *db.Build
 		if latestBuild != nil {
 			bCopy := *latestBuild

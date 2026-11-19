@@ -248,8 +248,16 @@ func GetLatestBuilds(repoID string, limit int) ([]Build, error) {
 	return globalDB.ListBuilds(repoID, limit)
 }
 
+func GetLatestBuildsSummary(repoID string, limit int) ([]Build, error) {
+	return globalDB.ListBuildsSummary(repoID, limit)
+}
+
 func GetLatestBuild(repoID string) (*Build, error) {
 	return globalDB.GetLatestBuild(repoID)
+}
+
+func GetLatestBuildSummary(repoID string) (*Build, error) {
+	return globalDB.GetLatestBuildSummary(repoID)
 }
 
 func GetLatestFinishedBuild(repoID string) (*Build, error) {
@@ -735,11 +743,28 @@ func (db *DB) CreateBuild(repoID, gitHead, status string) (int64, error) {
 	return res.LastInsertId()
 }
 
+const (
+	maxDBBuildLogBytes     = 512 * 1024 // 512KB cap for builds.log in DB (full log is persisted on disk)
+	maxDBBuildLogHeadBytes = 128 * 1024
+	maxDBBuildLogTailBytes = 256 * 1024
+)
+
+// truncateBuildLogForDB keeps the head and tail of oversized build logs so the builds table stays lean.
+func truncateBuildLogForDB(s string) string {
+	if len(s) <= maxDBBuildLogBytes {
+		return s
+	}
+	omitted := len(s) - maxDBBuildLogHeadBytes - maxDBBuildLogTailBytes
+	return s[:maxDBBuildLogHeadBytes] +
+		fmt.Sprintf("\n\n... [%d bytes omitted from DB; full log saved on disk] ...\n\n", omitted) +
+		s[len(s)-maxDBBuildLogTailBytes:]
+}
+
 // FinishBuild updates a build record with its final status, log, and error.
 func (db *DB) FinishBuild(id int64, status, buildLog, buildErr string) error {
 	timeStr := time.Now().Local().Format("2006-01-02 15:04:05")
 	_, err := db.conn.Exec(`UPDATE builds SET status = ?, finished_at = ?, log = ?, error = ? WHERE id = ?`,
-		status, timeStr, buildLog, buildErr, id)
+		status, timeStr, truncateBuildLogForDB(buildLog), buildErr, id)
 	return err
 }
 
@@ -749,17 +774,17 @@ func (db *DB) FinishBuildWithTokens(id int64, status, buildLog, buildErr string,
 	_, err := db.conn.Exec(`UPDATE builds SET status = ?, finished_at = ?, log = ?, error = ?,
 		prompt_tokens = ?, completion_tokens = ?, total_tokens = ?, saved_tokens = ?, rate_limited_retries = ?
 		WHERE id = ?`,
-		status, timeStr, buildLog, buildErr, promptTokens, completionTokens, totalTokens, savedTokens, retries, id)
+		status, timeStr, truncateBuildLogForDB(buildLog), buildErr, promptTokens, completionTokens, totalTokens, savedTokens, retries, id)
 	return err
 }
 
 // UpdateBuildLog updates intermediate build log and error without changing status.
 func (db *DB) UpdateBuildLog(id int64, buildLog, buildErr string) error {
-	_, err := db.conn.Exec(`UPDATE builds SET log = ?, error = ? WHERE id = ?`, buildLog, buildErr, id)
+	_, err := db.conn.Exec(`UPDATE builds SET log = ?, error = ? WHERE id = ?`, truncateBuildLogForDB(buildLog), buildErr, id)
 	return err
 }
 
-// ListBuilds returns recent builds for a repo.
+// ListBuilds returns recent builds for a repo (including the full log column).
 func (db *DB) ListBuilds(repoID string, limit int) ([]Build, error) {
 	rows, err := db.conn.Query(`SELECT id, repo_id, COALESCE(git_head,''), status, 
 		COALESCE(started_at,''), COALESCE(finished_at,''), COALESCE(log,''), COALESCE(error,''),
@@ -783,7 +808,31 @@ func (db *DB) ListBuilds(repoID string, limit int) ([]Build, error) {
 	return builds, rows.Err()
 }
 
-// GetLatestBuild returns the most recent build for a repo.
+// ListBuildsSummary returns recent builds for a repo WITHOUT reading the heavy `log` column.
+func (db *DB) ListBuildsSummary(repoID string, limit int) ([]Build, error) {
+	rows, err := db.conn.Query(`SELECT id, repo_id, COALESCE(git_head,''), status,
+		COALESCE(started_at,''), COALESCE(finished_at,''), COALESCE(error,''),
+		COALESCE(rate_limited_retries, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(total_tokens, 0), COALESCE(saved_tokens, 0)
+		FROM builds WHERE repo_id = ? ORDER BY id DESC LIMIT ?`, repoID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var builds []Build
+	for rows.Next() {
+		var b Build
+		if err := rows.Scan(&b.ID, &b.RepoID, &b.GitHead, &b.Status,
+			&b.StartedAt, &b.FinishedAt, &b.Error,
+			&b.RateLimitedRetries, &b.PromptTokens, &b.CompletionTokens, &b.TotalTokens, &b.SavedTokens); err != nil {
+			return nil, err
+		}
+		builds = append(builds, b)
+	}
+	return builds, rows.Err()
+}
+
+// GetLatestBuild returns the most recent build for a repo (including log).
 func (db *DB) GetLatestBuild(repoID string) (*Build, error) {
 	builds, err := db.ListBuilds(repoID, 1)
 	if err != nil {
@@ -795,10 +844,23 @@ func (db *DB) GetLatestBuild(repoID string) (*Build, error) {
 	return &builds[0], nil
 }
 
-// GetLatestFinishedBuild returns the most recent build for a repo that has reached a terminal state (completed, success, failed, skipped, or interrupted).
+// GetLatestBuildSummary returns the most recent build metadata for a repo without reading `log`.
+func (db *DB) GetLatestBuildSummary(repoID string) (*Build, error) {
+	builds, err := db.ListBuildsSummary(repoID, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(builds) == 0 {
+		return nil, nil
+	}
+	return &builds[0], nil
+}
+
+// GetLatestFinishedBuild returns the most recent build metadata for a repo that has reached a terminal state
+// (completed, success, failed, skipped, or interrupted), without reading the heavy `log` column.
 func (db *DB) GetLatestFinishedBuild(repoID string) (*Build, error) {
 	query := `SELECT id, repo_id, COALESCE(git_head,''), status,
-		COALESCE(started_at,''), COALESCE(finished_at,''), COALESCE(log,''), COALESCE(error,''),
+		COALESCE(started_at,''), COALESCE(finished_at,''), COALESCE(error,''),
 		COALESCE(rate_limited_retries, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(total_tokens, 0), COALESCE(saved_tokens, 0)
 		FROM builds
 		WHERE repo_id = ? AND status IN ('completed', 'success', 'failed', 'skipped', 'interrupted')
@@ -807,7 +869,7 @@ func (db *DB) GetLatestFinishedBuild(repoID string) (*Build, error) {
 	row := db.conn.QueryRow(query, repoID)
 	var b Build
 	if err := row.Scan(&b.ID, &b.RepoID, &b.GitHead, &b.Status,
-		&b.StartedAt, &b.FinishedAt, &b.Log, &b.Error,
+		&b.StartedAt, &b.FinishedAt, &b.Error,
 		&b.RateLimitedRetries, &b.PromptTokens, &b.CompletionTokens, &b.TotalTokens, &b.SavedTokens); err != nil {
 		if errors.Is(err, sql.ErrNoRows) || err == sql.ErrNoRows {
 			return nil, nil

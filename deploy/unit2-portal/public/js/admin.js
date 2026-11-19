@@ -536,7 +536,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     logModal.style.display = 'flex';
 
     try {
-      const builds = await API.getBuildHistory(targetId);
+      const builds = await API.getBuildHistory(targetId, true);
       if (!builds || builds.length === 0) {
         logModalMeta.textContent = '暂无历史构建记录';
         logModalContent.textContent = '无构建日志信息';

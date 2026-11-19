@@ -658,3 +658,29 @@ func TestBuildTargetTestDSN(t *testing.T) {
 		})
 	}
 }
+
+func TestTruncateBuildLogForDB(t *testing.T) {
+	small := "short build log"
+	if got := truncateBuildLogForDB(small); got != small {
+		t.Fatalf("expected small log unchanged, got %q", got)
+	}
+
+	head := "HEAD_MARKER_" + string(make([]byte, maxDBBuildLogHeadBytes))
+	middle := string(make([]byte, 300*1024))
+	tail := string(make([]byte, maxDBBuildLogTailBytes-11)) + "_TAIL_MARKER"
+	huge := head + middle + tail
+
+	got := truncateBuildLogForDB(huge)
+	if len(got) >= maxDBBuildLogBytes {
+		t.Fatalf("expected truncated log < %d bytes, got %d", maxDBBuildLogBytes, len(got))
+	}
+	if len(got) < maxDBBuildLogHeadBytes+maxDBBuildLogTailBytes {
+		t.Fatalf("expected truncated log to preserve head + tail, got %d", len(got))
+	}
+	if got[:12] != "HEAD_MARKER_" {
+		t.Fatalf("expected head marker preserved")
+	}
+	if got[len(got)-12:] != "_TAIL_MARKER" {
+		t.Fatalf("expected tail marker preserved")
+	}
+}

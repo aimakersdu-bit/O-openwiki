@@ -455,7 +455,7 @@ func (s *Server) handleListRepositories(ctx context.Context) (*CallToolResult, e
 			Branch:         r.Branch,
 			Status:         r.Status,
 		}
-		if build, err := s.database.GetLatestBuild(r.ID); err == nil && build != nil {
+		if build, err := s.database.GetLatestBuildSummary(r.ID); err == nil && build != nil {
 			entry.LastBuildStatus = build.Status
 			if build.Status == "success" || build.Status == "completed" || build.Status == "skipped" {
 				// 严格校验是否真正具备 Wiki 文档与静态资源完整条件
@@ -483,7 +483,7 @@ func (s *Server) handleListRepositories(ctx context.Context) (*CallToolResult, e
 	}
 
 	for _, p := range projects {
-		latestBuild, _ := s.database.GetLatestBuild(p.ID)
+		latestBuild, _ := s.database.GetLatestBuildSummary(p.ID)
 		taskStatus, lastBuildStatus, ready := isProjectWikiReady(p, latestBuild, staticBaseDir)
 		queryKey := p.ID
 		if strings.TrimSpace(p.TriCode) != "" {
@@ -549,7 +549,7 @@ func (s *Server) handleListProjects(ctx context.Context) (*CallToolResult, error
 
 	results := make([]ProjectSummary, 0, len(projects))
 	for _, p := range projects {
-		latestBuild, _ := s.database.GetLatestBuild(p.ID)
+		latestBuild, _ := s.database.GetLatestBuildSummary(p.ID)
 		taskStatus, lastBuildStatus, ready := isProjectWikiReady(p, latestBuild, staticBaseDir)
 		queryKey := p.ID
 		if strings.TrimSpace(p.TriCode) != "" {

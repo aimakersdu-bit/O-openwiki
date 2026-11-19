@@ -61,9 +61,10 @@ window.API = {
     return await res.json();
   },
 
-  // Fetch build history for a repo
-  async getBuildHistory(repoId) {
-    const res = await fetch(`/api/build/status?repo_id=${encodeURIComponent(repoId)}`);
+  // Fetch build history for a repo (summary by default; pass includeLog=true for log viewer modal)
+  async getBuildHistory(repoId, includeLog = false) {
+    const extra = includeLog ? '&include_log=1&limit=1' : '';
+    const res = await fetch(`/api/build/status?repo_id=${encodeURIComponent(repoId)}${extra}`);
     if (!res.ok) throw new Error('无法获取构建历史 (' + res.status + ')');
     return await res.json();
   },

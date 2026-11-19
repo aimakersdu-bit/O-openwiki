@@ -282,7 +282,7 @@ func TestProjectTaskStatusLifecycleAndBatchHook(t *testing.T) {
 	// Verify /api/build/status?repo_id=proj-deo returns project build logs
 	fetchBuilds := func() []db.Build {
 		wb := httptest.NewRecorder()
-		server.ServeHTTP(wb, httptest.NewRequest(http.MethodGet, "/api/build/status?repo_id=proj-deo", nil))
+		server.ServeHTTP(wb, httptest.NewRequest(http.MethodGet, "/api/build/status?repo_id=proj-deo&include_log=1", nil))
 		if wb.Code != http.StatusOK {
 			t.Fatalf("GET /api/build/status status=%d body=%s", wb.Code, wb.Body.String())
 		}

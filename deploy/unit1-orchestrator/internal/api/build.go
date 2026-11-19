@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/openwiki/orchestrator/internal/db"
 	"github.com/openwiki/orchestrator/internal/scheduler"
@@ -13,7 +14,11 @@ type TriggerBuildRequest struct {
 	Mode   string `json:"mode,omitempty"` // "full", "knowledge" / "knowledge-only"
 }
 
+const maxAPIBuildLogBytes = 256 * 1024 // 256KB tail cap when include_log=1
+
 // handleBuildStatus returns latest build records for a repository.
+// By default it omits the heavy `log` column for fast dashboard/list loading;
+// pass ?include_log=1 (e.g. from the log viewer modal) to include build logs.
 func (s *Server) handleBuildStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -26,7 +31,33 @@ func (s *Server) handleBuildStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	builds, err := db.GetLatestBuilds(repoID, 10)
+	limit := 10
+	if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
+		if n, err := strconv.Atoi(rawLimit); err == nil && n > 0 {
+			if n > 50 {
+				n = 50
+			}
+			limit = n
+		}
+	}
+
+	includeLog := r.URL.Query().Get("include_log") == "1" || r.URL.Query().Get("include_log") == "true"
+
+	var (
+		builds []db.Build
+		err    error
+	)
+	if includeLog {
+		builds, err = db.GetLatestBuilds(repoID, limit)
+		for i := range builds {
+			if len(builds[i].Log) > maxAPIBuildLogBytes {
+				builds[i].Log = "... [earlier log truncated for display; full log saved on disk] ...\n" +
+					builds[i].Log[len(builds[i].Log)-maxAPIBuildLogBytes:]
+			}
+		}
+	} else {
+		builds, err = db.GetLatestBuildsSummary(repoID, limit)
+	}
 	if err != nil {
 		http.Error(w, "Failed to query build status: "+err.Error(), http.StatusInternalServerError)
 		return
